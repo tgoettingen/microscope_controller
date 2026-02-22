@@ -1,0 +1,279 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Callable
+from abc import ABC, abstractmethod
+import time
+
+from devices.base import (
+    StageXY,
+    FocusZ,
+    Camera,
+    LightSource,
+    FilterWheel,
+    Detector,
+)
+from core.experiment import ChannelConfig
+
+
+# ---------------------------------------------------------
+#  Axis configuration model (used by GUI)
+# ---------------------------------------------------------
+
+@dataclass
+class AxisConfig:
+    axis_type: str
+    params: dict
+
+    def label(self) -> str:
+        """Human-readable label for GUI list."""
+        t = self.axis_type
+        p = self.params
+
+        if t in ("X", "Y", "Z"):
+            return f"{t}: {p['start']} → {p['end']} (step {p['step']})"
+        if t == "Channel":
+            return f"Channel axis ({len(p['channels'])} channels)"
+        if t == "Detector":
+            return f"Detector axis (scales={p['scales']})"
+        if t == "Round":
+            return f"Rounds: {p['n_rounds']}"
+        return t
+
+
+# ---------------------------------------------------------
+#  Axis base class
+# ---------------------------------------------------------
+
+class Axis(ABC):
+    """Abstract scan axis: defines a sequence of states and how to apply them."""
+
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def prepare(self) -> None:
+        """Called once before the scan starts."""
+        ...
+
+    @abstractmethod
+    def positions(self) -> Iterable[Any]:
+        """Yield all positions for this axis."""
+        ...
+
+    @abstractmethod
+    def apply(self, pos: Any) -> None:
+        """Apply the given position (move stage, set channel, etc.)."""
+        ...
+
+
+# ---------------------------------------------------------
+#  Motor axes (X, Y, Z)
+# ---------------------------------------------------------
+
+class XAxis(Axis):
+    def __init__(self, stage: StageXY, start: float, end: float, step: float):
+        self.stage = stage
+        self.start = start
+        self.end = end
+        self.step = step
+
+    def name(self) -> str:
+        return "X"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        x = self.start
+        while x <= self.end + 1e-9:
+            yield x
+            x += self.step
+
+    def apply(self, pos: float) -> None:
+        x, y = self.stage.get_position()
+        self.stage.move_to(pos, y)
+
+
+class YAxis(Axis):
+    def __init__(self, stage: StageXY, start: float, end: float, step: float):
+        self.stage = stage
+        self.start = start
+        self.end = end
+        self.step = step
+
+    def name(self) -> str:
+        return "Y"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        y = self.start
+        while y <= self.end + 1e-9:
+            yield y
+            y += self.step
+
+    def apply(self, pos: float) -> None:
+        x, y = self.stage.get_position()
+        self.stage.move_to(x, pos)
+
+
+class ZAxis(Axis):
+    def __init__(self, focus: FocusZ, start: float, end: float, step: float):
+        self.focus = focus
+        self.start = start
+        self.end = end
+        self.step = step
+
+    def name(self) -> str:
+        return "Z"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        z = self.start
+        while z <= self.end + 1e-9:
+            yield z
+            z += self.step
+
+    def apply(self, pos: float) -> None:
+        self.focus.move_to(pos)
+
+
+# ---------------------------------------------------------
+#  Channel axis (filter wheel + illumination + exposure)
+# ---------------------------------------------------------
+
+class ChannelAxis(Axis):
+    def __init__(
+        self,
+        camera: Camera,
+        light: LightSource,
+        fw: FilterWheel,
+        channels: List[ChannelConfig],
+        wait_s: float = 0.0,
+    ):
+        self.camera = camera
+        self.light = light
+        self.fw = fw
+        self.channels = channels
+        self.wait_s = wait_s
+
+    def name(self) -> str:
+        return "Channel"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        for ch in self.channels:
+            yield ch
+
+    def apply(self, pos: ChannelConfig) -> None:
+        self.fw.set_position(pos.filter_position)
+        self.light.set_intensity(pos.light_intensity)
+        self.camera.set_exposure(pos.exposure_ms)
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
+
+
+# ---------------------------------------------------------
+#  Detector axis (photodiode, PMT, voltage reader)
+# ---------------------------------------------------------
+
+class DetectorAxis(Axis):
+    def __init__(self, detector: Detector, scales: List[tuple[float, float]]):
+        self.detector = detector
+        self.scales = scales
+
+    def name(self) -> str:
+        return "Detector"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        for s in self.scales:
+            yield s
+
+    def apply(self, pos: tuple[float, float]) -> None:
+        scale, offset = pos
+        self.detector.set_scale(scale, offset)
+
+
+# ---------------------------------------------------------
+#  Round axis (software axis for repeated scans)
+# ---------------------------------------------------------
+
+class RoundAxis(Axis):
+    def __init__(self, n_rounds: Optional[int]):
+        self.n_rounds = n_rounds
+
+    def name(self) -> str:
+        return "Round"
+
+    def prepare(self) -> None:
+        pass
+
+    def positions(self):
+        if self.n_rounds is None:
+            i = 0
+            while True:
+                yield i
+                i += 1
+        else:
+            for i in range(self.n_rounds):
+                yield i
+
+    def apply(self, pos: int) -> None:
+        pass
+
+
+# ---------------------------------------------------------
+#  Multi‑axis experiment + runner
+# ---------------------------------------------------------
+
+@dataclass
+class MultiAxisExperiment:
+    axes: List[Axis]
+    measure: Callable[[Dict[str, Any]], Any]
+
+
+class MultiAxisRunner:
+    """Generic N-dimensional scan engine."""
+
+    def __init__(self, experiment: MultiAxisExperiment):
+        self.exp = experiment
+        self._running = False
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        self._running = True
+
+        for axis in self.exp.axes:
+            axis.prepare()
+
+        state: Dict[str, Any] = {}
+        self._recurse_axis(0, state)
+
+    def _recurse_axis(self, axis_idx: int, state: Dict[str, Any]):
+        if not self._running:
+            return
+
+        if axis_idx >= len(self.exp.axes):
+            self.exp.measure(state)
+            return
+
+        axis = self.exp.axes[axis_idx]
+        for pos in axis.positions():
+            if not self._running:
+                break
+            print(f"axis:{axis_idx} is recursing!")
+            axis.apply(pos)
+            state[axis.name()] = pos
+            print(state)
+            self._recurse_axis(axis_idx + 1, state)

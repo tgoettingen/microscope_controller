@@ -1,0 +1,22 @@
+{
+  "stage": {
+    "type": "simulated"
+  },
+  "focus": {
+    "type": "simulated"
+  },
+  "camera": {
+    "type": "simulated"
+  },
+  "light": {
+    "type": "simulated"
+  },
+  "filter_wheel": {
+    "type": "simulated"
+  },
+  "detector": {
+    "type": "simulated",
+    "scale": 1.0,
+    "offset": 0.0
+  }
+}

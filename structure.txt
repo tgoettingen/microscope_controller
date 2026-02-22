@@ -1,0 +1,11 @@
+microscope_controller/
+  devices/
+    __init__.py
+    base.py
+    mock.py
+  core/
+    __init__.py
+    experiment.py
+    orchestrator.py
+    factory.py
+  gui.py
