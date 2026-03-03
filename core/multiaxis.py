@@ -285,7 +285,19 @@ class DetectorAxis(Axis):
 
     def apply(self, pos: tuple[float, float]) -> None:
         scale, offset = pos
-        self.detector.set_scale(scale, offset)
+        # support single detector or list of detectors
+        try:
+            if isinstance(self.detector, list):
+                for d in self.detector:
+                    try:
+                        d.set_scale(scale, offset)
+                    except Exception:
+                        continue
+            else:
+                self.detector.set_scale(scale, offset)
+        except Exception:
+            # best-effort: ignore if detector doesn't support set_scale
+            return
 
 
 # ---------------------------------------------------------
