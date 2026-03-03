@@ -3,7 +3,7 @@
     "configurations": [
         {
             "name": "Run Microscope GUI",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/gui/mainwindow.py",
             "console": "integratedTerminal",

@@ -1,21 +1,30 @@
 import time
-
 import numpy as np
-from PyQt6 import QtWidgets, QtCore
+from collections import deque
+from PyQt6 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
 
 
 class LiveTab(QtWidgets.QWidget):
+    hover_info = QtCore.pyqtSignal(str)
+    # emitted when user toggles streaming for a detector: (detector_id, enabled)
+    stream_toggled = QtCore.pyqtSignal(str, bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # 1D detector data (classic experiment)
-        self._detector_times: list[float] = []
-        self._detector_values: list[float] = []
+        # per-detector moving window buffers
+        self._window_size = 200
+        self._detector_buffers: dict[str, deque] = {}
+        self._detector_times: dict[str, deque] = {}
+        self._detector_curves: dict[str, pg.PlotDataItem] = {}
         self._t0 = time.time()
 
         # Multi-axis detector data
         self.multi_coords: list[tuple[dict, float]] = []
+
+        # image display level state
+        self._levels = (None, None)  # (min, max) or (None,None) for auto
 
         # view mode: "camera" or "detector"
         self.view_mode = "camera"
@@ -41,6 +50,15 @@ class LiveTab(QtWidgets.QWidget):
 
         # Image view (used for camera images and detector heatmaps/volume slices)
         self.image_view = pg.ImageView()
+        # connect hover events (ImageView.scene is an attribute, not callable)
+        try:
+            self.image_view.scene.sigMouseMoved.connect(self._on_image_mouse_move)
+        except Exception:
+            # fallback: try view's scene
+            try:
+                self.image_view.getView().scene.sigMouseMoved.connect(self._on_image_mouse_move)
+            except Exception:
+                pass
         layout.addWidget(self.image_view, 3)
 
         # Z slider for 3D detector volumes
@@ -60,6 +78,29 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_widget.setLabel("left", "Detector", units="a.u.")
         self.plot_widget.setLabel("bottom", "Time / Coord", units="a.u.")
         layout.addWidget(self.plot_widget, 1)
+
+        # Per-detector controls (visibility + streaming)
+        ctl_box = QtWidgets.QGroupBox("Detectors")
+        ctl_layout = QtWidgets.QVBoxLayout(ctl_box)
+        self.detector_controls_layout = ctl_layout
+        layout.addWidget(ctl_box)
+
+        # Controls: moving-window size
+        ctl_layout = QtWidgets.QHBoxLayout()
+        ctl_layout.addWidget(QtWidgets.QLabel("Window size:"))
+        self.window_spin = QtWidgets.QSpinBox()
+        self.window_spin.setMinimum(10)
+        self.window_spin.setMaximum(10000)
+        self.window_spin.setValue(self._window_size)
+        self.window_spin.valueChanged.connect(self.set_window_size)
+        ctl_layout.addWidget(self.window_spin)
+        layout.addLayout(ctl_layout)
+
+        # keyboard shortcuts for levels
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl++"), self, activated=self.increase_upper)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=self.decrease_upper)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+_"), self, activated=self.decrease_lower)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+0"), self, activated=self.reset_levels)
 
         self.plot_timer = QtCore.QTimer(self)
         self.plot_timer.timeout.connect(self._update_plot)
@@ -83,8 +124,45 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     def reset_1d_detector(self):
         self._t0 = time.time()
-        self._detector_times.clear()
-        self._detector_values.clear()
+        for k in list(self._detector_times.keys()):
+            self._detector_times[k].clear()
+            self._detector_buffers[k].clear()
+
+    def register_detector(self, detector_id: str):
+        """Ensure UI and buffers exist for a detector id."""
+        if detector_id in self._detector_buffers:
+            return
+        self._detector_buffers[detector_id] = deque(maxlen=self._window_size)
+        self._detector_times[detector_id] = deque(maxlen=self._window_size)
+        curve = self.plot_widget.plot([], [], pen=pg.mkPen(width=2))
+        self._detector_curves[detector_id] = curve
+
+        # Create a small control row: label, visibility checkbox, stream checkbox
+        row = QtWidgets.QWidget()
+        row_layout = QtWidgets.QHBoxLayout(row)
+        row_layout.setContentsMargins(2, 2, 2, 2)
+        lbl = QtWidgets.QLabel(detector_id)
+        vis_cb = QtWidgets.QCheckBox("Show")
+        vis_cb.setChecked(True)
+        stream_cb = QtWidgets.QCheckBox("Stream")
+        stream_cb.setChecked(False)
+        row_layout.addWidget(lbl)
+        row_layout.addWidget(vis_cb)
+        row_layout.addWidget(stream_cb)
+        row_layout.addStretch(1)
+        self.detector_controls_layout.addWidget(row)
+
+        def _on_vis(chk):
+            try:
+                self._detector_curves[detector_id].setVisible(bool(chk))
+            except Exception:
+                pass
+
+        def _on_stream(chk):
+            self.stream_toggled.emit(detector_id, bool(chk))
+
+        vis_cb.toggled.connect(_on_vis)
+        stream_cb.toggled.connect(_on_stream)
 
     def reset_multiaxis(self):
         self.multi_coords.clear()
@@ -102,10 +180,17 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     # 1D detector callback
     # -----------------------------
-    def add_detector_sample(self, value: float, timestamp: float):
+    def add_detector_sample(self, detector_id: str, value: float, timestamp: float | None = None):
+        """Add a sample for a named detector. timestamp in seconds. Thread-safe caller should use queued calls."""
+        if timestamp is None:
+            timestamp = time.time()
         t_rel = timestamp - self._t0
-        self._detector_times.append(t_rel)
-        self._detector_values.append(value)
+        # ensure buffers and UI exist
+        if detector_id not in self._detector_buffers:
+            self.register_detector(detector_id)
+
+        self._detector_times[detector_id].append(t_rel)
+        self._detector_buffers[detector_id].append(value)
 
     # -----------------------------
     # multi-axis detector callback
@@ -126,7 +211,12 @@ class LiveTab(QtWidgets.QWidget):
     def _update_plot(self):
         # 1D detector plot
         if self._detector_times:
-            self.plot_curve.setData(self._detector_times, self._detector_values)
+            # update each detector curve
+            for det_id, times in self._detector_times.items():
+                vals = self._detector_buffers.get(det_id, [])
+                curve = self._detector_curves.get(det_id)
+                if curve is not None:
+                    curve.setData(list(times), list(vals))
 
         # multi-axis visualization
         if self.multi_coords and self.view_mode == "detector":
@@ -162,6 +252,12 @@ class LiveTab(QtWidgets.QWidget):
                 arr[i, j] = v
 
             self.image_view.setImage(arr.T, autoLevels=True)
+            # preserve level settings if user adjusted
+            if self._levels[0] is not None and self._levels[1] is not None:
+                try:
+                    self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                except Exception:
+                    pass
 
         elif len(axes) == 3:
             # 3D scan → volume slice via Z slider
@@ -180,3 +276,123 @@ class LiveTab(QtWidgets.QWidget):
             idx = min(max(self.z_slider.value(), 0), len(zs) - 1)
             slice_img = arr[:, :, idx]
             self.image_view.setImage(slice_img.T, autoLevels=True)
+            if self._levels[0] is not None and self._levels[1] is not None:
+                try:
+                    self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                except Exception:
+                    pass
+
+    # -----------------------------
+    # window size control
+    # -----------------------------
+    def set_window_size(self, n: int):
+        self._window_size = int(n)
+        # resize existing buffers
+        for k in list(self._detector_buffers.keys()):
+            old_vals = list(self._detector_buffers[k])
+            old_times = list(self._detector_times[k])
+            self._detector_buffers[k] = deque(old_vals[-self._window_size :], maxlen=self._window_size)
+            self._detector_times[k] = deque(old_times[-self._window_size :], maxlen=self._window_size)
+
+    # -----------------------------
+    # image hover and levels
+    # -----------------------------
+    def _on_image_mouse_move(self, pos):
+        vb = self.image_view.getView()
+        mouse_point = vb.mapSceneToView(pos)
+        x = int(round(mouse_point.x()))
+        y = int(round(mouse_point.y()))
+        img_item = self.image_view.getImageItem()
+        try:
+            arr = img_item.image
+            if arr is None:
+                return
+            # arr may be transposed depending on how setImage was called (we sometimes use arr.T).
+            # Try both orientations and pick a valid pixel value.
+            val = None
+            try:
+                if 0 <= y < arr.shape[0] and 0 <= x < arr.shape[1]:
+                    val = float(arr[y, x])
+            except Exception:
+                val = None
+
+            if val is None:
+                try:
+                    if 0 <= x < arr.shape[0] and 0 <= y < arr.shape[1]:
+                        val = float(arr[x, y])
+                        # swap coordinates for accurate display
+                        x, y = y, x
+                except Exception:
+                    val = None
+
+            if val is None:
+                return
+
+            # Include Z slice if present
+            z_info = ""
+            if hasattr(self, "_z_values") and hasattr(self, "z_slider"):
+                try:
+                    idx = int(self.z_slider.value())
+                    if hasattr(self, "_z_values") and 0 <= idx < len(self._z_values):
+                        z_info = f" z={self._z_values[idx]}"
+                except Exception:
+                    z_info = ""
+
+            self.hover_info.emit(f"x={x} y={y}{z_info} value={val:.3g}")
+        except Exception:
+            return
+
+    def increase_upper(self):
+        if self._levels[1] is None:
+            item = self.image_view.getImageItem()
+            try:
+                mn, mx = item.getLevels()
+            except Exception:
+                return
+        else:
+            mn, mx = self._levels
+        self._levels = (mn, mx * 1.1 if mx is not None else None)
+        try:
+            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+        except Exception:
+            pass
+
+    def decrease_upper(self):
+        if self._levels[1] is None:
+            item = self.image_view.getImageItem()
+            try:
+                mn, mx = item.getLevels()
+            except Exception:
+                return
+        else:
+            mn, mx = self._levels
+        self._levels = (mn, mx * 0.9 if mx is not None else None)
+        try:
+            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+        except Exception:
+            pass
+
+    def decrease_lower(self):
+        if self._levels[0] is None:
+            item = self.image_view.getImageItem()
+            try:
+                mn, mx = item.getLevels()
+            except Exception:
+                return
+        else:
+            mn, mx = self._levels
+        self._levels = (mn * 1.1 if mn is not None else None, mx)
+        try:
+            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+        except Exception:
+            pass
+
+    def reset_levels(self):
+        self._levels = (None, None)
+        try:
+            self.image_view.setLevels(autoLevels=True)
+        except Exception:
+            try:
+                self.image_view.getImageItem().setLevels(None, None)
+            except Exception:
+                pass

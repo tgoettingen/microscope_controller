@@ -4,9 +4,41 @@ import threading
 import json
 from pathlib import Path
 
+import importlib.util
 import numpy as np
-from PyQt6 import QtWidgets, QtCore
-from PyQt6.QtGui import QAction
+
+# Prefer importing PyQt6. If it's importable, proceed. If not, give a helpful
+# message guiding the user to install PyQt6 in the venv. Avoid failing based on
+# distribution metadata (which can be present even after partial uninstalls).
+try:
+   from PyQt6 import QtWidgets, QtCore
+   from PyQt6.QtGui import QAction
+except Exception:
+   # PyQt6 not importable — check whether PyQt5 is present to give targeted advice
+   if importlib.util.find_spec("PyQt5") is not None:
+      sys.stderr.write(
+         "PyQt6 is not importable but PyQt5 is present in the environment.\n"
+         "This code is written for PyQt6. Install PyQt6 in the active venv: `pip install PyQt6`.\n"
+      )
+   else:
+      sys.stderr.write(
+         "PyQt6 is not installed in the active Python environment.\n"
+         "Install it in the project's venv: `pip install PyQt6`.\n"
+      )
+   sys.exit(1)
+# Robust import for StreamSaver: try local utils, then package import, then adjust sys.path
+try:
+   from utils.stream_saver import StreamSaver
+except Exception:
+   try:
+      from microscope_controller.utils.stream_saver import StreamSaver
+   except Exception:
+      import sys
+      from pathlib import Path
+      pkg_root = Path(__file__).resolve().parents[1]
+      if str(pkg_root) not in sys.path:
+         sys.path.insert(0, str(pkg_root))
+      from utils.stream_saver import StreamSaver
 
 from core.factory import build_devices
 from core.orchestrator import Orchestrator
@@ -48,6 +80,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.det = None
 
       self._t0 = time.time()
+      self.stream_savers: dict[str, StreamSaver] = {}
       self._build_ui()
 
    def _build_ui(self):
@@ -63,6 +96,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # --- Right panel: Live view ---
       self.live_tab = LiveTab()
+      # connect hover info to status bar
+      self.live_tab.hover_info.connect(lambda s: self.statusBar().showMessage(s))
+      # connect stream toggle signals from live tab
+      self.live_tab.stream_toggled.connect(self._on_stream_toggled)
 
       # --- Splitter layout ---
       splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -146,7 +183,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
       mode = cfg["mode"]
       cam, stage, focus, light, fw, det = build_devices()
-      det.set_scale(cfg["det_scale"], cfg["det_offset"])
+      # populate available detectors in multi-axis tab
+      try:
+         det_ids = []
+         if isinstance(det, list):
+            for d in det:
+               det_ids.append(getattr(d, "name", getattr(d, "port", "detector")))
+         else:
+            det_ids.append(getattr(det, "name", getattr(det, "port", "detector")))
+         self.multi_tab.set_available_detectors(det_ids)
+      except Exception:
+         pass
+      # detector may be a single detector or a list
+      try:
+         if isinstance(det, list):
+            for d in det:
+               if hasattr(d, "set_scale"):
+                  d.set_scale(cfg["det_scale"], cfg["det_offset"])
+         else:
+            det.set_scale(cfg["det_scale"], cfg["det_offset"])
+      except Exception:
+         pass
 
       self.orch = Orchestrator(
             camera=cam,
@@ -159,6 +216,25 @@ class MainWindow(QtWidgets.QMainWindow):
             on_detector_sample=self._on_detector_sample,
       )
       self.orch.initialize()
+
+      # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
+      try:
+         out_dir = Path(cfg.get("output_dir") or Path.cwd() / "data")
+         selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
+         det_list = []
+         if selected:
+            det_list = selected
+         else:
+            if isinstance(det, list):
+               det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+            else:
+               det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
+
+         # create savers for chosen ids
+         for det_id in det_list:
+            self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+      except Exception:
+         pass
 
       exp = self._build_experiment(cfg)
       self._t0 = time.time()
@@ -174,6 +250,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.orch_thread = threading.Thread(target=worker, daemon=True)
       self.orch_thread.start()
+
+   def _on_stream_toggled(self, det_id: str, enabled: bool):
+      """Create or close stream saver when user toggles streaming from the LiveTab."""
+      try:
+         if enabled:
+            if det_id not in self.stream_savers:
+               out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+               self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+         else:
+            saver = self.stream_savers.pop(det_id, None)
+            if saver:
+               try:
+                  saver.close()
+               except Exception:
+                  pass
+      except Exception:
+         pass
 
    def _stop_experiment(self):
       if self.orch is not None:
@@ -196,6 +289,18 @@ class MainWindow(QtWidgets.QMainWindow):
          self.devices_built = True
          self.devices_released = False
 
+         # populate available detectors in multi-axis tab
+         try:
+            det_ids = []
+            if isinstance(self.det, list):
+               for d in self.det:
+                  det_ids.append(getattr(d, "name", getattr(d, "port", "detector")))
+            else:
+               det_ids.append(getattr(self.det, "name", getattr(self.det, "port", "detector")))
+            self.multi_tab.set_available_detectors(det_ids)
+         except Exception:
+            pass
+
       # Use the stored devices
       cam, stage, focus, light, fw, det = self.cam, self.stage, self.focus, self.light, self.fw, self.det
 
@@ -203,12 +308,30 @@ class MainWindow(QtWidgets.QMainWindow):
       for cfg in cfgs:
             t = cfg.axis_type
             p = cfg.params
+            # device name -> object map for motor lookup
+            device_map = {
+               "stage": stage,
+               "focus": focus,
+               "camera": cam,
+               "light": light,
+               "fw": fw,
+            }
+            # include detectors by id if available
+            if isinstance(det, list):
+               for d in det:
+                  device_map[getattr(d, "name", getattr(d, "port", "detector"))] = d
+            else:
+               device_map[getattr(det, "name", getattr(det, "port", "detector"))] = det
+
             if t == "X":
-               axes.append(XAxis(stage, p["start"], p["end"], p["step"]))
+               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               axes.append(XAxis(stage, p["start"], p["end"], p["step"], motor_devices=motor_devices or None, motor_mode=p.get("motor_mode", "sequential")))
             elif t == "Y":
-               axes.append(YAxis(stage, p["start"], p["end"], p["step"]))
+               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               axes.append(YAxis(stage, p["start"], p["end"], p["step"], motor_devices=motor_devices or None, motor_mode=p.get("motor_mode", "sequential")))
             elif t == "Z":
-               axes.append(ZAxis(focus, p["start"], p["end"], p["step"]))
+               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               axes.append(ZAxis(focus, p["start"], p["end"], p["step"], motor_devices=motor_devices or None, motor_mode=p.get("motor_mode", "sequential")))
             elif t == "Channel":
                axes.append(ChannelAxis(cam, light, fw, p["channels"], p["wait"]))
             elif t == "Detector":
@@ -218,6 +341,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.live_tab.reset_multiaxis()
 
+      # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
+      try:
+         out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+         selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
+         det_list = []
+         if selected:
+            det_list = selected
+         else:
+            if isinstance(det, list):
+               det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+            else:
+               det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
+
+         # create savers for chosen ids (do not overwrite existing savers)
+         for det_id in det_list:
+            if det_id not in self.stream_savers:
+               self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+      except Exception:
+         pass
+
       def measure(state: dict):
             # camera image if Channel present
             if "Channel" in state:
@@ -225,10 +368,24 @@ class MainWindow(QtWidgets.QMainWindow):
                meta = {"experiment": "multi", "state": state, "timestamp": time.time()}
                self._on_image(img, meta)
 
-            # detector value
+            # detector value(s)
             if det is not None:
-               val = det.read_value()
-               self.live_tab.add_multiaxis_detector(state, val)
+               dets = det if isinstance(det, list) else [det]
+               for d in dets:
+                   try:
+                      val = d.read_value()
+                      det_id = getattr(d, "name", getattr(d, "port", "detector"))
+                      # add to live tab (multiaxis)
+                      self.live_tab.add_multiaxis_detector(state, val)
+                      # stream-save if enabled per detector id
+                      try:
+                         saver = self.stream_savers.get(det_id)
+                         if saver:
+                            saver.append_sample(time.time(), float(val), meta=state)
+                      except Exception:
+                         pass
+                   except Exception:
+                      continue
 
       exp = MultiAxisExperiment(axes=axes, measure=measure)
       self.multi_runner = MultiAxisRunner(exp)
@@ -253,6 +410,13 @@ class MainWindow(QtWidgets.QMainWindow):
                if dev and hasattr(dev, 'disconnect'):
                   dev.disconnect()
          self.devices_released = True
+      # close any stream savers
+      for s in self.stream_savers.values():
+         try:
+            s.close()
+         except Exception:
+            pass
+      self.stream_savers.clear()
 
    # ----------------- callbacks + saving -----------------
 
@@ -280,7 +444,15 @@ class MainWindow(QtWidgets.QMainWindow):
          else:
                safe_meta[k] = convert(v)
 
-      out_dir = Path(meta.get("output_dir") or Path.cwd() / "data")
+      out_dir = None
+      # prefer explicit output_dir in meta, otherwise fall back to Demo tab setting
+      if isinstance(meta, dict) and meta.get("output_dir"):
+         out_dir = Path(meta.get("output_dir"))
+      else:
+         try:
+            out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+         except Exception:
+            out_dir = Path.cwd() / "data"
       out_dir.mkdir(parents=True, exist_ok=True)
 
       fname = f"{int(meta['timestamp'])}.npy"
@@ -291,9 +463,35 @@ class MainWindow(QtWidgets.QMainWindow):
       with open(path.with_suffix(".json"), "w") as f:
          json.dump(safe_meta, f, indent=2)
 
-   def _on_detector_sample(self, value: float, meta: dict):
-      timestamp = meta["timestamp"]
-      self.live_tab.add_detector_sample(value, timestamp)
+   def _on_detector_sample(self, *args):
+      """Accept either (value, meta) or (detector_id, value, meta)."""
+      try:
+         if len(args) == 2:
+            value, meta = args
+            det_id = "detector"
+         elif len(args) == 3:
+            det_id, value, meta = args
+         else:
+            return
+         timestamp = meta.get("timestamp", time.time()) if isinstance(meta, dict) else time.time()
+         # forward to live tab (queued)
+         QtCore.QMetaObject.invokeMethod(
+               self.live_tab,
+               "add_detector_sample",
+               QtCore.Qt.ConnectionType.QueuedConnection,
+               QtCore.Q_ARG(str, det_id),
+               QtCore.Q_ARG(float, float(value)),
+               QtCore.Q_ARG(float, float(timestamp)),
+         )
+         # stream-save if enabled
+         try:
+            saver = self.stream_savers.get(det_id)
+            if saver:
+               saver.append_sample(timestamp, float(value), meta=meta)
+         except Exception:
+            pass
+      except Exception:
+         return
 
    def save_full_experiment(self):
       path, _ = QtWidgets.QFileDialog.getSaveFileName(

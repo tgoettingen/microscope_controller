@@ -21,9 +21,9 @@ def build_camera_multiaxis_runner(
     focus: FocusZ,
     light: LightSource,
     fw: FilterWheel,
-    detector: Detector | None,
+    detector: Detector | list[Detector] | None,
     on_image: Callable[[Any, Dict], None],
-    on_detector_sample: Callable[[float, Dict], None] | None,
+    on_detector_sample: Callable[..., None] | None,
 ) -> MultiAxisRunner:
     channels = [
         ChannelConfig(name="BF", filter_position=0, light_intensity=10.0, exposure_ms=20.0),
@@ -56,16 +56,25 @@ def build_camera_multiaxis_runner(
             on_image(img, meta)
 
         if detector is not None and on_detector_sample is not None:
-            val = detector.read_value()
-            dmeta = {
-                "experiment": "multiaxis_camera",
-                "round": rnd,
-                "x": x,
-                "y": y,
-                "channel": ch.name,
-                "timestamp": time.time(),
-            }
-            on_detector_sample(val, dmeta)
+            dets = detector if isinstance(detector, list) else [detector]
+            for det in dets:
+                try:
+                    val = det.read_value()
+                    det_id = getattr(det, "name", getattr(det, "port", "detector"))
+                    dmeta = {
+                        "experiment": "multiaxis_camera",
+                        "round": rnd,
+                        "x": x,
+                        "y": y,
+                        "channel": ch.name,
+                        "timestamp": time.time(),
+                    }
+                    try:
+                        on_detector_sample(det_id, val, dmeta)
+                    except TypeError:
+                        on_detector_sample(val, dmeta)
+                except Exception:
+                    continue
 
     exp = MultiAxisExperiment(axes=axes, measure=measure)
     return MultiAxisRunner(exp)
@@ -75,10 +84,10 @@ def build_camera_multiaxis_runner(
 
 
 def build_detector_multiaxis_runner(
-    detector: Detector,
+    detector: Detector | list[Detector],
     stage: StageXY,
     focus: FocusZ,
-    on_detector_sample: Callable[[float, Dict], None],
+    on_detector_sample: Callable[..., None],
 ) -> MultiAxisRunner:
     scales = [(1.0, 0.0), (2.0, 0.0)]
 
@@ -90,16 +99,25 @@ def build_detector_multiaxis_runner(
     ]
 
     def measure(state: Dict[str, Any]):
-        val = detector.read_value()
-        meta = {
-            "experiment": "multiaxis_detector",
-            "round": state["Round"],
-            "x": state["X"],
-            "z": state["Z"],
-            "scale": state["Detector"],
-            "timestamp": time.time(),
-        }
-        on_detector_sample(val, meta)
+        dets = detector if isinstance(detector, list) else [detector]
+        for det in dets:
+            try:
+                val = det.read_value()
+                det_id = getattr(det, "name", getattr(det, "port", "detector"))
+                meta = {
+                    "experiment": "multiaxis_detector",
+                    "round": state["Round"],
+                    "x": state["X"],
+                    "z": state["Z"],
+                    "scale": state["Detector"],
+                    "timestamp": time.time(),
+                }
+                try:
+                    on_detector_sample(det_id, val, meta)
+                except TypeError:
+                    on_detector_sample(val, meta)
+            except Exception:
+                continue
 
     exp = MultiAxisExperiment(axes=axes, measure=measure)
     return MultiAxisRunner(exp)

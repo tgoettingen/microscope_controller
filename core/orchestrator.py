@@ -7,7 +7,8 @@ from .experiment import ExperimentDefinition
 
 
 ImageCallback = Callable[[Any, dict], None]
-DetectorCallback = Callable[[float, dict], None]
+# DetectorCallback: either (value, meta) or (detector_id, value, meta)
+DetectorCallback = Callable[..., None]
 
 
 class Orchestrator:
@@ -18,7 +19,7 @@ class Orchestrator:
         focus: FocusZ,
         light: LightSource,
         filter_wheel: FilterWheel,
-        detector: Optional[Detector] = None,
+        detector: Optional[Detector] | list[Detector] | None = None,
         settle_xy_s: float = 0.05,
         settle_z_s: float = 0.02,
         on_image: Optional[ImageCallback] = None,
@@ -29,6 +30,13 @@ class Orchestrator:
         self.focus = focus
         self.light = light
         self.filter_wheel = filter_wheel
+        # normalize to list of detectors
+        if detector is None:
+            self.detectors: list[Detector] = []
+        elif isinstance(detector, list):
+            self.detectors = detector
+        else:
+            self.detectors = [detector]
         self.detector = detector
         self.settle_xy_s = settle_xy_s
         self.settle_z_s = settle_z_s
@@ -37,17 +45,34 @@ class Orchestrator:
         self._running = False
 
     def initialize(self) -> None:
-        for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel, self.detector]:
+        for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel] + self.detectors:
             if dev is None:
                 continue
             dev.connect()
             dev.reset()
+        # connect async detector signals if available
+        for det in self.detectors:
+            try:
+                if hasattr(det, "sample_received"):
+                    det.sample_received.connect(self._on_detector_signal)
+            except Exception:
+                pass
 
     def shutdown(self) -> None:
-        for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel, self.detector]:
+        for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel] + self.detectors:
             if dev is None:
                 continue
-            dev.disconnect()
+            try:
+                dev.disconnect()
+            except Exception:
+                pass
+        # disconnect signals
+        for det in self.detectors:
+            try:
+                if hasattr(det, "sample_received"):
+                    det.sample_received.disconnect(self._on_detector_signal)
+            except Exception:
+                pass
 
     def stop(self) -> None:
         self._running = False
@@ -111,15 +136,39 @@ class Orchestrator:
 
         if self.on_image is not None:
             self.on_image(img, meta)
+        # synchronous detector reads (if present)
+        if self.detectors and self.on_detector_sample is not None:
+            for det in self.detectors:
+                try:
+                    if hasattr(det, "read_value"):
+                        val = det.read_value()
+                        det_id = getattr(det, "name", getattr(det, "port", "detector"))
+                        dmeta = {
+                            "experiment": exp.name,
+                            "t": t_idx,
+                            "pos": pos_idx,
+                            "z": z,
+                            "channel": ch.name,
+                            "timestamp": time.time(),
+                        }
+                        # prefer (det_id, value, meta)
+                        try:
+                            self.on_detector_sample(det_id, val, dmeta)
+                        except TypeError:
+                            # fallback to older (value, meta)
+                            self.on_detector_sample(val, dmeta)
+                except Exception:
+                    continue
 
-        if self.detector is not None and self.on_detector_sample is not None:
-            val = self.detector.read_value()
-            dmeta = {
-                "experiment": exp.name,
-                "t": t_idx,
-                "pos": pos_idx,
-                "z": z,
-                "channel": ch.name,
-                "timestamp": time.time(),
-            }
-            self.on_detector_sample(val, dmeta)
+    def _on_detector_signal(self, det_id: str, timestamp: float, value: float) -> None:
+        # called when detector emits asynchronously
+        if self.on_detector_sample is None:
+            return
+        dmeta = {"timestamp": timestamp, "detector_id": det_id}
+        try:
+            self.on_detector_sample(det_id, float(value), dmeta)
+        except TypeError:
+            try:
+                self.on_detector_sample(float(value), dmeta)
+            except Exception:
+                pass

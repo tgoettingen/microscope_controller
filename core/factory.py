@@ -33,6 +33,7 @@ import json
 import os
 from devices.standa_stage import StandaStageXY
 from devices.simulated import SimulatedCamera, SimulatedDetector, SimulatedFilterWheel, SimulatedLight, SimulatedFocus, SimulatedStageXY
+from devices.voltage_meter_comport import ComPort
 
 def load_config(path="config/default_devices.json"):
     if not os.path.exists(path):
@@ -95,10 +96,39 @@ def build_devices(config_path="config/default_devices.json"):
 
     # Detector
     detector_cfg = cfg.get("detector", {"type": "simulated", "scale": 1.0, "offset": 0.0})
-    if detector_cfg.get("type") == "simulated":
-        detector = SimulatedDetector()
-        detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
+    # Allow detector config to be a list to build multiple detectors
+    if isinstance(detector_cfg, list):
+        detectors = []
+        for dc in detector_cfg:
+            if dc.get("type") == "simulated":
+                d = SimulatedDetector()
+                d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
+            elif dc.get("type") in ("comport", "voltage_comport", "serial_voltage"):
+                # build a ComPort detector
+                port = dc.get("port")
+                baud = int(dc.get("baudrate", 115200))
+                fmt = dc.get("format", dc.get("sample_format", "int24"))
+                timeout = float(dc.get("read_timeout", 0.1))
+                d = ComPort(port=port, baudrate=baud, read_timeout=timeout, sample_format=fmt)
+                # set optional scale/offset
+                d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
+            else:
+                d = SimulatedDetector()
+            detectors.append(d)
+        detector = detectors
     else:
-        detector = SimulatedDetector()  # default
+        if detector_cfg.get("type") == "simulated":
+            detector = SimulatedDetector()
+            detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
+        elif detector_cfg.get("type") in ("comport", "voltage_comport", "serial_voltage"):
+            detector = ComPort(
+                port=detector_cfg.get("port"),
+                baudrate=int(detector_cfg.get("baudrate", 115200)),
+                read_timeout=float(detector_cfg.get("read_timeout", 0.1)),
+                sample_format=detector_cfg.get("format", detector_cfg.get("sample_format", "int24")),
+            )
+            detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
+        else:
+            detector = SimulatedDetector()  # default
 
     return camera, stage, focus, light, fw, detector

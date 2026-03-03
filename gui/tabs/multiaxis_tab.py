@@ -20,6 +20,12 @@ class MultiAxisTab(QtWidgets.QWidget):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        # Detector selection area (main detectors available in the system)
+        layout.addWidget(QtWidgets.QLabel("Available Detectors:"))
+        self.detector_list = QtWidgets.QListWidget()
+        self.detector_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.detector_list)
+
         self.axis_list = QtWidgets.QListWidget()
         layout.addWidget(QtWidgets.QLabel("Defined Axes:"))
         layout.addWidget(self.axis_list)
@@ -44,6 +50,27 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.remove_axis_btn.clicked.connect(self._remove_selected)
         self.start_btn.clicked.connect(self.start_requested.emit)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
+
+    def set_available_detectors(self, detectors: list[str]):
+        """Populate the available detector list with checkable items.
+
+        detectors: list of detector identifiers (strings)
+        """
+        self.detector_list.clear()
+        for d in detectors:
+            item = QtWidgets.QListWidgetItem(d)
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
+            self.detector_list.addItem(item)
+
+    def get_selected_detectors(self) -> list[str]:
+        selected = []
+        for i in range(self.detector_list.count()):
+            item = self.detector_list.item(i)
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                selected.append(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        return selected
 
     def _add_axis_dialog(self):
         dlg = QtWidgets.QInputDialog(self)
