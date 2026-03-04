@@ -31,6 +31,7 @@
 
 import json
 import os
+from devices.multimeter import Multimeter
 from devices.standa_stage import StandaStageXY
 from devices.simulated import SimulatedCamera, SimulatedDetector, SimulatedFilterWheel, SimulatedLight, SimulatedFocus, SimulatedStageXY
 from devices.voltage_meter_comport import ComPort
@@ -103,7 +104,7 @@ def build_devices(config_path="config/default_devices.json"):
             if dc.get("type") == "simulated":
                 d = SimulatedDetector()
                 d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
-            elif dc.get("type") in ("comport", "voltage_comport", "serial_voltage"):
+            elif dc.get("type") in ("ComPort", "voltage_comport", "serial_voltage"):
                 # build a ComPort detector
                 port = dc.get("port")
                 baud = int(dc.get("baudrate", 115200))
@@ -112,8 +113,10 @@ def build_devices(config_path="config/default_devices.json"):
                 d = ComPort(port=port, baudrate=baud, read_timeout=timeout, sample_format=fmt)
                 # set optional scale/offset
                 d.set_scale(dc.get("scale", 1000.0), dc.get("offset", 0.0))
+            elif dc.get("type") == "Multimeter":
+                d = Multimeter(gpib=dc.get("gpib"))
             else:
-                d = SimulatedDetector()
+                raise ValueError(f"Unknown detector type: {dc.get('type')}")
             detectors.append(d)
         detector = detectors
     else:

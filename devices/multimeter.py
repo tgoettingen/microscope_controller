@@ -20,14 +20,15 @@ class Multimeter:
 
       print("Multimeter ready:", dmm.query("*IDN?"))
       self.dmm = dmm
+      self.name = dmm.query("*IDN?").strip()
 
    def read_voltage(self):
       if self.dmm is None:
             raise('multimeter is not initialized correctly!')
       
-      timestamp = datetime.now().isoformat(timespec='milliseconds')
+      # timestamp = datetime.now().isoformat(timespec='milliseconds')
       voltage = float(self.dmm.query("READ?").strip())
-      return voltage,timestamp
+      return voltage
    
    def close(self):
       self.dmm.close()

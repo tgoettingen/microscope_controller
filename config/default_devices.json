@@ -1,8 +1,6 @@
 {
   "stage": {
-    "type": "simulated", // "standa_xy",
-    //"com_x": "COM3",
-    //"com_y": "COM4"
+    "type": "simulated"
   },
   "focus": {
     "type": "simulated"

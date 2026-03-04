@@ -62,6 +62,7 @@ class ComPort(Detector):
         # scaling/offset for display units
         self._scale = 1.0
         self._offset = 0.0
+        self.start()
 
     def start(self) -> None:
         if serial is None:
@@ -244,10 +245,33 @@ class ComPort(Detector):
         self.stop()
 
     def read_value(self) -> float:
-        """Return the most recent sample, scaled. Non-blocking; returns 0.0 if no sample yet."""
-        if self._last_value is None:
-            return 0.0
-        return float(self._last_value) * self._scale + float(self._offset)
+
+        while self._running and self._serial is not None:
+            try:
+                data = self._serial.read(3)
+            except Exception as e:
+                self.error.emit(f'Read error: {e}')
+                break
+            if not data or len(data) < 3:
+                continue
+            try:
+                def _decode_24bit_to_voltage(data: bytes) -> float:
+                    if len(data) != 3:
+                        raise ValueError('data must be exactly 3 bytes')
+                    val = (data[0] << 16) | (data[1] << 8) | data[2]
+                    sign = (val >> 23) & 0x1
+                    magnitude = val & 0x7FFFFF
+                    fraction = magnitude / float(2 ** 23)
+                    voltage = fraction * 3.3 / 400.0
+                    voltage = -voltage if sign == 1 else voltage
+                    return voltage
+
+                voltage = _decode_24bit_to_voltage(data)
+                return voltage
+            except Exception:
+                print(f"Failed to decode 24-bit sample: {data}")
+                raise RuntimeError("Failed to read value from ComPort detector")
+                
 
     def set_scale(self, scale: float, offset: float = 0.0) -> None:
         self._scale = float(scale)
