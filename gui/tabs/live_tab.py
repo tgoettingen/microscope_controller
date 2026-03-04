@@ -20,6 +20,11 @@ class LiveTab(QtWidgets.QWidget):
         self._detector_curves: dict[str, pg.PlotDataItem] = {}
         self._t0 = time.time()
 
+        # per-detector image views for heatmaps (created in _build_ui)
+        self._detector_image_views: dict[str, pg.ImageView] = {}
+        self.detector_images_container = None
+        self.detector_images_layout = None
+
         # per-detector multi-axis data: det_id -> list[(state, value)]
         self.multi_coords: dict[str, list[tuple[dict, float]]] = {}
 
@@ -60,6 +65,14 @@ class LiveTab(QtWidgets.QWidget):
             except Exception:
                 pass
         layout.addWidget(self.image_view, 3)
+
+        # Container for per-detector heatmaps (shown in detector view)
+        self.detector_images_container = QtWidgets.QWidget()
+        self.detector_images_layout = QtWidgets.QHBoxLayout(self.detector_images_container)
+        self.detector_images_layout.setSpacing(8)
+        self.detector_images_layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.detector_images_container, 3)
+        self.detector_images_container.hide()
 
         # Z slider for 3D detector volumes
         z_layout = QtWidgets.QHBoxLayout()
