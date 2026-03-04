@@ -132,13 +132,6 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     # reset helpers
     # -----------------------------
-        # Container for per-detector heatmaps (shown in detector view)
-        self.detector_images_container = QtWidgets.QWidget()
-        self.detector_images_layout = QtWidgets.QHBoxLayout(self.detector_images_container)
-        self.detector_images_layout.setSpacing(8)
-        self.detector_images_layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(self.detector_images_container, 3)
-        self.detector_images_container.hide()
     def reset_1d_detector(self):
         self._t0 = time.time()
         for k in list(self._detector_times.keys()):
@@ -256,11 +249,10 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     # multi-axis detector callback
     # -----------------------------
-    def add_multiaxis_detector(self, state: dict, value: float):
     def add_multiaxis_detector(self, detector_id: str, state: dict, value: float):
+        """Append a multi-axis sample for a specific detector id."""
         self.multi_coords.setdefault(detector_id, []).append((state.copy(), value))
-        # update Z slider range if Z present
-        # compute z-values from the first detector that has Z
+        # update Z slider range if Z present (from any detector with Z)
         for det_list in self.multi_coords.values():
             if not det_list:
                 continue
@@ -295,19 +287,16 @@ class LiveTab(QtWidgets.QWidget):
         if not self.multi_coords:
             return
 
-        sample_state, _ = self.multi_coords[0]
-        axes = [a for a in ("X", "Y", "Z") if a in sample_state]
-
         # For each detector, compute its own axes and display in its image view
         for det_id, det_list in self.multi_coords.items():
             if not det_list:
                 continue
             sample_state, _ = det_list[0]
             axes = [a for a in ("X", "Y", "Z") if a in sample_state]
-            ax = axes[0]
+
             # find target image view (fallback to main image_view)
             img_view = self._detector_image_views.get(det_id, self.image_view)
-            ax1, ax2 = axes
+
             if len(axes) == 1:
                 # 1D scan: plot line on per-detector curve
                 ax = axes[0]
@@ -321,38 +310,38 @@ class LiveTab(QtWidgets.QWidget):
                         self.plot_curve.setData(coords, vals)
                 except Exception:
                     pass
-                i = xs.index(s[ax1])
+
             elif len(axes) == 2:
                 ax1, ax2 = axes
                 xs = sorted(set(s[ax1] for s, _ in det_list))
                 ys = sorted(set(s[ax2] for s, _ in det_list))
-            if self._levels[0] is not None and self._levels[1] is not None:
+
                 arr = np.zeros((len(xs), len(ys)))
                 for s, v in det_list:
                     i = xs.index(s[ax1])
                     j = ys.index(s[ax2])
                     arr[i, j] = v
-                try:
+
                 try:
                     img_view.setImage(arr.T, autoLevels=True)
                     if self._levels[0] is not None and self._levels[1] is not None:
                         img_view.getImageItem().setLevels(self._levels[0], self._levels[1])
                 except Exception:
                     pass
-            xs = sorted(set(s[ax1] for s, _ in self.multi_coords))
+
             elif len(axes) == 3:
                 ax1, ax2, ax3 = axes
                 xs = sorted(set(s[ax1] for s, _ in det_list))
                 ys = sorted(set(s[ax2] for s, _ in det_list))
                 zs = sorted(set(s[ax3] for s, _ in det_list))
-                j = ys.index(s[ax2])
+
                 arr = np.zeros((len(xs), len(ys), len(zs)))
                 for s, v in det_list:
                     i = xs.index(s[ax1])
                     j = ys.index(s[ax2])
                     k = zs.index(s[ax3])
                     arr[i, j, k] = v
-            if self._levels[0] is not None and self._levels[1] is not None:
+
                 idx = min(max(self.z_slider.value(), 0), len(zs) - 1)
                 slice_img = arr[:, :, idx]
                 try:
