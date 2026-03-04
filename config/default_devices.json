@@ -1,6 +1,5 @@
 {
   "stage": {
-
     "type": "standa_xy",
     "com_x": "COM3",
     "com_y": "COM4"
@@ -19,8 +18,9 @@
   },
   "detector": [
     {
-      "type": "simulated",
-      "name": "detector_sim",
+      "type": "Multimeter",
+      "name": "multimeter",
+      "gpib": "11",
       "scale": 1.0,
       "offset": 0.0
     },

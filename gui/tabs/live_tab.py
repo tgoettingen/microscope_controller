@@ -20,8 +20,8 @@ class LiveTab(QtWidgets.QWidget):
         self._detector_curves: dict[str, pg.PlotDataItem] = {}
         self._t0 = time.time()
 
-        # Multi-axis detector data
-        self.multi_coords: list[tuple[dict, float]] = []
+        # per-detector multi-axis data: det_id -> list[(state, value)]
+        self.multi_coords: dict[str, list[tuple[dict, float]]] = {}
 
         # image display level state
         self._levels = (None, None)  # (min, max) or (None,None) for auto
@@ -113,15 +113,32 @@ class LiveTab(QtWidgets.QWidget):
         self.view_mode = "camera"
         self.camera_btn.setChecked(True)
         self.detector_btn.setChecked(False)
+        try:
+            self.image_view.show()
+            self.detector_images_container.hide()
+        except Exception:
+            pass
 
     def _set_detector_view(self):
         self.view_mode = "detector"
         self.camera_btn.setChecked(False)
         self.detector_btn.setChecked(True)
+        try:
+            self.image_view.hide()
+            self.detector_images_container.show()
+        except Exception:
+            pass
 
     # -----------------------------
     # reset helpers
     # -----------------------------
+        # Container for per-detector heatmaps (shown in detector view)
+        self.detector_images_container = QtWidgets.QWidget()
+        self.detector_images_layout = QtWidgets.QHBoxLayout(self.detector_images_container)
+        self.detector_images_layout.setSpacing(8)
+        self.detector_images_layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.detector_images_container, 3)
+        self.detector_images_container.hide()
     def reset_1d_detector(self):
         self._t0 = time.time()
         for k in list(self._detector_times.keys()):
@@ -164,7 +181,51 @@ class LiveTab(QtWidgets.QWidget):
         vis_cb.toggled.connect(_on_vis)
         stream_cb.toggled.connect(_on_stream)
 
+        # create a small image view for this detector (for multi-axis heatmaps)
+        img_view = pg.ImageView()
+        img_view.setPredefinedGradient('viridis')
+        # hide ROI and menu controls but show a compact histogram as a colorbar
+        try:
+            img_view.ui.roiBtn.hide()
+        except Exception:
+            pass
+        try:
+            img_view.ui.menuBtn.hide()
+        except Exception:
+            pass
+        try:
+            img_view.ui.histogram.show()
+            # make histogram narrow to serve as a colorbar
+            img_view.ui.histogram.setFixedWidth(36)
+        except Exception:
+            pass
+        img_view.getView().setMinimumWidth(180)
+        img_view.getView().setMinimumHeight(160)
+        # place label above the image view
+        container = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(container)
+        vbox.setContentsMargins(2, 2, 2, 2)
+        title = QtWidgets.QLabel(detector_id)
+        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
+        vbox.addWidget(title)
+        vbox.addWidget(img_view)
+        self._detector_image_views[detector_id] = img_view
+        self.detector_images_layout.addWidget(container)
+
+        # ensure data storage
+        self.multi_coords.setdefault(detector_id, [])
+
+        # connect hover from this image view to include detector id
+        try:
+            img_view.scene.sigMouseMoved.connect(lambda pos, did=detector_id, iv=img_view: self._on_detector_image_mouse_move(pos, did, iv))
+        except Exception:
+            try:
+                img_view.getView().scene.sigMouseMoved.connect(lambda pos, did=detector_id, iv=img_view: self._on_detector_image_mouse_move(pos, did, iv))
+            except Exception:
+                pass
     def reset_multiaxis(self):
+        for v in self.multi_coords.values():
+            v.clear()
         self.multi_coords.clear()
         self.z_slider.setMaximum(0)
         self.z_slider.setValue(0)
@@ -196,14 +257,19 @@ class LiveTab(QtWidgets.QWidget):
     # multi-axis detector callback
     # -----------------------------
     def add_multiaxis_detector(self, state: dict, value: float):
-        self.multi_coords.append((state.copy(), value))
+    def add_multiaxis_detector(self, detector_id: str, state: dict, value: float):
+        self.multi_coords.setdefault(detector_id, []).append((state.copy(), value))
         # update Z slider range if Z present
-        if self.multi_coords:
-            sample_state, _ = self.multi_coords[0]
+        # compute z-values from the first detector that has Z
+        for det_list in self.multi_coords.values():
+            if not det_list:
+                continue
+            sample_state, _ = det_list[0]
             if "Z" in sample_state:
-                zs = sorted(set(s["Z"] for s, _ in self.multi_coords))
+                zs = sorted(set(s["Z"] for s, _ in det_list))
                 self._z_values = zs
                 self.z_slider.setMaximum(max(0, len(zs) - 1))
+                break
 
     # -----------------------------
     # periodic plot update
@@ -218,7 +284,7 @@ class LiveTab(QtWidgets.QWidget):
                 if curve is not None:
                     curve.setData(list(times), list(vals))
 
-        # multi-axis visualization
+        # multi-axis visualization (per-detector)
         if self.multi_coords and self.view_mode == "detector":
             self._update_multiaxis_visualization()
 
@@ -232,59 +298,69 @@ class LiveTab(QtWidgets.QWidget):
         sample_state, _ = self.multi_coords[0]
         axes = [a for a in ("X", "Y", "Z") if a in sample_state]
 
-        if len(axes) == 1:
-            # 1D scan → line plot
+        # For each detector, compute its own axes and display in its image view
+        for det_id, det_list in self.multi_coords.items():
+            if not det_list:
+                continue
+            sample_state, _ = det_list[0]
+            axes = [a for a in ("X", "Y", "Z") if a in sample_state]
             ax = axes[0]
-            coords = [s[ax] for s, _ in self.multi_coords]
-            vals = [v for _, v in self.multi_coords]
-            self.plot_curve.setData(coords, vals)
-
-        elif len(axes) == 2:
-            # 2D scan → heatmap
+            # find target image view (fallback to main image_view)
+            img_view = self._detector_image_views.get(det_id, self.image_view)
             ax1, ax2 = axes
-            xs = sorted(set(s[ax1] for s, _ in self.multi_coords))
-            ys = sorted(set(s[ax2] for s, _ in self.multi_coords))
-
-            arr = np.zeros((len(xs), len(ys)))
-            for s, v in self.multi_coords:
-                i = xs.index(s[ax1])
-                j = ys.index(s[ax2])
-                arr[i, j] = v
-
-            self.image_view.setImage(arr.T, autoLevels=True)
-            # preserve level settings if user adjusted
-            if self._levels[0] is not None and self._levels[1] is not None:
+            if len(axes) == 1:
+                # 1D scan: plot line on per-detector curve
+                ax = axes[0]
+                coords = [s[ax] for s, _ in det_list]
+                vals = [v for _, v in det_list]
                 try:
-                    self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                    curve = self._detector_curves.get(det_id)
+                    if curve is not None:
+                        curve.setData(coords, vals)
+                    else:
+                        self.plot_curve.setData(coords, vals)
                 except Exception:
                     pass
-
-        elif len(axes) == 3:
-            # 3D scan → volume slice via Z slider
-            ax1, ax2, ax3 = axes
-            xs = sorted(set(s[ax1] for s, _ in self.multi_coords))
-            ys = sorted(set(s[ax2] for s, _ in self.multi_coords))
-            zs = sorted(set(s[ax3] for s, _ in self.multi_coords))
-
-            arr = np.zeros((len(xs), len(ys), len(zs)))
-            for s, v in self.multi_coords:
                 i = xs.index(s[ax1])
-                j = ys.index(s[ax2])
-                k = zs.index(s[ax3])
-                arr[i, j, k] = v
-
-            idx = min(max(self.z_slider.value(), 0), len(zs) - 1)
-            slice_img = arr[:, :, idx]
-            self.image_view.setImage(slice_img.T, autoLevels=True)
+            elif len(axes) == 2:
+                ax1, ax2 = axes
+                xs = sorted(set(s[ax1] for s, _ in det_list))
+                ys = sorted(set(s[ax2] for s, _ in det_list))
             if self._levels[0] is not None and self._levels[1] is not None:
+                arr = np.zeros((len(xs), len(ys)))
+                for s, v in det_list:
+                    i = xs.index(s[ax1])
+                    j = ys.index(s[ax2])
+                    arr[i, j] = v
                 try:
-                    self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                try:
+                    img_view.setImage(arr.T, autoLevels=True)
+                    if self._levels[0] is not None and self._levels[1] is not None:
+                        img_view.getImageItem().setLevels(self._levels[0], self._levels[1])
                 except Exception:
                     pass
-
-    # -----------------------------
-    # window size control
-    # -----------------------------
+            xs = sorted(set(s[ax1] for s, _ in self.multi_coords))
+            elif len(axes) == 3:
+                ax1, ax2, ax3 = axes
+                xs = sorted(set(s[ax1] for s, _ in det_list))
+                ys = sorted(set(s[ax2] for s, _ in det_list))
+                zs = sorted(set(s[ax3] for s, _ in det_list))
+                j = ys.index(s[ax2])
+                arr = np.zeros((len(xs), len(ys), len(zs)))
+                for s, v in det_list:
+                    i = xs.index(s[ax1])
+                    j = ys.index(s[ax2])
+                    k = zs.index(s[ax3])
+                    arr[i, j, k] = v
+            if self._levels[0] is not None and self._levels[1] is not None:
+                idx = min(max(self.z_slider.value(), 0), len(zs) - 1)
+                slice_img = arr[:, :, idx]
+                try:
+                    img_view.setImage(slice_img.T, autoLevels=True)
+                    if self._levels[0] is not None and self._levels[1] is not None:
+                        img_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                except Exception:
+                    pass
     def set_window_size(self, n: int):
         self._window_size = int(n)
         # resize existing buffers
@@ -339,6 +415,48 @@ class LiveTab(QtWidgets.QWidget):
                     z_info = ""
 
             self.hover_info.emit(f"x={x} y={y}{z_info} value={val:.3g}")
+        except Exception:
+            return
+
+    def _on_detector_image_mouse_move(self, pos, detector_id: str, img_view: pg.ImageView):
+        # Map mouse position relative to a specific detector image view
+        try:
+            vb = img_view.getView()
+            mouse_point = vb.mapSceneToView(pos)
+            x = int(round(mouse_point.x()))
+            y = int(round(mouse_point.y()))
+            img_item = img_view.getImageItem()
+            arr = img_item.image
+            if arr is None:
+                return
+            val = None
+            try:
+                if 0 <= y < arr.shape[0] and 0 <= x < arr.shape[1]:
+                    val = float(arr[y, x])
+            except Exception:
+                val = None
+
+            if val is None:
+                try:
+                    if 0 <= x < arr.shape[0] and 0 <= y < arr.shape[1]:
+                        val = float(arr[x, y])
+                        x, y = y, x
+                except Exception:
+                    val = None
+
+            if val is None:
+                return
+
+            z_info = ""
+            if hasattr(self, "_z_values") and hasattr(self, "z_slider"):
+                try:
+                    idx = int(self.z_slider.value())
+                    if hasattr(self, "_z_values") and 0 <= idx < len(self._z_values):
+                        z_info = f" z={self._z_values[idx]}"
+                except Exception:
+                    z_info = ""
+
+            self.hover_info.emit(f"{detector_id}: x={x} y={y}{z_info} value={val:.3g}")
         except Exception:
             return
 

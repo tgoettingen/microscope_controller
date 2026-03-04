@@ -341,7 +341,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.live_tab.reset_multiaxis()
 
-      # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
+      # register detector views in LiveTab and start stream saver(s) for detector(s) selected in UI
+      # (if any); otherwise default to all
       try:
          out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
          selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
@@ -356,6 +357,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
          # create savers for chosen ids (do not overwrite existing savers)
          for det_id in det_list:
+            # ensure live tab knows about this detector (create image view and controls)
+            try:
+               self.live_tab.register_detector(det_id)
+            except Exception:
+               pass
             if det_id not in self.stream_savers:
                self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
       except Exception:
@@ -375,8 +381,12 @@ class MainWindow(QtWidgets.QMainWindow):
                    try:
                       val = d.read_value()
                       det_id = getattr(d, "name", getattr(d, "port", "detector"))
-                      # add to live tab (multiaxis)
-                      self.live_tab.add_multiaxis_detector(state, val)
+                      # add to live tab (multiaxis) — include detector id
+                      try:
+                         self.live_tab.add_multiaxis_detector(det_id, state, val)
+                      except TypeError:
+                         # fallback for older signature
+                         self.live_tab.add_multiaxis_detector(state, val)
                       # stream-save if enabled per detector id
                       try:
                          saver = self.stream_savers.get(det_id)
