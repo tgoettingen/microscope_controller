@@ -179,6 +179,61 @@ class ComPort(Detector):
                 self._last_timestamp = ts
                 self.sample_received.emit(self.port, ts, val)
 
+    def read_value(self) -> float:
+        # Reader supports two modes:
+        # - 'int16': read raw 2-byte signed little-endian integers continuously
+        # - 'int24': read raw 3-byte signed-magnitude big-endian samples and convert to voltage
+        # - 'ascii': read newline-delimited ASCII floats
+        if self.sample_format == 'int16':
+            return self._last_value if self._last_value is not None else 0.0
+        elif self.sample_format == 'int24':
+            def _decode_24bit_to_voltage(data: bytes) -> float:
+                """Decode 3-byte 24-bit sample to voltage.
+
+                Format: 24 bits total, MSB (first bit) is sign (0=+, 1=-).
+                Remaining 23 bits are magnitude; value = (magnitude / 2^23) * 3.3 * 400.
+                Data expected in big-endian byte order.
+                """
+                if len(data) != 3:
+                    raise ValueError('data must be exactly 3 bytes')
+                val = (data[0] << 16) | (data[1] << 8) | data[2]
+                sign = (val >> 23) & 0x1
+                magnitude = val & 0x7FFFFF
+                fraction = magnitude / float(2 ** 23)
+                voltage = fraction * 3.3 / 400.0
+                return -voltage if sign == 1 else voltage
+
+            while self._running and self._serial is not None:
+                try:
+                    data = self._serial.read(3)
+                except Exception as e:
+                    self.error.emit(f'Read error: {e}')
+                    break
+                if not data or len(data) < 3:
+                    continue
+                try:
+                    voltage = _decode_24bit_to_voltage(data)
+                    return voltage
+                except Exception:
+                    print(f"Failed to decode 24-bit sample: {data}")
+                    return
+                
+        else:
+            print("Reading ASCII line...")
+            while self._running and self._serial is not None:
+                try:
+                    line = self._serial.readline()
+                except Exception as e:
+                    self.error.emit(f'Read error: {e}')
+                    break
+                if not line:
+                    continue
+                val = parse_ascii_line(line)
+                if val is None:
+                    continue
+                return val
+
+
     # ---- Device/Detector compatibility methods ----
     def connect(self) -> None:
         """Open the underlying serial connection and start background reader."""

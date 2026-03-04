@@ -111,7 +111,7 @@ def build_devices(config_path="config/default_devices.json"):
                 timeout = float(dc.get("read_timeout", 0.1))
                 d = ComPort(port=port, baudrate=baud, read_timeout=timeout, sample_format=fmt)
                 # set optional scale/offset
-                d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
+                d.set_scale(dc.get("scale", 1000.0), dc.get("offset", 0.0))
             else:
                 d = SimulatedDetector()
             detectors.append(d)

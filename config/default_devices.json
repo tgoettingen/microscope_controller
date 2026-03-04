@@ -1,6 +1,9 @@
 {
   "stage": {
-    "type": "simulated"
+
+    "type": "standa_xy",
+    "com_x": "COM3",
+    "com_y": "COM4"
   },
   "focus": {
     "type": "simulated"
@@ -22,9 +25,9 @@
       "offset": 0.0
     },
     {
-      "type": "voltage_comport",
+      "type": "ComPort",
       "name": "vm1",
-      "port": "/dev/ttyUSB0",
+      "port": "COM5",
       "baudrate": 115200,
       "format": "int24",
       "read_timeout": 0.1,
