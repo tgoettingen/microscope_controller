@@ -38,14 +38,21 @@ class ComPort(Detector):
         error(message: str)
     """
 
-    # emits: detector_id(str), timestamp(float), value(float)
-    sample_received = pyqtSignal(str, float, float)
-    error = pyqtSignal(str)
+    # We can't safely mix PyQt QObject metaclass with ABCs across platforms,
+    # so embed a small QObject emitter and forward its signals.
+    class _Emitter(QObject):
+        sample_received = pyqtSignal(str, float, float)
+        error = pyqtSignal(str)
 
     def __init__(self, port: str, baudrate: int = 115200, read_timeout: float = 0.1, sample_format: str = 'int24', name: str | None = None):
         # name is used by Device base class; default to port string when not provided
         nm = name if name is not None else port
-        super().__init__(nm)
+        Detector.__init__(self, nm)
+        # create internal QObject to host signals
+        self._emitter = ComPort._Emitter()
+        # expose signals on this object for existing consumers
+        self.sample_received = self._emitter.sample_received
+        self.error = self._emitter.error
         self.port = port
         self.baudrate = baudrate
         self.read_timeout = read_timeout
