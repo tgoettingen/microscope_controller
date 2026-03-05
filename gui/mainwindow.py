@@ -381,12 +381,26 @@ class MainWindow(QtWidgets.QMainWindow):
                    try:
                       val = d.read_value()
                       det_id = getattr(d, "name", getattr(d, "port", "detector"))
-                      # add to live tab (multiaxis) — include detector id
+                      # add to live tab (multiaxis) via queued invokeMethod to avoid
+                      # calling Qt widgets from the worker thread
                       try:
-                         self.live_tab.add_multiaxis_detector(det_id, state, val)
-                      except TypeError:
-                         # fallback for older signature
-                         self.live_tab.add_multiaxis_detector(state, val)
+                         QtCore.QMetaObject.invokeMethod(
+                               self.live_tab,
+                               "add_multiaxis_detector",
+                               QtCore.Qt.ConnectionType.QueuedConnection,
+                               QtCore.Q_ARG(str, det_id),
+                               QtCore.Q_ARG(object, state),
+                               QtCore.Q_ARG(float, float(val)),
+                         )
+                      except Exception:
+                         # best-effort fallback: call directly (may be unsafe)
+                         try:
+                            self.live_tab.add_multiaxis_detector(det_id, state, val)
+                         except Exception:
+                            try:
+                               self.live_tab.add_multiaxis_detector(state, val)
+                            except Exception:
+                               pass
                       # stream-save if enabled per detector id
                       try:
                          saver = self.stream_savers.get(det_id)
