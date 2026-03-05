@@ -87,8 +87,8 @@ class ComPort(Detector):
             return
 
         self._running = True
-        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self._thread.start()
+        # self._thread = threading.Thread(target=self._reader_loop, daemon=True)
+        # self._thread.start()
         # mark connected/started
         try:
             self.connected = True
