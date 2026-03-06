@@ -90,6 +90,15 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_curve = self.plot_widget.plot([], [])
         self.plot_widget.setLabel("left", "Detector", units="a.u.")
         self.plot_widget.setLabel("bottom", "Time / Coord", units="a.u.")
+        # X-axis selector for multi-axis plots
+        xsel_layout = QtWidgets.QHBoxLayout()
+        xsel_layout.addWidget(QtWidgets.QLabel("X Axis:"))
+        self.xaxis_combo = QtWidgets.QComboBox()
+        self.xaxis_combo.addItem("Index")
+        self.xaxis_combo.currentTextChanged.connect(self._update_plot)
+        xsel_layout.addWidget(self.xaxis_combo)
+        layout.addLayout(xsel_layout)
+
         layout.addWidget(self.plot_widget, 1)
 
         # Per-detector controls (visibility + streaming)
@@ -221,6 +230,9 @@ class LiveTab(QtWidgets.QWidget):
         # ensure data storage
         self.multi_coords.setdefault(detector_id, [])
 
+        # refresh available x-axis options
+        self._refresh_xaxis_options()
+
         # connect hover from this image view to include detector id
         try:
             img_view.scene.sigMouseMoved.connect(lambda pos, did=detector_id, iv=img_view: self._on_detector_image_mouse_move(pos, did, iv))
@@ -235,6 +247,52 @@ class LiveTab(QtWidgets.QWidget):
         self.multi_coords.clear()
         self.z_slider.setMaximum(0)
         self.z_slider.setValue(0)
+        # refresh x-axis choices
+        self._refresh_xaxis_options()
+
+    def _refresh_xaxis_options(self):
+        # Schedule UI updates on the event loop to avoid nested selection-change modifications
+        def _do():
+            keys = set()
+            for det_list in self.multi_coords.values():
+                if not det_list:
+                    continue
+                sample_state, _ = det_list[0]
+                try:
+                    for k in sample_state.keys():
+                        keys.add(k)
+                except Exception:
+                    continue
+            current = self.xaxis_combo.currentText() if hasattr(self, 'xaxis_combo') else 'Index'
+            items = ['Index'] + sorted(keys)
+            try:
+                self.xaxis_combo.blockSignals(True)
+                self.xaxis_combo.clear()
+                for it in items:
+                    self.xaxis_combo.addItem(it)
+                idx = self.xaxis_combo.findText(current)
+                if idx >= 0:
+                    self.xaxis_combo.setCurrentIndex(idx)
+            finally:
+                try:
+                    self.xaxis_combo.blockSignals(False)
+                except Exception:
+                    pass
+
+        QtCore.QTimer.singleShot(0, _do)
+
+    def set_xaxis(self, name: str):
+        if not hasattr(self, 'xaxis_combo'):
+            return
+        if name is None:
+            return
+        idx = self.xaxis_combo.findText(name)
+        if idx < 0:
+            # add it
+            self.xaxis_combo.addItem(name)
+            idx = self.xaxis_combo.findText(name)
+        if idx >= 0:
+            self.xaxis_combo.setCurrentIndex(idx)
 
     # -----------------------------
     # camera image callback
@@ -276,6 +334,9 @@ class LiveTab(QtWidgets.QWidget):
                 self.z_slider.setMaximum(max(0, len(zs) - 1))
                 break
 
+            # update x-axis options when new data arrives
+            self._refresh_xaxis_options()
+
     # -----------------------------
     # periodic plot update
     # -----------------------------
@@ -292,6 +353,50 @@ class LiveTab(QtWidgets.QWidget):
         # multi-axis visualization (per-detector)
         if self.multi_coords and self.view_mode == "detector":
             self._update_multiaxis_visualization()
+
+        # If multi-axis numeric plotting is desired, plot detector intensities
+        # vs the selected X axis (Index or axis name)
+        try:
+            xaxis = self.xaxis_combo.currentText() if hasattr(self, 'xaxis_combo') else 'Index'
+            if self.multi_coords and xaxis:
+                # clear main plot
+                self.plot_widget.clear()
+                # for each detector, build x and y arrays
+                for det_id, det_list in self.multi_coords.items():
+                    if not det_list:
+                        continue
+                    xs = []
+                    ys = []
+                    for idx, (s, v) in enumerate(det_list):
+                        # If axis is Index, use sample index; otherwise try to read from state dict
+                        if xaxis == 'Index':
+                            xs.append(idx)
+                        else:
+                            try:
+                                # handle Channel or other object values by converting to numeric if possible
+                                val = s.get(xaxis)
+                                if val is None:
+                                    # fallback to index
+                                    xs.append(idx)
+                                else:
+                                    try:
+                                        xs.append(float(val))
+                                    except Exception:
+                                        # non-numeric: use index
+                                        xs.append(idx)
+                            except Exception:
+                                xs.append(idx)
+                        ys.append(v)
+                    # plot with a labeled curve
+                    pen = pg.mkPen(width=2)
+                    self.plot_widget.plot(xs, ys, pen=pen, name=det_id)
+                # update axis label
+                try:
+                    self.plot_widget.setLabel('bottom', xaxis)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # -----------------------------
     # multi-axis visualization logic

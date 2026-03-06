@@ -303,6 +303,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # Use the stored devices
       cam, stage, focus, light, fw, det = self.cam, self.stage, self.focus, self.light, self.fw, self.det
+      # Build a device map for pre/post moves and axis dialogs
+      device_map = {
+         "stage": stage,
+         "focus": focus,
+         "camera": cam,
+         "light": light,
+         "fw": fw,
+      }
+      if isinstance(det, list):
+         for d in det:
+            device_map[getattr(d, 'name', getattr(d, 'port', 'detector'))] = d
+      else:
+         device_map[getattr(det, 'name', getattr(det, 'port', 'detector'))] = det
 
       axes = []
       for cfg in cfgs:
@@ -341,6 +354,38 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.live_tab.reset_multiaxis()
 
+      # Execute pre-scan positions defined in axis configs
+      try:
+         for cfg in cfgs:
+            p = cfg.params
+            # only motor-like axes support pre_pos/post_pos
+            if p and 'pre_pos' in p and p['pre_pos'] is not None:
+               # determine device to move for this axis
+               if cfg.axis_type == 'X' or cfg.axis_type == 'Y':
+                  dev = device_map.get('stage')
+                  if dev and hasattr(dev, 'move_to'):
+                     # get current complementary coord
+                     try:
+                        cur = dev.get_position()
+                        if isinstance(cur, tuple):
+                           if cfg.axis_type == 'X':
+                              dev.move_to(p['pre_pos'], cur[1])
+                           else:
+                              dev.move_to(cur[0], p['pre_pos'])
+                        else:
+                           dev.move_to(p['pre_pos'])
+                     except Exception:
+                        pass
+               elif cfg.axis_type == 'Z':
+                  dev = device_map.get('focus')
+                  if dev and hasattr(dev, 'move_to'):
+                     try:
+                        dev.move_to(p['pre_pos'])
+                     except Exception:
+                        pass
+      except Exception:
+         pass
+
       # register detector views in LiveTab and start stream saver(s) for detector(s) selected in UI
       # (if any); otherwise default to all
       try:
@@ -364,6 +409,16 @@ class MainWindow(QtWidgets.QMainWindow):
                pass
             if det_id not in self.stream_savers:
                self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+         # apply default X-axis selection from MultiAxisTab (if provided)
+         try:
+            default_x = self.multi_tab.get_default_xaxis() if hasattr(self.multi_tab, 'get_default_xaxis') else None
+            if default_x and hasattr(self.live_tab, 'set_xaxis'):
+               try:
+                  self.live_tab.set_xaxis(default_x)
+               except Exception:
+                  pass
+         except Exception:
+            pass
       except Exception:
          pass
 

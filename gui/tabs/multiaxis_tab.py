@@ -30,11 +30,26 @@ class MultiAxisTab(QtWidgets.QWidget):
         layout.addWidget(QtWidgets.QLabel("Defined Axes:"))
         layout.addWidget(self.axis_list)
 
+        # Default X-axis selector for runs
+        xsel_layout = QtWidgets.QHBoxLayout()
+        xsel_layout.addWidget(QtWidgets.QLabel("Default X Axis:"))
+        self.default_xaxis_combo = QtWidgets.QComboBox()
+        self.default_xaxis_combo.addItem("Index")
+        xsel_layout.addWidget(self.default_xaxis_combo)
+        layout.addLayout(xsel_layout)
+
+        # Buttons for axis management: add/remove/edit and reorder
         btns = QtWidgets.QHBoxLayout()
         self.add_axis_btn = QtWidgets.QPushButton("Add Axis")
+        self.edit_axis_btn = QtWidgets.QPushButton("Edit Selected")
         self.remove_axis_btn = QtWidgets.QPushButton("Remove Selected")
+        self.up_axis_btn = QtWidgets.QPushButton("Move Up")
+        self.down_axis_btn = QtWidgets.QPushButton("Move Down")
         btns.addWidget(self.add_axis_btn)
+        btns.addWidget(self.edit_axis_btn)
         btns.addWidget(self.remove_axis_btn)
+        btns.addWidget(self.up_axis_btn)
+        btns.addWidget(self.down_axis_btn)
         layout.addLayout(btns)
 
         run_btns = QtWidgets.QHBoxLayout()
@@ -47,7 +62,10 @@ class MultiAxisTab(QtWidgets.QWidget):
         layout.addStretch(1)
 
         self.add_axis_btn.clicked.connect(self._add_axis_dialog)
+        self.edit_axis_btn.clicked.connect(self._edit_selected)
         self.remove_axis_btn.clicked.connect(self._remove_selected)
+        self.up_axis_btn.clicked.connect(self._move_selected_up)
+        self.down_axis_btn.clicked.connect(self._move_selected_down)
         self.start_btn.clicked.connect(self.start_requested.emit)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
 
@@ -99,10 +117,95 @@ class MultiAxisTab(QtWidgets.QWidget):
             item = QtWidgets.QListWidgetItem(cfg.label())
             item.setData(QtCore.Qt.ItemDataRole.UserRole, cfg)
             self.axis_list.addItem(item)
+            # refresh default x-axis options when axes change
+            try:
+                self.refresh_default_xaxis_options()
+            except Exception:
+                pass
+
+    def _edit_selected(self):
+        items = self.axis_list.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        cfg = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if cfg is None:
+            return
+        # Launch the appropriate dialog populated with current config
+        if cfg.axis_type in ("X", "Y", "Z"):
+            dlg = MotorAxisDialog(cfg.axis_type, config=cfg)
+        elif cfg.axis_type == "Channel":
+            dlg = ChannelAxisDialog(self)
+        elif cfg.axis_type == "Detector":
+            dlg = DetectorAxisDialog(self)
+        elif cfg.axis_type == "Round":
+            dlg = RoundAxisDialog(self)
+        else:
+            return
+
+        # populate motor dialog fields if present
+        try:
+            if hasattr(dlg, 'start_spin') and cfg.params:
+                dlg.start_spin.setValue(cfg.params.get('start', dlg.start_spin.value()))
+                dlg.end_spin.setValue(cfg.params.get('end', dlg.end_spin.value()))
+                dlg.step_spin.setValue(cfg.params.get('step', dlg.step_spin.value()))
+                dlg.wait_spin.setValue(cfg.params.get('wait', dlg.wait_spin.value()))
+                motors = cfg.params.get('motors', [])
+                dlg.motors_edit.setText(','.join(motors))
+                mode = cfg.params.get('motor_mode', dlg.mode_combo.currentText())
+                idx = dlg.mode_combo.findText(mode)
+                if idx >= 0:
+                    dlg.mode_combo.setCurrentIndex(idx)
+                # pre/post positions
+                if 'pre_pos' in cfg.params and cfg.params['pre_pos'] is not None:
+                    dlg.pre_pos_spin.setValue(cfg.params['pre_pos'])
+                if 'post_pos' in cfg.params and cfg.params['post_pos'] is not None:
+                    dlg.post_pos_spin.setValue(cfg.params['post_pos'])
+        except Exception:
+            pass
+
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            new_cfg = dlg.get_config()
+            item.setText(new_cfg.label())
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, new_cfg)
+
+    def _move_selected_up(self):
+        items = self.axis_list.selectedItems()
+        if not items:
+            return
+        row = self.axis_list.row(items[0])
+        if row <= 0:
+            return
+        item = self.axis_list.takeItem(row)
+        self.axis_list.insertItem(row - 1, item)
+        item.setSelected(True)
+        try:
+            self.refresh_default_xaxis_options()
+        except Exception:
+            pass
+
+    def _move_selected_down(self):
+        items = self.axis_list.selectedItems()
+        if not items:
+            return
+        row = self.axis_list.row(items[0])
+        if row >= self.axis_list.count() - 1:
+            return
+        item = self.axis_list.takeItem(row)
+        self.axis_list.insertItem(row + 1, item)
+        item.setSelected(True)
+        try:
+            self.refresh_default_xaxis_options()
+        except Exception:
+            pass
 
     def _remove_selected(self):
         for item in self.axis_list.selectedItems():
             self.axis_list.takeItem(self.axis_list.row(item))
+        try:
+            self.refresh_default_xaxis_options()
+        except Exception:
+            pass
 
     def get_axis_configs(self) -> list[AxisConfig]:
         cfgs: list[AxisConfig] = []
@@ -112,3 +215,36 @@ class MultiAxisTab(QtWidgets.QWidget):
             if isinstance(cfg, AxisConfig):
                 cfgs.append(cfg)
         return cfgs
+
+    def get_default_xaxis(self) -> str:
+        try:
+            return str(self.default_xaxis_combo.currentText())
+        except Exception:
+            return "Index"
+
+    def refresh_default_xaxis_options(self):
+        # Schedule the actual UI update to avoid nested Qt modifications
+        def _do_update():
+            seen = set()
+            for i in range(self.axis_list.count()):
+                item = self.axis_list.item(i)
+                cfg = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if isinstance(cfg, AxisConfig):
+                    seen.add(cfg.axis_type)
+            cur = self.get_default_xaxis()
+            try:
+                self.default_xaxis_combo.blockSignals(True)
+                self.default_xaxis_combo.clear()
+                self.default_xaxis_combo.addItem("Index")
+                for s in sorted(seen):
+                    self.default_xaxis_combo.addItem(s)
+                idx = self.default_xaxis_combo.findText(cur)
+                if idx >= 0:
+                    self.default_xaxis_combo.setCurrentIndex(idx)
+            finally:
+                try:
+                    self.default_xaxis_combo.blockSignals(False)
+                except Exception:
+                    pass
+
+        QtCore.QTimer.singleShot(0, _do_update)

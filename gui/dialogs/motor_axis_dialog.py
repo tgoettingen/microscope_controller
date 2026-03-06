@@ -4,7 +4,7 @@ from core.multiaxis import AxisConfig
 
 
 class MotorAxisDialog(QtWidgets.QDialog):
-    def __init__(self, axis_type: str, parent=None):
+    def __init__(self, axis_type: str, config=None, parent=None):
         super().__init__(parent)
         self.axis_type = axis_type
         self.setWindowTitle(f"{axis_type} Axis Settings")
@@ -56,6 +56,18 @@ class MotorAxisDialog(QtWidgets.QDialog):
         layout.addRow("Sync poll [s]", self.sync_poll_spin)
         layout.addRow("Sync tolerance", self.sync_tol_spin)
 
+        # optional pre/post positions for this axis (move before/after scan)
+        self.pre_pos_spin = QtWidgets.QDoubleSpinBox()
+        self.pre_pos_spin.setRange(-1e6, 1e6)
+        self.pre_pos_spin.setValue(0.0)
+        self.pre_pos_spin.setSpecialValueText("(none)")
+        self.post_pos_spin = QtWidgets.QDoubleSpinBox()
+        self.post_pos_spin.setRange(-1e6, 1e6)
+        self.post_pos_spin.setValue(0.0)
+        self.post_pos_spin.setSpecialValueText("(none)")
+        layout.addRow("Pre-scan pos", self.pre_pos_spin)
+        layout.addRow("Post-scan pos", self.post_pos_spin)
+
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
@@ -79,5 +91,7 @@ class MotorAxisDialog(QtWidgets.QDialog):
                 "sync_timeout": self.sync_timeout_spin.value(),
                 "sync_poll": self.sync_poll_spin.value(),
                 "sync_tol": self.sync_tol_spin.value(),
+                "pre_pos": None if self.pre_pos_spin.value() == 0.0 and self.pre_pos_spin.specialValueText() else self.pre_pos_spin.value(),
+                "post_pos": None if self.post_pos_spin.value() == 0.0 and self.post_pos_spin.specialValueText() else self.post_pos_spin.value(),
             },
         )
