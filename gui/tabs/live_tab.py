@@ -4,9 +4,15 @@ from collections import deque
 from PyQt6 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
 
+from .camera_panel import CameraPanel
+from .plot_panel import PlotPanel
+from .detector_image_panel import DetectorImagePanel
+from .detector_control_panel import DetectorControlPanel
+
 
 class LiveTab(QtWidgets.QWidget):
     hover_info = QtCore.pyqtSignal(str)
+    view_changed = QtCore.pyqtSignal(str)
     # emitted when user toggles streaming for a detector: (detector_id, enabled)
     stream_toggled = QtCore.pyqtSignal(str, bool)
 
@@ -48,31 +54,35 @@ class LiveTab(QtWidgets.QWidget):
         self.camera_btn.setChecked(True)
         toggle_layout.addWidget(self.camera_btn)
         toggle_layout.addWidget(self.detector_btn)
+        # Load data button
+        self.load_btn = QtWidgets.QPushButton("Load Data")
+        toggle_layout.addWidget(self.load_btn)
         layout.addLayout(toggle_layout)
 
         self.camera_btn.clicked.connect(self._set_camera_view)
         self.detector_btn.clicked.connect(self._set_detector_view)
+        self.load_btn.clicked.connect(self._on_load_data)
 
-        # Image view (used for camera images and detector heatmaps/volume slices)
-        self.image_view = pg.ImageView()
-        # connect hover events (ImageView.scene is an attribute, not callable)
+        # Camera panel (ImageView)
+        self.camera_panel = CameraPanel()
+        self.image_view = self.camera_panel.image_view
+        # connect hover events
         try:
             self.image_view.scene.sigMouseMoved.connect(self._on_image_mouse_move)
         except Exception:
-            # fallback: try view's scene
             try:
                 self.image_view.getView().scene.sigMouseMoved.connect(self._on_image_mouse_move)
             except Exception:
                 pass
-        layout.addWidget(self.image_view, 3)
+        layout.addWidget(self.camera_panel, 3)
 
-        # Container for per-detector heatmaps (shown in detector view)
-        self.detector_images_container = QtWidgets.QWidget()
-        self.detector_images_layout = QtWidgets.QHBoxLayout(self.detector_images_container)
-        self.detector_images_layout.setSpacing(8)
-        self.detector_images_layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(self.detector_images_container, 3)
-        self.detector_images_container.hide()
+        # Detector images panel (per-detector heatmaps)
+        self.detector_image_panel = DetectorImagePanel()
+        # expose inner container and layout for backward compatibility
+        self.detector_images_container = self.detector_image_panel.container
+        self.detector_images_layout = self.detector_image_panel.layout
+        layout.addWidget(self.detector_image_panel, 3)
+        self.detector_image_panel.hide()
 
         # Z slider for 3D detector volumes
         z_layout = QtWidgets.QHBoxLayout()
@@ -85,8 +95,9 @@ class LiveTab(QtWidgets.QWidget):
         z_layout.addWidget(self.z_slider)
         layout.addLayout(z_layout)
 
-        # Detector 1D plot (classic or 1D multi-axis)
-        self.plot_widget = pg.PlotWidget()
+        # Plot panel (1D detector plot)
+        self.plot_panel = PlotPanel()
+        self.plot_widget = self.plot_panel.plot_widget
         self.plot_curve = self.plot_widget.plot([], [])
         self.plot_widget.setLabel("left", "Detector", units="a.u.")
         self.plot_widget.setLabel("bottom", "Time / Coord", units="a.u.")
@@ -99,13 +110,14 @@ class LiveTab(QtWidgets.QWidget):
         xsel_layout.addWidget(self.xaxis_combo)
         layout.addLayout(xsel_layout)
 
-        layout.addWidget(self.plot_widget, 1)
+        layout.addWidget(self.plot_panel, 1)
 
         # Per-detector controls (visibility + streaming)
-        ctl_box = QtWidgets.QGroupBox("Detectors")
-        ctl_layout = QtWidgets.QVBoxLayout(ctl_box)
-        self.detector_controls_layout = ctl_layout
-        layout.addWidget(ctl_box)
+        self.detector_control_panel = DetectorControlPanel()
+        # expose group and layout for backward compatibility
+        self.detector_group = self.detector_control_panel.group
+        self.detector_controls_layout = self.detector_control_panel.vlayout
+        layout.addWidget(self.detector_control_panel, 0)
 
         # Controls: moving-window size
         ctl_layout = QtWidgets.QHBoxLayout()
@@ -138,6 +150,11 @@ class LiveTab(QtWidgets.QWidget):
         try:
             self.image_view.show()
             self.detector_images_container.hide()
+            # notify main window so docks can be toggled
+            try:
+                self.view_changed.emit(self.view_mode)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -148,6 +165,10 @@ class LiveTab(QtWidgets.QWidget):
         try:
             self.image_view.hide()
             self.detector_images_container.show()
+            try:
+                self.view_changed.emit(self.view_mode)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -280,6 +301,77 @@ class LiveTab(QtWidgets.QWidget):
                     pass
 
         QtCore.QTimer.singleShot(0, _do)
+
+    # -----------------------------
+    # Load saved data
+    # -----------------------------
+    def _on_load_data(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Data", "", "Data files (*.txt *.npy)")
+        if not path:
+            return
+        try:
+            if path.endswith('.npy'):
+                arr = np.load(path)
+                # expect columns: timestamp, value, x, y, z
+                if arr.ndim == 1:
+                    arr = arr.reshape(1, -1)
+                # ensure at least 2 columns
+                times = arr[:, 0]
+                vals = arr[:, 1]
+                xs = arr[:, 2] if arr.shape[1] > 2 else None
+                ys = arr[:, 3] if arr.shape[1] > 3 else None
+            else:
+                # parse ascii CSV with header
+                with open(path, 'r') as f:
+                    hdr = f.readline().strip().split(',')
+                    cols = {c: i for i, c in enumerate(hdr)}
+                    data = []
+                    for ln in f:
+                        parts = ln.strip().split(',')
+                        if len(parts) < 2:
+                            continue
+                        data.append(parts)
+                import numpy as _np
+                arr = _np.array(data)
+                # try to map columns
+                try:
+                    times = arr[:, cols.get('timestamp', 0)].astype(float)
+                except Exception:
+                    times = arr[:, 0].astype(float)
+                try:
+                    vals = arr[:, cols.get('value', 1)].astype(float)
+                except Exception:
+                    vals = arr[:, 1].astype(float)
+                xs = None
+                ys = None
+                if 'x' in cols or 'X' in cols:
+                    k = 'X' if 'X' in cols else 'x'
+                    xs = arr[:, cols[k]].astype(float)
+                if 'y' in cols or 'Y' in cols:
+                    k = 'Y' if 'Y' in cols else 'y'
+                    ys = arr[:, cols[k]].astype(float)
+
+            # display time-series in plot
+            try:
+                self.plot_widget.clear()
+                self.plot_widget.plot(times, vals, pen=pg.mkPen('y', width=2))
+            except Exception:
+                pass
+
+            # create heatmap if positions are available
+            if xs is not None and ys is not None:
+                try:
+                    # bin positions to a grid and weight by vals
+                    nbins = 128
+                    xi = np.linspace(np.nanmin(xs), np.nanmax(xs), nbins)
+                    yi = np.linspace(np.nanmin(ys), np.nanmax(ys), nbins)
+                    H, xedges, yedges = np.histogram2d(xs.astype(float), ys.astype(float), bins=[xi, yi], weights=vals.astype(float))
+                    img = np.nan_to_num(H.T)
+                    self.image_view.setImage(img, autoLevels=True)
+                except Exception:
+                    pass
+        except Exception:
+            QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}")
 
     def set_xaxis(self, name: str):
         if not hasattr(self, 'xaxis_combo'):
