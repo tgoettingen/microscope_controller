@@ -16,21 +16,13 @@
   },
   "detector": [
     {
-      "type": "Multimeter",
-      "name": "multimeter",
-      "gpib": "11",
-      "scale": 1.0,
-      "offset": 0.0
+      "type": "simulated",
+      "port": "com6"
+
     },
     {
-      "type": "ComPort",
-      "name": "vm1",
-      "port": "COM5",
-      "baudrate": 115200,
-      "format": "int24",
-      "read_timeout": 0.1,
-      "scale": 1.0,
-      "offset": 0.0
+      "type": "simulated",
+      "port": "com7"
     }
   ]
 }

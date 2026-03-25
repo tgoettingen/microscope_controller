@@ -269,9 +269,10 @@ class ChannelAxis(Axis):
 # ---------------------------------------------------------
 
 class DetectorAxis(Axis):
-    def __init__(self, detector: Detector, scales: List[tuple[float, float]]):
+    def __init__(self, detector: Detector, scales: List[tuple[float, float]], waits: List[tuple[float,float]]):
         self.detector = detector
         self.scales = scales
+        self.waits = waits
 
     def name(self) -> str:
         return "Detector"
@@ -291,6 +292,8 @@ class DetectorAxis(Axis):
                 for d in self.detector:
                     try:
                         d.set_scale(scale, offset)
+                        # if self.waits>0:
+                        #     time.sleep(self.waits)
                     except Exception:
                         continue
             else:

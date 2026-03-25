@@ -348,7 +348,7 @@ class MainWindow(QtWidgets.QMainWindow):
             elif t == "Channel":
                axes.append(ChannelAxis(cam, light, fw, p["channels"], p["wait"]))
             elif t == "Detector":
-               axes.append(DetectorAxis(det, p["scales"]))
+               axes.append(DetectorAxis(det, p["scales"],p["wait"]))
             elif t == "Round":
                axes.append(RoundAxis(p["n_rounds"]))
 
@@ -436,6 +436,7 @@ class MainWindow(QtWidgets.QMainWindow):
                    try:
                       val = d.read_value()
                       det_id = getattr(d, "name", getattr(d, "port", "detector"))
+                      
                       # add to live tab (multiaxis) via queued invokeMethod to avoid
                       # calling Qt widgets from the worker thread
                       try:

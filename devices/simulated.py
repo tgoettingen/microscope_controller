@@ -109,8 +109,10 @@ class SimulatedDetector:
         self.scale = float(scale)
         self.offset = float(offset)
 
-    def read_value(self):
+    def read_value(self,wait:float = 0):
         base = np.random.rand()
+        if wait>0:
+            time.sleep(wait)
         return base * self.scale + self.offset
 
     def disconnect(self):
