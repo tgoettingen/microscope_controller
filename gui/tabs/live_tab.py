@@ -443,7 +443,8 @@ class LiveTab(QtWidgets.QWidget):
                     curve.setData(list(times), list(vals))
 
         # multi-axis visualization (per-detector)
-        if self.multi_coords and self.view_mode == "detector":
+        # if self.multi_coords and self.view_mode == "detector":
+        if self.multi_coords:
             self._update_multiaxis_visualization()
 
         # If multi-axis numeric plotting is desired, plot detector intensities
