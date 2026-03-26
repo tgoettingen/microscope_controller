@@ -269,9 +269,10 @@ class ChannelAxis(Axis):
 # ---------------------------------------------------------
 
 class DetectorAxis(Axis):
-    def __init__(self, detector: Detector, scales: List[tuple[float, float]]):
+    def __init__(self, detector: Detector, scales: List[tuple[float, float]], waits: List[tuple[float,float]]):
         self.detector = detector
         self.scales = scales
+        self.waits = waits
 
     def name(self) -> str:
         return "Detector"
@@ -291,6 +292,8 @@ class DetectorAxis(Axis):
                 for d in self.detector:
                     try:
                         d.set_scale(scale, offset)
+                        # if self.waits>0:
+                        #     time.sleep(self.waits)
                     except Exception:
                         continue
             else:
@@ -341,9 +344,11 @@ class MultiAxisExperiment:
 class MultiAxisRunner:
     """Generic N-dimensional scan engine."""
 
-    def __init__(self, experiment: MultiAxisExperiment):
+    def __init__(self, experiment: MultiAxisExperiment, on_move: callable | None = None):
         self.exp = experiment
         self._running = False
+        # optional callback called when an axis move completes with the current state: on_move(state: dict)
+        self.on_move = on_move
 
     def stop(self):
         self._running = False
@@ -372,6 +377,13 @@ class MultiAxisRunner:
             print(f"axis:{axis_idx} is recursing!")
             axis.apply(pos)
             state[axis.name()] = pos
+            # notify interested listeners that a move completed and provide a snapshot of the state
+            try:
+                if callable(self.on_move):
+                    # provide a shallow copy to avoid accidental mutation by callers
+                    self.on_move(state.copy())
+            except Exception:
+                pass
             print(state)
             self._recurse_axis(axis_idx + 1, state)
 

@@ -1,6 +1,7 @@
 import time
 import threading
 from pathlib import Path
+import json
 import numpy as np
 
 
@@ -23,22 +24,108 @@ class StreamSaver:
         self.npy_path = self.output_dir / f"{self.base_name}.npy"
 
         self._ascii_file = open(self.ascii_path, "a", buffering=1)
-        # write header if empty
+        # write header if empty — we include optional X/Y/Z columns for stage positions
         if self.ascii_path.stat().st_size == 0:
-            self._ascii_file.write("timestamp,value,meta\n")
+            # columns: timestamp, value, x, y, z, meta
+            self._ascii_file.write("timestamp,value,x,y,z,meta\n")
 
         self._buffer = []
         self._lock = threading.Lock()
         self.flush_every = int(flush_every)
+        # companion metadata json-lines file
+        self.meta_path = self.output_dir / f"{self.base_name}.meta.jsonl"
+        try:
+            self._meta_file = open(self.meta_path, "a", buffering=1)
+        except Exception:
+            self._meta_file = None
 
     def append_sample(self, timestamp: float, value: float, meta: dict | None = None):
         meta = meta or {}
-        line = f"{timestamp:.6f},{value:.6g},{meta}\n"
+        # Try to extract X/Y/Z positions from meta/state if provided
+        x = y = z = ""
+        try:
+            # meta may contain a 'state' dict with motor positions
+            state = None
+            if isinstance(meta, dict):
+                if "state" in meta and isinstance(meta["state"], dict):
+                    state = meta["state"]
+                else:
+                    # allow top-level keys X/Y/Z or x/y/z
+                    state = {k: meta.get(k) for k in ("X", "Y", "Z", "x", "y", "z") if k in meta}
+            if state:
+                # prefer uppercase keys if present
+                if "X" in state:
+                    x = state.get("X")
+                elif "x" in state:
+                    x = state.get("x")
+                if "Y" in state:
+                    y = state.get("Y")
+                elif "y" in state:
+                    y = state.get("y")
+                if "Z" in state:
+                    z = state.get("Z")
+                elif "z" in state:
+                    z = state.get("z")
+        except Exception:
+            x = y = z = ""
+
+        # format x/y/z for ascii output (empty if not present)
+        def _fmt(v):
+            try:
+                return f"{float(v):.6f}"
+            except Exception:
+                return ""
+
+        xs = _fmt(x)
+        ys = _fmt(y)
+        zs = _fmt(z)
+
+        line = f"{timestamp:.6f},{value:.6g},{xs},{ys},{zs},{meta}\n"
         with self._lock:
             self._ascii_file.write(line)
-            self._buffer.append((timestamp, float(value)))
+            # buffer now contains timestamp, value, x, y, z (floats, use nan for missing)
+            try:
+                xf = float(xs) if xs != "" else float('nan')
+            except Exception:
+                xf = float('nan')
+            try:
+                yf = float(ys) if ys != "" else float('nan')
+            except Exception:
+                yf = float('nan')
+            try:
+                zf = float(zs) if zs != "" else float('nan')
+            except Exception:
+                zf = float('nan')
+
+            self._buffer.append((timestamp, float(value), xf, yf, zf))
             if len(self._buffer) >= self.flush_every:
                 self._flush_npy()
+
+            # write companion meta json-line for this sample
+            if self._meta_file is not None:
+                try:
+                    record = {
+                        "timestamp": float(timestamp),
+                        "detector": self.base_name,
+                        "value": None if (isinstance(value, float) and np.isnan(value)) else float(value),
+                        "x": None if np.isnan(xf) else float(xf),
+                        "y": None if np.isnan(yf) else float(yf),
+                        "z": None if np.isnan(zf) else float(zf),
+                        "meta": meta or {},
+                    }
+                    # ensure JSON serializable: replace non-serializable objects
+                    def _convert(obj):
+                        if hasattr(obj, "__dict__"):
+                            return obj.__dict__
+                        try:
+                            return str(obj)
+                        except Exception:
+                            return None
+
+                    record["meta"] = json.loads(json.dumps(record["meta"], default=_convert))
+                    self._meta_file.write(json.dumps(record) + "\n")
+                except Exception:
+                    pass
 
     def _flush_npy(self):
         if not self._buffer:
@@ -48,6 +135,14 @@ class StreamSaver:
         try:
             if self.npy_path.exists():
                 existing = np.load(self.npy_path)
+                # ensure existing has 5 columns: timestamp,value,x,y,z
+                if existing.ndim == 1:
+                    existing = existing.reshape(1, -1)
+                if existing.shape[1] < 5:
+                    # pad with nan columns
+                    pad_cols = 5 - existing.shape[1]
+                    pad = np.full((existing.shape[0], pad_cols), np.nan, dtype=float)
+                    existing = np.hstack((existing, pad))
                 combined = np.vstack((existing, arr))
             else:
                 combined = arr
@@ -69,5 +164,10 @@ class StreamSaver:
             self._flush_npy()
             try:
                 self._ascii_file.close()
+            except Exception:
+                pass
+            try:
+                if self._meta_file is not None:
+                    self._meta_file.close()
             except Exception:
                 pass

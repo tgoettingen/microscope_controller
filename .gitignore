@@ -2,8 +2,7 @@ data
 *.txt
 *.npy
 *.pyc
+*.jsonl
 .DS_Store
 __pycache__/
 devices/plugin_loader.py
-*.jsonl
-config/default_devices_real.json
