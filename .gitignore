@@ -8,3 +8,4 @@ __pycache__/
 devices/plugin_loader.py
 data/
 
+config/default_devices_real.json
