@@ -1,45 +1,90 @@
 import time
 import threading
 from pathlib import Path
-import json
+import re
 import numpy as np
+import h5py
 
 
 class StreamSaver:
-    """Simple streaming saver that appends ASCII CSV lines and periodically writes a .npy file.
+    """Streaming saver that appends samples to an HDF5 file during acquisition.
+
+    The HDF5 dataset 'data' is resizable so each flush simply extends it in
+    place — no temp files, no merge step, no data loss on crash (h5py flushes
+    after each write).
+
+    Columns: [timestamp, value, x, y, z]
 
     Usage:
-        saver = StreamSaver(output_dir, detector_id, mode='stream', flush_every=100)
+        saver = StreamSaver(output_dir, detector_id, mode='stream', flush_every=256)
         saver.append_sample(timestamp, value, meta_dict)
         saver.close()
     """
 
-    def __init__(self, output_dir, detector_id: str, mode: str = "stream", flush_every: int = 256):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        safe_id = detector_id.replace(" ", "_")
-        self.base_name = f"{ts}__{safe_id}__{mode}"
-        self.ascii_path = self.output_dir / f"{self.base_name}.txt"
-        self.npy_path = self.output_dir / f"{self.base_name}.npy"
+    def __init__(
+        self,
+        output_dir,
+        detector_id: str,
+        mode: str = "stream",
+        flush_every: int = 256,
+        base_path: str | Path | None = None,
+    ):
+        """Create a StreamSaver.
+
+        If base_path is provided, it controls both the folder and filename stem.
+        Two files are written: <base_path>.h5 and <base_path>.txt.
+        """
+        # Resolve output paths
+        if base_path is not None:
+            bp = Path(base_path)
+            # If user selected a concrete file (e.g. .h5), use its stem as base.
+            if bp.suffix.lower() in (".h5", ".hdf5", ".txt", ".csv"):
+                bp = bp.with_suffix("")
+            self.output_dir = bp.parent
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            self.base_name = bp.name
+            self.ascii_path = bp.with_suffix(".txt")
+            self.h5_path = bp.with_suffix(".h5")
+        else:
+            self.output_dir = Path(output_dir)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+
+            # Windows-safe detector id for filenames
+            safe_id = str(detector_id).strip().replace(" ", "_")
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_id)
+            self.base_name = f"{ts}__{safe_id}__{mode}"
+            self.ascii_path = self.output_dir / f"{self.base_name}.txt"
+            self.h5_path = self.output_dir / f"{self.base_name}.h5"
+
+        # Open HDF5 file and create a resizable dataset.
+        # Columns: timestamp, value, x, y, z
+        self._h5_file = h5py.File(self.h5_path, "w")
+        self._h5_ds = self._h5_file.create_dataset(
+            "data",
+            shape=(0, 5),
+            maxshape=(None, 5),
+            dtype="float64",
+            chunks=(256, 5),
+        )
+        self._h5_ds.attrs["columns"] = ["timestamp", "value", "x", "y", "z"]
+        self._h5_ds.attrs["detector"] = str(detector_id)
 
         self._ascii_file = open(self.ascii_path, "a", buffering=1)
-        # write header if empty — we include optional X/Y/Z columns for stage positions
         if self.ascii_path.stat().st_size == 0:
-            # columns: timestamp, value, x, y, z, meta
             self._ascii_file.write("timestamp,value,x,y,z,meta\n")
 
         self._buffer = []
         self._lock = threading.Lock()
         self.flush_every = int(flush_every)
-        # companion metadata json-lines file
-        self.meta_path = self.output_dir / f"{self.base_name}.meta.jsonl"
-        try:
-            self._meta_file = open(self.meta_path, "a", buffering=1)
-        except Exception:
-            self._meta_file = None
+        self._closed = False
 
     def append_sample(self, timestamp: float, value: float, meta: dict | None = None):
+        if self._closed:
+            return
         meta = meta or {}
         # Try to extract X/Y/Z positions from meta/state if provided
         x = y = z = ""
@@ -99,75 +144,33 @@ class StreamSaver:
 
             self._buffer.append((timestamp, float(value), xf, yf, zf))
             if len(self._buffer) >= self.flush_every:
-                self._flush_npy()
+                self._flush_h5()
 
-            # write companion meta json-line for this sample
-            if self._meta_file is not None:
-                try:
-                    record = {
-                        "timestamp": float(timestamp),
-                        "detector": self.base_name,
-                        "value": None if (isinstance(value, float) and np.isnan(value)) else float(value),
-                        "x": None if np.isnan(xf) else float(xf),
-                        "y": None if np.isnan(yf) else float(yf),
-                        "z": None if np.isnan(zf) else float(zf),
-                        "meta": meta or {},
-                    }
-                    # ensure JSON serializable: replace non-serializable objects
-                    def _convert(obj):
-                        if hasattr(obj, "__dict__"):
-                            return obj.__dict__
-                        try:
-                            return str(obj)
-                        except Exception:
-                            return None
-
-                    record["meta"] = json.loads(json.dumps(record["meta"], default=_convert))
-                    self._meta_file.write(json.dumps(record) + "\n")
-                except Exception:
-                    pass
-
-    def _flush_npy(self):
+    def _flush_h5(self):
+        """Append buffered samples to the HDF5 dataset."""
         if not self._buffer:
             return
         arr = np.array(self._buffer, dtype=float)
-        # if file exists, load and concatenate
+        n = arr.shape[0]
         try:
-            if self.npy_path.exists():
-                existing = np.load(self.npy_path)
-                # ensure existing has 5 columns: timestamp,value,x,y,z
-                if existing.ndim == 1:
-                    existing = existing.reshape(1, -1)
-                if existing.shape[1] < 5:
-                    # pad with nan columns
-                    pad_cols = 5 - existing.shape[1]
-                    pad = np.full((existing.shape[0], pad_cols), np.nan, dtype=float)
-                    existing = np.hstack((existing, pad))
-                combined = np.vstack((existing, arr))
-            else:
-                combined = arr
-            # atomic write via temp file
-            tmp = self.npy_path.with_suffix(self.npy_path.suffix + ".tmp")
-            np.save(tmp, combined)
-            tmp.replace(self.npy_path)
+            old_size = self._h5_ds.shape[0]
+            self._h5_ds.resize(old_size + n, axis=0)
+            self._h5_ds[old_size:old_size + n, :] = arr
+            self._h5_file.flush()
         except Exception:
-            # best-effort: try overwrite
-            try:
-                np.save(self.npy_path, arr)
-            except Exception:
-                pass
+            pass
         finally:
             self._buffer.clear()
 
     def close(self):
         with self._lock:
-            self._flush_npy()
+            self._closed = True
+            self._flush_h5()
             try:
                 self._ascii_file.close()
             except Exception:
                 pass
             try:
-                if self._meta_file is not None:
-                    self._meta_file.close()
+                self._h5_file.close()
             except Exception:
                 pass

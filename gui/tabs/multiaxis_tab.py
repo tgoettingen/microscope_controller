@@ -12,6 +12,8 @@ from gui.dialogs.round_axis_dialog import RoundAxisDialog
 class MultiAxisTab(QtWidgets.QWidget):
     start_requested = QtCore.pyqtSignal()
     stop_requested = QtCore.pyqtSignal()
+    # emitted whenever the user changes which detectors are checked
+    detectors_changed = QtCore.pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,6 +27,12 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.detector_list = QtWidgets.QListWidget()
         self.detector_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         layout.addWidget(self.detector_list)
+
+        # Any checkbox toggle should propagate to whoever consumes "selected detectors".
+        try:
+            self.detector_list.itemChanged.connect(self._emit_detectors_changed)
+        except Exception:
+            pass
 
         self.axis_list = QtWidgets.QListWidget()
         layout.addWidget(QtWidgets.QLabel("Defined Axes:"))
@@ -74,13 +82,36 @@ class MultiAxisTab(QtWidgets.QWidget):
 
         detectors: list of detector identifiers (strings)
         """
-        self.detector_list.clear()
-        for d in detectors:
-            item = QtWidgets.QListWidgetItem(d)
-            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.CheckState.Unchecked)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
-            self.detector_list.addItem(item)
+        # Preserve prior check state where possible.
+        try:
+            previously_checked = set(self.get_selected_detectors())
+        except Exception:
+            previously_checked = set()
+
+        try:
+            self.detector_list.blockSignals(True)
+            self.detector_list.clear()
+            for d in detectors:
+                item = QtWidgets.QListWidgetItem(d)
+                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if d in previously_checked
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
+                self.detector_list.addItem(item)
+        finally:
+            try:
+                self.detector_list.blockSignals(False)
+            except Exception:
+                pass
+
+        # Emit once after population.
+        try:
+            QtCore.QTimer.singleShot(0, self._emit_detectors_changed)
+        except Exception:
+            pass
 
     def get_selected_detectors(self) -> list[str]:
         selected = []
@@ -89,6 +120,35 @@ class MultiAxisTab(QtWidgets.QWidget):
             if item.checkState() == QtCore.Qt.CheckState.Checked:
                 selected.append(item.data(QtCore.Qt.ItemDataRole.UserRole))
         return selected
+
+    def set_selected_detectors(self, detector_ids: list[str]):
+        """Check the given detector ids in the available detector list."""
+        wanted = set(detector_ids or [])
+        try:
+            self.detector_list.blockSignals(True)
+            for i in range(self.detector_list.count()):
+                item = self.detector_list.item(i)
+                det_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if det_id in wanted:
+                    item.setCheckState(QtCore.Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        finally:
+            try:
+                self.detector_list.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            QtCore.QTimer.singleShot(0, self._emit_detectors_changed)
+        except Exception:
+            pass
+
+    def _emit_detectors_changed(self, *_args):
+        try:
+            self.detectors_changed.emit(self.get_selected_detectors())
+        except Exception:
+            pass
 
     def _add_axis_dialog(self):
         dlg = QtWidgets.QInputDialog(self)
