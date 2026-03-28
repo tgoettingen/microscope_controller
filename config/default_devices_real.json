@@ -1,0 +1,32 @@
+{
+  "stage": {
+    "type": "simulated"
+  },
+  "focus": {
+    "type": "simulated"
+  },
+  "camera": {
+    "type": "simulated"
+  },
+  "light": {
+    "type": "simulated"
+  },
+  "filter_wheel": {
+    "type": "simulated"
+  },
+  "detector": [
+    {
+      "type": "Multimeter",
+      "name": "multimeter",
+      "gpib": "11"
+    },
+    {
+      "type": "ComPort",
+      "name": "vm1",
+      "port": "COM5",
+      "baudrate": 115200,
+      "format": "int24",
+      "read_timeout": 0.1
+    }
+  ]
+}
