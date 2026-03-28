@@ -187,6 +187,11 @@ class LiveTab(QtWidgets.QWidget):
         xsel_layout.addWidget(self.xaxis_combo)
         layout.addLayout(xsel_layout)
 
+        # Preferred x-axis to select after the next refresh of available axes.
+        # This is used to apply the Multi-Axis tab's "Default X Axis" to the
+        # Live plot when a run starts.
+        self._preferred_plot_xaxis: str | None = None
+
         layout.addWidget(self.plot_panel, 1)
 
         # Per-detector controls (visibility + streaming)
@@ -226,6 +231,105 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_timer = QtCore.QTimer(self)
         self.plot_timer.timeout.connect(self._update_plot)
         self.plot_timer.start(100)
+
+    def _clear_plot_and_legend(self) -> None:
+        """Clear plot items and reset legend entries without duplicating legends."""
+        # Prefer operating on the PlotItem directly; PlotWidget forwards attributes
+        # but legend handling differs across pyqtgraph versions.
+        plot_item = None
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+        except Exception:
+            try:
+                plot_item = getattr(self.plot_widget, "plotItem", None)
+            except Exception:
+                plot_item = None
+
+        # Clear plot items
+        try:
+            self.plot_widget.clear()
+        except Exception:
+            try:
+                if plot_item is not None:
+                    plot_item.clear()
+            except Exception:
+                pass
+
+        # Robust legend reset: pyqtgraph legends can accumulate if a previous one
+        # isn't fully removed (they are GraphicsItems attached to the ViewBox).
+        # Remove *all* LegendItem instances we can find, then recreate exactly one.
+        try:
+            if plot_item is not None:
+                vb = getattr(plot_item, "vb", None)
+
+                legends: list[object] = []
+                try:
+                    if vb is not None:
+                        # addedItems is where ViewBox tracks items explicitly added
+                        for it in list(getattr(vb, "addedItems", []) or []):
+                            try:
+                                if isinstance(it, pg.LegendItem):
+                                    legends.append(it)
+                            except Exception:
+                                pass
+                        # childItems can include anchored widgets/items
+                        for it in list(getattr(vb, "childItems", lambda: [])() or []):
+                            try:
+                                if isinstance(it, pg.LegendItem):
+                                    legends.append(it)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # Include the PlotItem.legend reference (if any)
+                try:
+                    leg0 = getattr(plot_item, "legend", None)
+                    if leg0 is not None:
+                        legends.append(leg0)
+                except Exception:
+                    pass
+
+                # De-duplicate by object id
+                uniq: dict[int, object] = {}
+                for l in legends:
+                    try:
+                        uniq[id(l)] = l
+                    except Exception:
+                        pass
+
+                for leg in uniq.values():
+                    try:
+                        if vb is not None and hasattr(vb, "removeItem"):
+                            vb.removeItem(leg)
+                    except Exception:
+                        pass
+                    try:
+                        sc = leg.scene()
+                        if sc is not None:
+                            sc.removeItem(leg)
+                    except Exception:
+                        pass
+                    try:
+                        # fully detach in case it's still parented somewhere
+                        if hasattr(leg, "setParentItem"):
+                            leg.setParentItem(None)
+                    except Exception:
+                        pass
+
+                try:
+                    plot_item.legend = None
+                except Exception:
+                    pass
+
+                try:
+                    plot_item.addLegend(offset=(10, 10))
+                except Exception:
+                    self.plot_widget.addLegend(offset=(10, 10))
+            else:
+                self.plot_widget.addLegend(offset=(10, 10))
+        except Exception:
+            pass
 
     # -----------------------------
     # Export heatmap
@@ -741,8 +845,7 @@ class LiveTab(QtWidgets.QWidget):
 
         # Multi-axis rendering clears the plot widget, so recreate detector curves.
         try:
-            self.plot_widget.clear()
-            self.plot_widget.addLegend(offset=(10, 10))
+            self._clear_plot_and_legend()
             self.plot_widget.setLabel("bottom", "Time [s]")
             self.plot_widget.setLabel("left", "Signal")
         except Exception:
@@ -908,9 +1011,18 @@ class LiveTab(QtWidgets.QWidget):
                 self.xaxis_combo.clear()
                 for it in items:
                     self.xaxis_combo.addItem(it)
-                idx = self.xaxis_combo.findText(current)
+
+                desired = self._preferred_plot_xaxis or current
+                idx = self.xaxis_combo.findText(desired)
                 if idx >= 0:
                     self.xaxis_combo.setCurrentIndex(idx)
+                    # consume the preference once it has been applied
+                    self._preferred_plot_xaxis = None
+                else:
+                    # fall back to prior selection if possible
+                    idx2 = self.xaxis_combo.findText(current)
+                    if idx2 >= 0:
+                        self.xaxis_combo.setCurrentIndex(idx2)
             finally:
                 try:
                     self.xaxis_combo.blockSignals(False)
@@ -919,30 +1031,99 @@ class LiveTab(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(0, _do)
 
+    def set_preferred_plot_xaxis(self, axis_name: str | None) -> None:
+        """Request selecting a specific x-axis after the next x-axis refresh.
+
+        Useful when starting a multi-axis run: the available axes are only known
+        after the first samples arrive, so we store a preference and apply it
+        when `_refresh_xaxis_options()` next runs.
+        """
+        try:
+            name = str(axis_name) if axis_name is not None else ""
+        except Exception:
+            name = ""
+        name = name.strip()
+        self._preferred_plot_xaxis = name or None
+
+        # If the axis is already available, apply immediately.
+        try:
+            if self._preferred_plot_xaxis is not None and hasattr(self, "xaxis_combo"):
+                idx = self.xaxis_combo.findText(self._preferred_plot_xaxis)
+                if idx >= 0:
+                    self.xaxis_combo.setCurrentIndex(idx)
+                    self._preferred_plot_xaxis = None
+        except Exception:
+            pass
+
     # -----------------------------
     # Load saved data
     # -----------------------------
+    def _infer_loaded_detector_id(self, file_path: str, h5_detector: str | None = None) -> str:
+        """Infer detector id from file metadata or the StreamSaver filename pattern."""
+        try:
+            if h5_detector is not None and str(h5_detector).strip():
+                return str(h5_detector).strip()
+        except Exception:
+            pass
+
+        try:
+            stem = Path(file_path).stem
+            # StreamSaver uses: <timestamp>__<detector_id>__<mode>
+            parts = stem.split("__")
+            if len(parts) >= 3 and parts[1].strip():
+                return parts[1].strip()
+        except Exception:
+            pass
+
+        return "detector"
+
     def _on_load_data(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Data", "", "Data files (*.h5 *.hdf5 *.txt *.npy)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Data",
+            "",
+            "Data files (*.h5 *.hdf5 *.txt *.npy *.csv);;All files (*)",
+        )
         if not path:
             return
         try:
-            if path.endswith('.h5') or path.endswith('.hdf5'):
+            # Load into numpy arrays
+            times = None
+            vals = None
+            xs = None
+            ys = None
+            zs = None
+            detector_from_file = None
+
+            p = Path(path)
+            suffix = p.suffix.lower()
+
+            if suffix in (".h5", ".hdf5"):
                 import h5py
-                with h5py.File(path, 'r') as f:
+
+                with h5py.File(path, "r") as f:
                     # Two supported shapes:
                     # - stream saver: dataset 'data' columns [timestamp,value,x,y,z]
                     # - camera frame: dataset 'image'
-                    if 'data' in f:
-                        arr = f['data'][:]
+                    if "data" in f:
+                        ds = f["data"]
+                        try:
+                            detector_from_file = ds.attrs.get("detector")
+                        except Exception:
+                            detector_from_file = None
+                        arr = ds[:]
                         if arr.ndim == 1:
                             arr = arr.reshape(1, -1)
-                        times = arr[:, 0]
-                        vals = arr[:, 1]
-                        xs = arr[:, 2] if arr.shape[1] > 2 else None
-                        ys = arr[:, 3] if arr.shape[1] > 3 else None
-                    elif 'image' in f:
-                        img = f['image'][:]
+                        if arr.shape[1] < 2:
+                            raise ValueError("HDF5 'data' dataset must have at least 2 columns")
+                        times = np.asarray(arr[:, 0], dtype=float)
+                        vals = np.asarray(arr[:, 1], dtype=float)
+                        xs = np.asarray(arr[:, 2], dtype=float) if arr.shape[1] > 2 else None
+                        ys = np.asarray(arr[:, 3], dtype=float) if arr.shape[1] > 3 else None
+                        zs = np.asarray(arr[:, 4], dtype=float) if arr.shape[1] > 4 else None
+                    elif "image" in f:
+                        img = f["image"][:]
+                        self._set_camera_view()
                         # Display like the live camera path (transpose for consistency).
                         try:
                             self.image_view.setImage(np.asarray(img).T, autoLevels=True)
@@ -951,76 +1132,201 @@ class LiveTab(QtWidgets.QWidget):
                         return
                     else:
                         raise KeyError("No 'data' or 'image' dataset found")
-            elif path.endswith('.npy'):
+
+            elif suffix == ".npy":
                 arr = np.load(path)
-                # expect columns: timestamp, value, x, y, z
                 if arr.ndim == 1:
                     arr = arr.reshape(1, -1)
-                # ensure at least 2 columns
-                times = arr[:, 0]
-                vals = arr[:, 1]
-                xs = arr[:, 2] if arr.shape[1] > 2 else None
-                ys = arr[:, 3] if arr.shape[1] > 3 else None
+                if arr.shape[1] < 2:
+                    raise ValueError(".npy data must have at least 2 columns: timestamp,value")
+                times = np.asarray(arr[:, 0], dtype=float)
+                vals = np.asarray(arr[:, 1], dtype=float)
+                xs = np.asarray(arr[:, 2], dtype=float) if arr.shape[1] > 2 else None
+                ys = np.asarray(arr[:, 3], dtype=float) if arr.shape[1] > 3 else None
+                zs = np.asarray(arr[:, 4], dtype=float) if arr.shape[1] > 4 else None
+
             else:
-                # parse ascii CSV with header
-                with open(path, 'r') as f:
-                    hdr = f.readline().strip().split(',')
-                    cols = {c: i for i, c in enumerate(hdr)}
-                    data = []
+                # StreamSaver .txt has an unquoted python dict in the final 'meta' column,
+                # which may contain commas. Parse by splitting only the first 5 commas.
+                t_list: list[float] = []
+                v_list: list[float] = []
+                x_list: list[float] = []
+                y_list: list[float] = []
+                z_list: list[float] = []
+
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    header = f.readline()
+                    # If the file doesn't have a header, treat it as data.
+                    if header and ("timestamp" not in header.lower()):
+                        # rewind
+                        f.seek(0)
                     for ln in f:
-                        parts = ln.strip().split(',')
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        if ln.startswith("#"):
+                            continue
+                        parts = ln.split(",", 5)
                         if len(parts) < 2:
                             continue
-                        data.append(parts)
-                import numpy as _np
-                arr = _np.array(data)
-                # try to map columns
-                try:
-                    times = arr[:, cols.get('timestamp', 0)].astype(float)
-                except Exception:
-                    times = arr[:, 0].astype(float)
-                try:
-                    vals = arr[:, cols.get('value', 1)].astype(float)
-                except Exception:
-                    vals = arr[:, 1].astype(float)
-                xs = None
-                ys = None
-                if 'x' in cols or 'X' in cols:
-                    k = 'X' if 'X' in cols else 'x'
-                    xs = arr[:, cols[k]].astype(float)
-                if 'y' in cols or 'Y' in cols:
-                    k = 'Y' if 'Y' in cols else 'y'
-                    ys = arr[:, cols[k]].astype(float)
 
-            # display time-series in plot
+                        def _to_float(s: str) -> float:
+                            s = (s or "").strip()
+                            if s == "":
+                                return float("nan")
+                            try:
+                                return float(s)
+                            except Exception:
+                                return float("nan")
+
+                        t_list.append(_to_float(parts[0]))
+                        v_list.append(_to_float(parts[1]))
+                        x_list.append(_to_float(parts[2]) if len(parts) > 2 else float("nan"))
+                        y_list.append(_to_float(parts[3]) if len(parts) > 3 else float("nan"))
+                        z_list.append(_to_float(parts[4]) if len(parts) > 4 else float("nan"))
+
+                if not t_list:
+                    raise ValueError("No numeric rows found")
+
+                times = np.asarray(t_list, dtype=float)
+                vals = np.asarray(v_list, dtype=float)
+                xs = np.asarray(x_list, dtype=float)
+                ys = np.asarray(y_list, dtype=float)
+                zs = np.asarray(z_list, dtype=float)
+
+            det_id = self._infer_loaded_detector_id(path, detector_from_file)
             try:
-                self.plot_widget.clear()
-                self.plot_widget.addLegend(offset=(10, 10))
-                # axis-event rows are stored with value=NaN; ignore them for plotting
-                mask = np.isfinite(vals)
-                self.plot_widget.plot(times[mask], vals[mask], pen=pg.mkPen('y', width=2))
+                # Show only this detector when loading a single stream.
+                self.set_selected_detectors([det_id])
             except Exception:
                 pass
 
-            # create heatmap if positions are available
-            if xs is not None and ys is not None:
+            # Decide whether this looks like multi-axis data (has usable X+Y)
+            finite_vals = np.isfinite(vals) if vals is not None else None
+            finite_xy = None
+            try:
+                if xs is not None and ys is not None:
+                    finite_xy = np.isfinite(xs) & np.isfinite(ys)
+            except Exception:
+                finite_xy = None
+
+            looks_like_scan = False
+            try:
+                if finite_xy is not None and finite_vals is not None:
+                    n_good = int(np.sum(finite_xy & finite_vals))
+                    looks_like_scan = n_good >= 4
+            except Exception:
+                looks_like_scan = False
+
+            if looks_like_scan:
+                # Clear prior scan/strip data so the loaded scan is what renders.
                 try:
-                    # bin positions to a grid and weight by vals
-                    nbins = 128
-                    # only include finite detector samples; NaN rows are axis events
-                    mask = np.isfinite(vals) & np.isfinite(xs) & np.isfinite(ys)
-                    xs_f = xs.astype(float)[mask]
-                    ys_f = ys.astype(float)[mask]
-                    vals_f = vals.astype(float)[mask]
-                    xi = np.linspace(np.nanmin(xs_f), np.nanmax(xs_f), nbins)
-                    yi = np.linspace(np.nanmin(ys_f), np.nanmax(ys_f), nbins)
-                    H, xedges, yedges = np.histogram2d(xs_f, ys_f, bins=[xi, yi], weights=vals_f)
-                    img = np.nan_to_num(H.T)
-                    self.image_view.setImage(img, autoLevels=True)
+                    self.reset_1d_detector()
                 except Exception:
                     pass
-        except Exception:
-            QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}")
+                try:
+                    self.reset_multiaxis()
+                except Exception:
+                    pass
+
+                self.register_detector(det_id)
+
+                mask = np.isfinite(vals)
+                if xs is not None:
+                    mask = mask & np.isfinite(xs)
+                if ys is not None:
+                    mask = mask & np.isfinite(ys)
+                coords: list[tuple[dict, float]] = []
+                zvals: set[float] = set()
+                for i in np.where(mask)[0]:
+                    st: dict = {}
+                    try:
+                        st["X"] = float(xs[i])
+                        st["Y"] = float(ys[i])
+                        if zs is not None and np.isfinite(zs[i]):
+                            zf = float(zs[i])
+                            st["Z"] = zf
+                            zvals.add(zf)
+                    except Exception:
+                        continue
+                    try:
+                        coords.append((st, float(vals[i])))
+                    except Exception:
+                        pass
+
+                self.multi_coords[det_id] = coords
+                self._multi_dirty = True
+                self._last_multi_render = 0.0
+                self._z_values_set = set(zvals)
+                self._z_values = sorted(self._z_values_set)
+                try:
+                    self.z_slider.setMaximum(max(0, len(self._z_values) - 1))
+                except Exception:
+                    pass
+
+                # Switch to detector view and render once immediately.
+                self._set_detector_view()
+                try:
+                    self._refresh_xaxis_options()
+                except Exception:
+                    pass
+                try:
+                    self._update_multiaxis_visualization()
+                except Exception:
+                    pass
+
+            else:
+                # Treat as strip chart (value vs time)
+                try:
+                    self.prepare_strip_chart_plot()
+                except Exception:
+                    try:
+                        self.reset_multiaxis()
+                    except Exception:
+                        pass
+
+                self.register_detector(det_id)
+
+                # Use seconds relative to first sample for a clean x-axis.
+                try:
+                    t0 = float(times[0])
+                except Exception:
+                    t0 = 0.0
+                try:
+                    t_rel = np.asarray(times, dtype=float) - t0
+                except Exception:
+                    t_rel = np.arange(len(vals), dtype=float)
+
+                # Expand window size so loaded traces are visible (cap to UI limit)
+                try:
+                    desired = int(min(max(len(vals), self._window_size), 10000))
+                    if desired != self._window_size:
+                        try:
+                            self.window_spin.blockSignals(True)
+                            self.window_spin.setValue(desired)
+                        finally:
+                            self.window_spin.blockSignals(False)
+                        self.set_window_size(desired)
+                except Exception:
+                    pass
+
+                mask = np.isfinite(vals)
+                try:
+                    t_plot = list(t_rel[mask])
+                    v_plot = list(vals[mask])
+                except Exception:
+                    t_plot = list(t_rel)
+                    v_plot = list(vals)
+
+                self._detector_times[det_id] = deque(t_plot, maxlen=self._window_size)
+                self._detector_buffers[det_id] = deque(v_plot, maxlen=self._window_size)
+
+                # Prefer camera view for strip chart mode (keeps camera panel visible);
+                # plot is always visible underneath.
+                self._set_camera_view()
+
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}\n\nError: {e}")
 
     def set_xaxis(self, name: str):
         if not hasattr(self, 'xaxis_combo'):
@@ -1046,6 +1352,15 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     # 1D detector callback
     # -----------------------------
+    @QtCore.pyqtSlot(str, float, float)
+    def add_detector_sample_qt(self, detector_id: str, value: float, timestamp: float):
+        """Qt-invokable wrapper around add_detector_sample.
+
+        QMetaObject.invokeMethod requires the target to be registered in the
+        Qt meta-object system with a matching signature.
+        """
+        self.add_detector_sample(detector_id, value, timestamp)
+
     def add_detector_sample(self, detector_id: str, value: float, timestamp: float | None = None):
         """Add a sample for a named detector. timestamp in seconds. Thread-safe caller should use queued calls."""
         det_id = self._map_and_filter_detector_id(detector_id)
@@ -1139,8 +1454,7 @@ class LiveTab(QtWidgets.QWidget):
                 self._update_multiaxis_visualization()
                 # numeric plot: detector value vs. selected axis
                 xaxis = self.xaxis_combo.currentText() if hasattr(self, 'xaxis_combo') else 'Index'
-                self.plot_widget.clear()
-                self.plot_widget.addLegend(offset=(10, 10))
+                self._clear_plot_and_legend()
                 for det_id, det_list in self.multi_coords.items():
                     if not self._is_detector_visible(det_id):
                         continue

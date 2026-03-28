@@ -33,7 +33,7 @@
       "type": "simulated",
       "name": "detector1",
       "port": "com6",
-      "scale": 1.0,
+      "scale": 10.0,
       "offset": 0.0
     },
     {
@@ -41,7 +41,7 @@
       "name": "detector2",
       "port": "com7",
       "scale": 1.0,
-      "offset": 0.0
+      "offset": 9.0
     }
   ]
 }

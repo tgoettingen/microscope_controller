@@ -4,3 +4,4 @@ numpy
 pylablib
 h5py
 tifffile
+opencv-python

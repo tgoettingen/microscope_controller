@@ -21,6 +21,8 @@ class Multimeter:
       print("Multimeter ready:", dmm.query("*IDN?"))
       self.dmm = dmm
       self.name = dmm.query("*IDN?").strip()
+      self.scale = 1.0
+      self.offset = 0.0
 
    def read_voltage(self):
       if self.dmm is None:
@@ -38,7 +40,11 @@ class Multimeter:
       self.offset = float(offset)
 
    def read_value(self):
-      return self.read_voltage()
+      raw = self.read_voltage()
+      try:
+         return float(self.scale) * float(raw) + float(self.offset)
+      except Exception:
+         return raw
 
    def disconnect(self):
       self.dmm.close()

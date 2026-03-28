@@ -7,6 +7,7 @@ class CameraControlTab(QtWidgets.QWidget):
     """Simple camera control panel: exposure, snapshot, live/stop."""
 
     exposure_changed = QtCore.pyqtSignal(float)
+    frame_rate_changed = QtCore.pyqtSignal(float)
     snapshot_requested = QtCore.pyqtSignal()
     live_toggled = QtCore.pyqtSignal(bool)
 
@@ -25,7 +26,14 @@ class CameraControlTab(QtWidgets.QWidget):
         self.exposure_spin.setSuffix(" ms")
         self.exposure_spin.setValue(20.0)
 
+        self.fps_spin = QtWidgets.QDoubleSpinBox()
+        self.fps_spin.setRange(0.5, 120.0)
+        self.fps_spin.setDecimals(1)
+        self.fps_spin.setSuffix(" fps")
+        self.fps_spin.setValue(10.0)
+
         form.addRow("Exposure", self.exposure_spin)
+        form.addRow("Frame rate", self.fps_spin)
         layout.addLayout(form)
 
         btns = QtWidgets.QHBoxLayout()
@@ -38,6 +46,7 @@ class CameraControlTab(QtWidgets.QWidget):
         layout.addStretch(1)
 
         self.exposure_spin.valueChanged.connect(lambda v: self.exposure_changed.emit(float(v)))
+        self.fps_spin.valueChanged.connect(lambda v: self.frame_rate_changed.emit(float(v)))
         self.snapshot_btn.clicked.connect(self.snapshot_requested.emit)
         self.live_btn.toggled.connect(self._on_live_toggled)
 

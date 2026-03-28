@@ -63,21 +63,25 @@ class ExperimentTab(QtWidgets.QWidget):
         self.output_dir_edit = QtWidgets.QLineEdit(str(self._default_output_dir()))
         self.browse_btn = QtWidgets.QPushButton("Browse...")
 
-        self.scale_spin = QtWidgets.QDoubleSpinBox()
-        self.scale_spin.setRange(0.001, 1000)
-        self.scale_spin.setValue(1.0)
-
-        self.offset_spin = QtWidgets.QDoubleSpinBox()
-        self.offset_spin.setRange(-1000, 1000)
-        self.offset_spin.setValue(0.0)
-
         # Strip-chart controls (detector streaming only)
-        form.addRow("Sample interval [s]", self.interval_spin)
-        form.addRow("Moving window [s]", self.window_time_spin)
-        form.addRow("Output dir", self.output_dir_edit)
-        form.addRow("", self.browse_btn)
-        form.addRow("Detector scale", self.scale_spin)
-        form.addRow("Detector offset", self.offset_spin)
+        timing_row = QtWidgets.QWidget()
+        timing_layout = QtWidgets.QHBoxLayout(timing_row)
+        timing_layout.setContentsMargins(0, 0, 0, 0)
+        timing_layout.setSpacing(8)
+        timing_layout.addWidget(QtWidgets.QLabel("Sample interval [s]"), 0)
+        timing_layout.addWidget(self.interval_spin, 0)
+        timing_layout.addSpacing(10)
+        timing_layout.addWidget(QtWidgets.QLabel("Moving window [s]"), 0)
+        timing_layout.addWidget(self.window_time_spin, 0)
+        timing_layout.addStretch(1)
+        form.addRow("Timing", timing_row)
+        out_row = QtWidgets.QWidget()
+        out_row_layout = QtWidgets.QHBoxLayout(out_row)
+        out_row_layout.setContentsMargins(0, 0, 0, 0)
+        out_row_layout.setSpacing(6)
+        out_row_layout.addWidget(self.output_dir_edit, 1)
+        out_row_layout.addWidget(self.browse_btn, 0)
+        form.addRow("Output dir", out_row)
 
         layout.addLayout(form)
 
@@ -105,11 +109,23 @@ class ExperimentTab(QtWidgets.QWidget):
 
     def _default_output_dir(self) -> Path:
         """Return the strip-chart default output directory under the workspace."""
+        # Prefer the repository root's data/ directory. If resolution fails, fall
+        # back to ./data in the current working directory.
+        p = None
         try:
             repo_root = Path(__file__).resolve().parents[2]
+            p = repo_root / "data"
         except Exception:
-            repo_root = Path.cwd()
-        return repo_root / "data"
+            p = None
+
+        if p is None:
+            p = Path.cwd() / "data"
+
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
 
     def _emit_start(self):
         cfg = {
@@ -122,7 +138,9 @@ class ExperimentTab(QtWidgets.QWidget):
             "z_end": self.z_end_spin.value(),
             "z_step": self.z_step_spin.value(),
             "output_dir": self.output_dir_edit.text(),
-            "det_scale": self.scale_spin.value(),
-            "det_offset": self.offset_spin.value(),
+            # Scaling is defined in config/default_devices.json; do not expose
+            # it in the strip-chart UI.
+            "det_scale": 1.0,
+            "det_offset": 0.0,
         }
         self.start_requested.emit(cfg)

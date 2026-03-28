@@ -38,7 +38,14 @@ class AxisConfig:
         if t == "Channel":
             return f"Channel axis ({len(p['channels'])} channels)"
         if t == "Detector":
-            return f"Detector axis (scales={p['scales']})"
+            scales = None
+            try:
+                scales = p.get("scales")
+            except Exception:
+                scales = None
+            if scales:
+                return "Detector axis (config scaling; legacy scales ignored)"
+            return "Detector axis (config scaling)"
         if t == "Round":
             return f"Rounds: {p['n_rounds']}"
         return t
@@ -317,9 +324,9 @@ class ChannelAxis(Axis):
 # ---------------------------------------------------------
 
 class DetectorAxis(Axis):
-    def __init__(self, detector: Detector, scales: List[tuple[float, float]], wait_s: float = 0.0):
+    def __init__(self, detector: Detector, scales: List[tuple[float, float]] | None = None, wait_s: float = 0.0):
         self.detector = detector
-        self.scales = scales
+        self.scales = list(scales) if scales else []
         self.wait_s = float(wait_s)
 
     def name(self) -> str:
@@ -329,27 +336,16 @@ class DetectorAxis(Axis):
         pass
 
     def positions(self):
+        # Scaling is defined in the device config JSON; do not override it here.
+        # Keep this axis as a single no-op step for backward compatibility.
+        if not self.scales:
+            yield None
+            return
         for s in self.scales:
             yield s
 
-    def apply(self, pos: tuple[float, float]) -> None:
-        scale, offset = pos
-        # support single detector or list of detectors
-        try:
-            if isinstance(self.detector, list):
-                for d in self.detector:
-                    try:
-                        d.set_scale(scale, offset)
-                        # if self.waits>0:
-                        #     time.sleep(self.waits)
-                    except Exception:
-                        continue
-            else:
-                self.detector.set_scale(scale, offset)
-        except Exception:
-            # best-effort: ignore if detector doesn't support set_scale
-            return
-
+    def apply(self, pos: tuple[float, float] | None) -> None:
+        # No-op: do not call set_scale(); scaling comes from config.
         if self.wait_s > 0:
             time.sleep(self.wait_s)
 

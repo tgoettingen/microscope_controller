@@ -202,7 +202,7 @@ def build_devices(config_path="config/default_devices.json"):
         fw = SimulatedFilterWheel()  # default
 
     # Detector
-    detector_cfg = cfg.get("detector", {"type": "simulated", "scale": 1.0, "offset": 0.0})
+    detector_cfg = cfg.get("detector", {"type": "simulated"})
     # Allow detector config to be a list to build multiple detectors
     if isinstance(detector_cfg, list):
         detectors = []

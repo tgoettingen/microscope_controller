@@ -224,6 +224,14 @@ class MultiAxisTab(QtWidgets.QWidget):
         except Exception:
             pass
 
+        # Populate detector/channel/round dialog wait values when present.
+        try:
+            if hasattr(dlg, "wait_spin") and getattr(cfg, "params", None):
+                if "wait" in cfg.params:
+                    dlg.wait_spin.setValue(cfg.params.get("wait", dlg.wait_spin.value()))
+        except Exception:
+            pass
+
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             new_cfg = dlg.get_config()
             item.setText(new_cfg.label())
