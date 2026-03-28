@@ -12,6 +12,22 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
+        },
+        {
+            "name": "Run Microscope GUI (default_devices + 2chan)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/gui/mainwindow.py",
+            "args": [
+                "--config", "config/default_devices.json",
+                "--experiment", "experiments/2chan.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
         }
     ]
 }

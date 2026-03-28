@@ -1,15 +1,29 @@
 {
   "stage": {
-    "type": "simulated"
+    "type": "simulated",
+    "scaling": {
+      "x_scale": 1.0,
+      "x_offset": 0.0,
+      "y_scale": 1.0,
+      "y_offset": 0.0
+    }
   },
   "focus": {
-    "type": "simulated"
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
   },
   "camera": {
     "type": "simulated"
   },
   "light": {
-    "type": "simulated"
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
   },
   "filter_wheel": {
     "type": "simulated"
@@ -17,12 +31,17 @@
   "detector": [
     {
       "type": "simulated",
-      "port": "com6"
-
+      "name": "detector1",
+      "port": "com6",
+      "scale": 10.0,
+      "offset": 0.0
     },
     {
       "type": "simulated",
-      "port": "com7"
+      "name": "detector2",
+      "port": "com7",
+      "scale": 1.0,
+      "offset": 9.0
     }
   ]
 }

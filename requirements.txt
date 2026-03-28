@@ -2,3 +2,6 @@ PyQt6
 pyqtgraph
 numpy
 pylablib
+h5py
+tifffile
+opencv-python

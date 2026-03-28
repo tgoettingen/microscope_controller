@@ -9,6 +9,7 @@ from .experiment import ExperimentDefinition
 ImageCallback = Callable[[Any, dict], None]
 # DetectorCallback: either (value, meta) or (detector_id, value, meta)
 DetectorCallback = Callable[..., None]
+AxisEventCallback = Callable[[str, dict], None]
 
 
 class Orchestrator:
@@ -24,6 +25,7 @@ class Orchestrator:
         settle_z_s: float = 0.02,
         on_image: Optional[ImageCallback] = None,
         on_detector_sample: Optional[DetectorCallback] = None,
+        on_axis_event: Optional[AxisEventCallback] = None,
     ):
         self.camera = camera
         self.stage = stage
@@ -42,6 +44,7 @@ class Orchestrator:
         self.settle_z_s = settle_z_s
         self.on_image = on_image
         self.on_detector_sample = on_detector_sample
+        self.on_axis_event = on_axis_event
         self._running = False
 
     def initialize(self) -> None:
@@ -94,6 +97,20 @@ class Orchestrator:
                 self.stage.move_to(pos.x, pos.y)
                 time.sleep(self.settle_xy_s)
 
+                # persist XY move event (best-effort)
+                if self.on_axis_event is not None:
+                    try:
+                        self.on_axis_event(
+                            "xy_move",
+                            {
+                                "timestamp": time.time(),
+                                "X": float(pos.x),
+                                "Y": float(pos.y),
+                            },
+                        )
+                    except Exception:
+                        pass
+
                 base_z = pos.z if pos.z is not None else self.focus.get_position()
 
                 for z in exp.iter_z_positions(base_z):
@@ -103,10 +120,25 @@ class Orchestrator:
                         self.focus.move_to(z)
                         time.sleep(self.settle_z_s)
 
+                        # persist Z move event (best-effort)
+                        if self.on_axis_event is not None:
+                            try:
+                                self.on_axis_event(
+                                    "z_move",
+                                    {
+                                        "timestamp": time.time(),
+                                        "X": float(pos.x),
+                                        "Y": float(pos.y),
+                                        "Z": float(z),
+                                    },
+                                )
+                            except Exception:
+                                pass
+
                     for ch in exp.channels:
                         if not self._running:
                             break
-                        self._acquire_channel(exp, t_idx, pos_idx, z, ch)
+                        self._acquire_channel(exp, t_idx, pos_idx, pos, z, ch)
 
             if exp.timelapse is not None and self._running:
                 elapsed = time.time() - t_start
@@ -116,10 +148,30 @@ class Orchestrator:
 
         print(f"Experiment finished in {time.time() - start_time:.1f} s")
 
-    def _acquire_channel(self, exp, t_idx, pos_idx, z, ch) -> None:
+    def _acquire_channel(self, exp, t_idx, pos_idx, pos, z, ch) -> None:
+        # Apply channel settings (filter wheel + illumination + exposure)
         self.filter_wheel.set_position(ch.filter_position)
         self.light.set_intensity(ch.light_intensity)
         self.camera.set_exposure(ch.exposure_ms)
+
+        # persist channel/apply event (best-effort)
+        if self.on_axis_event is not None:
+            try:
+                self.on_axis_event(
+                    "channel_apply",
+                    {
+                        "timestamp": time.time(),
+                        "X": float(getattr(pos, "x", float('nan'))),
+                        "Y": float(getattr(pos, "y", float('nan'))),
+                        "Z": None if z is None else float(z),
+                        "channel": getattr(ch, "name", None),
+                        "filter_position": int(getattr(ch, "filter_position", -1)),
+                        "light_intensity": float(getattr(ch, "light_intensity", float('nan'))),
+                        "exposure_ms": float(getattr(ch, "exposure_ms", float('nan'))),
+                    },
+                )
+            except Exception:
+                pass
 
         self.light.on()
         img = self.camera.snap()
@@ -130,6 +182,9 @@ class Orchestrator:
             "t": t_idx,
             "pos": pos_idx,
             "z": z,
+            "X": float(getattr(pos, "x", float('nan'))),
+            "Y": float(getattr(pos, "y", float('nan'))),
+            "Z": None if z is None else float(z),
             "channel": ch.name,
             "timestamp": time.time(),
         }
@@ -148,6 +203,9 @@ class Orchestrator:
                             "t": t_idx,
                             "pos": pos_idx,
                             "z": z,
+                            "X": float(getattr(pos, "x", float('nan'))),
+                            "Y": float(getattr(pos, "y", float('nan'))),
+                            "Z": None if z is None else float(z),
                             "channel": ch.name,
                             "timestamp": time.time(),
                         }

@@ -6,3 +6,4 @@ data
 .DS_Store
 __pycache__/
 devices/plugin_loader.py
+*.h5

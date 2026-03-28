@@ -38,7 +38,14 @@ class AxisConfig:
         if t == "Channel":
             return f"Channel axis ({len(p['channels'])} channels)"
         if t == "Detector":
-            return f"Detector axis (scales={p['scales']})"
+            scales = None
+            try:
+                scales = p.get("scales")
+            except Exception:
+                scales = None
+            if scales:
+                return "Detector axis (config scaling; legacy scales ignored)"
+            return "Detector axis (config scaling)"
         if t == "Round":
             return f"Rounds: {p['n_rounds']}"
         return t
@@ -76,7 +83,19 @@ class Axis(ABC):
 # ---------------------------------------------------------
 
 class XAxis(Axis):
-    def __init__(self, stage: StageXY, start: float, end: float, step: float, motor_devices: list | None = None, motor_mode: str = "sequential", sync_timeout: float = 5.0, sync_poll: float = 0.01, sync_tol: float = 1e-3):
+    def __init__(
+        self,
+        stage: StageXY,
+        start: float,
+        end: float,
+        step: float,
+        motor_devices: list | None = None,
+        motor_mode: str = "sequential",
+        wait_s: float = 0.0,
+        sync_timeout: float = 5.0,
+        sync_poll: float = 0.01,
+        sync_tol: float = 1e-3,
+    ):
         self.stage = stage
         self.start = start
         self.end = end
@@ -84,6 +103,7 @@ class XAxis(Axis):
         # motor_devices: optional list of motor objects (e.g., StageXY or SingleAxis)
         self.motor_devices = motor_devices or [stage]
         self.motor_mode = motor_mode
+        self.wait_s = float(wait_s)
         self.sync_timeout = float(sync_timeout)
         self.sync_poll = float(sync_poll)
         self.sync_tol = float(sync_tol)
@@ -133,15 +153,31 @@ class XAxis(Axis):
             # wait for all devices to reach their targets
             _wait_for_targets(targets, timeout=self.sync_timeout, poll=self.sync_poll, tol=self.sync_tol)
 
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
+
 
 class YAxis(Axis):
-    def __init__(self, stage: StageXY, start: float, end: float, step: float, motor_devices: list | None = None, motor_mode: str = "sequential", sync_timeout: float = 5.0, sync_poll: float = 0.01, sync_tol: float = 1e-3):
+    def __init__(
+        self,
+        stage: StageXY,
+        start: float,
+        end: float,
+        step: float,
+        motor_devices: list | None = None,
+        motor_mode: str = "sequential",
+        wait_s: float = 0.0,
+        sync_timeout: float = 5.0,
+        sync_poll: float = 0.01,
+        sync_tol: float = 1e-3,
+    ):
         self.stage = stage
         self.start = start
         self.end = end
         self.step = step
         self.motor_devices = motor_devices or [stage]
         self.motor_mode = motor_mode
+        self.wait_s = float(wait_s)
         self.sync_timeout = float(sync_timeout)
         self.sync_poll = float(sync_poll)
         self.sync_tol = float(sync_tol)
@@ -185,15 +221,31 @@ class YAxis(Axis):
         if self.motor_mode == "synchronized":
             _wait_for_targets(targets, timeout=self.sync_timeout, poll=self.sync_poll, tol=self.sync_tol)
 
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
+
 
 class ZAxis(Axis):
-    def __init__(self, focus: FocusZ, start: float, end: float, step: float, motor_devices: list | None = None, motor_mode: str = "sequential", sync_timeout: float = 5.0, sync_poll: float = 0.01, sync_tol: float = 1e-3):
+    def __init__(
+        self,
+        focus: FocusZ,
+        start: float,
+        end: float,
+        step: float,
+        motor_devices: list | None = None,
+        motor_mode: str = "sequential",
+        wait_s: float = 0.0,
+        sync_timeout: float = 5.0,
+        sync_poll: float = 0.01,
+        sync_tol: float = 1e-3,
+    ):
         self.focus = focus
         self.start = start
         self.end = end
         self.step = step
         self.motor_devices = motor_devices or [focus]
         self.motor_mode = motor_mode
+        self.wait_s = float(wait_s)
         self.sync_timeout = float(sync_timeout)
         self.sync_poll = float(sync_poll)
         self.sync_tol = float(sync_tol)
@@ -225,6 +277,9 @@ class ZAxis(Axis):
 
         if self.motor_mode == "synchronized":
             _wait_for_targets(targets, timeout=self.sync_timeout, poll=self.sync_poll, tol=self.sync_tol)
+
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
 
 
 # ---------------------------------------------------------
@@ -269,10 +324,10 @@ class ChannelAxis(Axis):
 # ---------------------------------------------------------
 
 class DetectorAxis(Axis):
-    def __init__(self, detector: Detector, scales: List[tuple[float, float]], waits: List[tuple[float,float]]):
+    def __init__(self, detector: Detector, scales: List[tuple[float, float]] | None = None, wait_s: float = 0.0):
         self.detector = detector
-        self.scales = scales
-        self.waits = waits
+        self.scales = list(scales) if scales else []
+        self.wait_s = float(wait_s)
 
     def name(self) -> str:
         return "Detector"
@@ -281,26 +336,18 @@ class DetectorAxis(Axis):
         pass
 
     def positions(self):
+        # Scaling is defined in the device config JSON; do not override it here.
+        # Keep this axis as a single no-op step for backward compatibility.
+        if not self.scales:
+            yield None
+            return
         for s in self.scales:
             yield s
 
-    def apply(self, pos: tuple[float, float]) -> None:
-        scale, offset = pos
-        # support single detector or list of detectors
-        try:
-            if isinstance(self.detector, list):
-                for d in self.detector:
-                    try:
-                        d.set_scale(scale, offset)
-                        # if self.waits>0:
-                        #     time.sleep(self.waits)
-                    except Exception:
-                        continue
-            else:
-                self.detector.set_scale(scale, offset)
-        except Exception:
-            # best-effort: ignore if detector doesn't support set_scale
-            return
+    def apply(self, pos: tuple[float, float] | None) -> None:
+        # No-op: do not call set_scale(); scaling comes from config.
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
 
 
 # ---------------------------------------------------------
@@ -347,7 +394,8 @@ class MultiAxisRunner:
     def __init__(self, experiment: MultiAxisExperiment, on_move: callable | None = None):
         self.exp = experiment
         self._running = False
-        # optional callback called when an axis move completes with the current state: on_move(state: dict)
+        # optional callback called when an axis move completes:
+        #   on_move(axis_name: str, pos: Any, state: dict)
         self.on_move = on_move
 
     def stop(self):
@@ -374,17 +422,15 @@ class MultiAxisRunner:
         for pos in axis.positions():
             if not self._running:
                 break
-            print(f"axis:{axis_idx} is recursing!")
             axis.apply(pos)
             state[axis.name()] = pos
             # notify interested listeners that a move completed and provide a snapshot of the state
             try:
                 if callable(self.on_move):
                     # provide a shallow copy to avoid accidental mutation by callers
-                    self.on_move(state.copy())
+                    self.on_move(axis.name(), pos, state.copy())
             except Exception:
                 pass
-            print(state)
             self._recurse_axis(axis_idx + 1, state)
 
 
