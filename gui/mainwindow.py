@@ -62,6 +62,14 @@ except Exception:
       sys.path.insert(0, str(pkg_root))
    from utils.stream_saver import StreamSaver
 
+try:
+   from utils.image_h5_saver import ImageH5Saver
+except Exception:
+   pkg_root = Path(__file__).resolve().parents[1]
+   if str(pkg_root) not in sys.path:
+      sys.path.insert(0, str(pkg_root))
+   from utils.image_h5_saver import ImageH5Saver
+
 
 class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
@@ -100,6 +108,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self._t0 = time.time()
       self.stream_savers: dict[str, StreamSaver] = {}
+      self.image_saver: ImageH5Saver | None = None
+      self._image_saver_out_dir: Path | None = None
 
       # Webcam preview (UI-only camera control)
       self._webcam = None
@@ -140,6 +150,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stream_savers.clear()
          except Exception:
             pass
+
+
+   def _close_image_saver(self) -> None:
+      """Close and remove the active ImageH5Saver (if any)."""
+      saver = getattr(self, "image_saver", None)
+      self.image_saver = None
+      self._image_saver_out_dir = None
+      if saver is None:
+         return
+      try:
+         saver.close()
+      except Exception:
+         pass
 
 
    def _wire_view_menu_dock_sync(self):
@@ -1540,6 +1563,7 @@ class MainWindow(QtWidgets.QMainWindow):
                   pass
                # When the measurement finishes, stop stream saving.
                self._close_all_stream_savers()
+               self._close_image_saver()
                self.orch = None
                self.orch_thread = None
 
@@ -1601,6 +1625,7 @@ class MainWindow(QtWidgets.QMainWindow):
                # Ensure stream savers are closed/cleared even if the worker
                # exited abnormally.
                self._close_all_stream_savers()
+               self._close_image_saver()
                try:
                   self.statusBar().showMessage("Experiment finished. Stream saved closed.", 5000)
                except Exception:
@@ -1918,6 +1943,7 @@ class MainWindow(QtWidgets.QMainWindow):
          self.devices_released = True
       # close any stream savers
       self._close_all_stream_savers()
+      self._close_image_saver()
 
    # ----------------- multi-view camera scan -----------------
 
@@ -2102,10 +2128,11 @@ class MainWindow(QtWidgets.QMainWindow):
          pass
 
    def _append_event_to_stream_savers(self, event: str, payload: dict):
-      """Append a metadata-only record to all active stream savers.
+      """Append an axis/motor event record to all active stream savers.
 
-      We encode events as samples with NaN value so they appear in the same
-      timeline as detector samples in `.meta.jsonl`.
+      Events are recorded in two ways:
+      - As a NaN-valued sample in the numeric stream (timeline alignment)
+      - As a JSON record in the HDF5 'events' dataset (full fidelity)
       """
       try:
          ts = float(payload.get("timestamp", time.time())) if isinstance(payload, dict) else time.time()
@@ -2115,6 +2142,11 @@ class MainWindow(QtWidgets.QMainWindow):
       meta = {"event": event, "timestamp": ts, "payload": payload}
       for saver in list(self.stream_savers.values()):
          try:
+            try:
+               if hasattr(saver, "append_event"):
+                  saver.append_event(meta)
+            except Exception:
+               pass
             saver.append_sample(ts, float('nan'), meta=meta)
          except Exception:
             continue
@@ -2205,13 +2237,63 @@ class MainWindow(QtWidgets.QMainWindow):
             out_dir = Path.cwd() / "data"
       out_dir.mkdir(parents=True, exist_ok=True)
 
-      fname = f"{int(meta['timestamp'])}.npy"
-      path = out_dir / fname
+      if not _SAVING_ENABLED:
+         return
 
-      np.save(path, img)
+      # Lazily create one HDF5 file per run/output_dir.
+      try:
+         need_new = (self.image_saver is None) or (self._image_saver_out_dir != out_dir)
+      except Exception:
+         need_new = True
 
-      with open(path.with_suffix(".json"), "w") as f:
-         json.dump(safe_meta, f, indent=2)
+      if need_new:
+         try:
+            self._close_image_saver()
+         except Exception:
+            pass
+         try:
+            exp = None
+            if isinstance(meta, dict):
+               exp = meta.get("experiment")
+            exp = str(exp or "camera")
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            base_name = f"{ts}__camera__{exp}"
+            self.image_saver = ImageH5Saver(out_dir, base_name=base_name, flush_every=1)
+            self._image_saver_out_dir = out_dir
+         except Exception:
+            # If the HDF5 writer cannot be created, silently fall back to no-op.
+            self.image_saver = None
+            self._image_saver_out_dir = None
+
+      saver = getattr(self, "image_saver", None)
+      if saver is None:
+         return
+      try:
+         saver.append_image(img, safe_meta)
+      except Exception as e:
+         # Avoid taking down acquisition for saving problems.
+         # If frame shape changes mid-run, roll over to a new file and retry once.
+         try:
+            if isinstance(e, ValueError) and "Image shape changed" in str(e):
+               try:
+                  self._close_image_saver()
+               except Exception:
+                  pass
+               try:
+                  exp = None
+                  if isinstance(meta, dict):
+                     exp = meta.get("experiment")
+                  exp = str(exp or "camera")
+                  ts = time.strftime("%Y%m%d_%H%M%S")
+                  base_name = f"{ts}__camera__{exp}"
+                  self.image_saver = ImageH5Saver(out_dir, base_name=base_name, flush_every=1)
+                  self._image_saver_out_dir = out_dir
+                  self.image_saver.append_image(img, safe_meta)
+                  return
+               except Exception:
+                  pass
+         except Exception:
+            pass
 
    def _on_detector_sample(self, *args):
       """Accept either (value, meta) or (detector_id, value, meta)."""
