@@ -292,9 +292,9 @@ class LiveTab(QtWidgets.QWidget):
 
                 # De-duplicate by object id
                 uniq: dict[int, object] = {}
-                for l in legends:
+                for legend_item in legends:
                     try:
-                        uniq[id(l)] = l
+                        uniq[id(legend_item)] = legend_item
                     except Exception:
                         pass
 
@@ -1532,7 +1532,7 @@ class LiveTab(QtWidgets.QWidget):
                 xi = {v: i for i, v in enumerate(xs)}
                 yi = {v: i for i, v in enumerate(ys)}
 
-                arr = np.zeros((len(xs), len(ys)))
+                arr = np.zeros((len(xs), len(ys)), dtype=np.float32)
                 for s, v in det_list:
                     try:
                         arr[xi[s[ax1]], yi[s[ax2]]] = v
@@ -1540,10 +1540,14 @@ class LiveTab(QtWidgets.QWidget):
                         pass
 
                 try:
-                    img2d = arr.T
+                    # Use a contiguous array for display/caching. Non-contiguous
+                    # transpose views can sometimes lead to confusing artifacts
+                    # (looks like images are "mixed") depending on downstream
+                    # consumers and pyqtgraph versions.
+                    img2d = np.ascontiguousarray(arr.T)
                     img_view.setImage(img2d, autoLevels=True)
                     try:
-                        self._detector_last_images[det_id] = np.asarray(img2d)
+                        self._detector_last_images[det_id] = np.asarray(img2d).copy()
                     except Exception:
                         pass
                     if self._levels[0] is not None and self._levels[1] is not None:
@@ -1560,7 +1564,7 @@ class LiveTab(QtWidgets.QWidget):
                 yi = {v: i for i, v in enumerate(ys)}
                 zi = {v: i for i, v in enumerate(zs)}
 
-                arr = np.zeros((len(xs), len(ys), len(zs)))
+                arr = np.zeros((len(xs), len(ys), len(zs)), dtype=np.float32)
                 for s, v in det_list:
                     try:
                         arr[xi[s[ax1]], yi[s[ax2]], zi[s[ax3]]] = v
@@ -1570,10 +1574,10 @@ class LiveTab(QtWidgets.QWidget):
                 idx = min(max(self.z_slider.value(), 0), len(zs) - 1)
                 slice_img = arr[:, :, idx]
                 try:
-                    img2d = slice_img.T
+                    img2d = np.ascontiguousarray(slice_img.T)
                     img_view.setImage(img2d, autoLevels=True)
                     try:
-                        self._detector_last_images[det_id] = np.asarray(img2d)
+                        self._detector_last_images[det_id] = np.asarray(img2d).copy()
                     except Exception:
                         pass
                     if self._levels[0] is not None and self._levels[1] is not None:

@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import numpy as np
 import h5py
+import json
 
 
 class StreamSaver:
@@ -73,6 +74,19 @@ class StreamSaver:
         self._h5_ds.attrs["columns"] = ["timestamp", "value", "x", "y", "z"]
         self._h5_ds.attrs["detector"] = str(detector_id)
 
+        # Full-fidelity event log (axis/motor events, etc.)
+        try:
+            self._h5_events = self._h5_file.create_dataset(
+                "events",
+                shape=(0,),
+                maxshape=(None,),
+                dtype=h5py.string_dtype(encoding="utf-8"),
+                chunks=(256,),
+            )
+            self._h5_events.attrs["format"] = "json"
+        except Exception:
+            self._h5_events = None
+
         self._ascii_file = open(self.ascii_path, "a", buffering=1)
         if self.ascii_path.stat().st_size == 0:
             self._ascii_file.write("timestamp,value,x,y,z,meta\n")
@@ -81,6 +95,34 @@ class StreamSaver:
         self._lock = threading.Lock()
         self.flush_every = int(flush_every)
         self._closed = False
+
+    def append_event(self, event: dict) -> None:
+        """Append a JSON event record into the HDF5 'events' dataset."""
+        if self._closed:
+            return
+        if getattr(self, "_h5_events", None) is None:
+            return
+        try:
+            payload = json.dumps(event, default=lambda o: getattr(o, "__dict__", str(o)))
+        except Exception:
+            try:
+                payload = json.dumps({"event": str(event)})
+            except Exception:
+                return
+
+        with self._lock:
+            if self._closed:
+                return
+            ds = getattr(self, "_h5_events", None)
+            if ds is None:
+                return
+            try:
+                i = int(ds.shape[0])
+                ds.resize(i + 1, axis=0)
+                ds[i] = payload
+                self._h5_file.flush()
+            except Exception:
+                pass
 
     def append_sample(self, timestamp: float, value: float, meta: dict | None = None):
         if self._closed:

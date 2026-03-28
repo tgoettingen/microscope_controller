@@ -11,6 +11,7 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 import numpy as np
+import h5py
 
 from utils.stream_saver import StreamSaver
 
@@ -32,11 +33,13 @@ def main():
     s1.close()
     s2.close()
 
-    npy_files = sorted(tmpdir.glob("*.npy"))
-    print("final npy files:", [p.name for p in npy_files])
-    for p in npy_files:
-        arr = np.load(p)
-        print(p.name, arr.shape)
+    h5_files = sorted(tmpdir.glob("*.h5"))
+    print("final h5 files:", [p.name for p in h5_files])
+    for p in h5_files:
+        with h5py.File(p, "r") as f:
+            data = f["data"]
+            events = f.get("events")
+            print(p.name, "data", data.shape, "events", (None if events is None else events.shape))
 
 
 if __name__ == "__main__":

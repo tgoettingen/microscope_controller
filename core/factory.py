@@ -226,7 +226,11 @@ def build_devices(config_path="config/default_devices.json"):
                 # set optional scale/offset
                 d.set_scale(dc.get("scale", 1000.0), dc.get("offset", 0.0))
             elif dc.get("type") == "Multimeter":
-                d = Multimeter(gpib=dc.get("gpib"))
+                d = Multimeter(gpib=dc.get("gpib"), name=dc.get("name"))
+                try:
+                    d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
+                except Exception:
+                    pass
             else:
                 raise ValueError(f"Unknown detector type: {dc.get('type')}")
 
@@ -256,6 +260,12 @@ def build_devices(config_path="config/default_devices.json"):
                 name=detector_cfg.get("name"),
             )
             detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
+        elif detector_cfg.get("type") == "Multimeter":
+            detector = Multimeter(gpib=detector_cfg.get("gpib"), name=detector_cfg.get("name"))
+            try:
+                detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
+            except Exception:
+                pass
         else:
             detector = SimulatedDetector()  # default
 
