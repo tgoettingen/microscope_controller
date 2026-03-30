@@ -31,11 +31,15 @@
 
 import json
 import os
+import logging
 from devices.multimeter import Multimeter
 from devices.standa_stage import StandaStageXY
 from devices.simulated import SimulatedCamera, SimulatedDetector, SimulatedFilterWheel, SimulatedLight, SimulatedFocus, SimulatedStageXY
 from devices.voltage_meter_comport import ComPort
 from devices.scaled import ScaledStageXY, ScaledFocusZ, ScaledLightSource
+
+
+logger = logging.getLogger(__name__)
 
 
 def save_config(cfg: dict, path: str = "config/default_devices.json") -> None:
@@ -126,6 +130,10 @@ def load_config(path="config/default_devices.json"):
     return cfg
 
 def build_devices(config_path="config/default_devices.json"):
+    try:
+        logger.info("Building devices (config=%s)", os.path.abspath(config_path))
+    except Exception:
+        pass
     cfg = load_config(config_path)
 
     # Stage
@@ -276,5 +284,19 @@ def build_devices(config_path="config/default_devices.json"):
                 detector.name = cfg_name
         except Exception:
             pass
+
+    try:
+        det_count = len(detector) if isinstance(detector, list) else (1 if detector is not None else 0)
+        logger.info(
+            "Built devices (camera=%s stage=%s focus=%s light=%s fw=%s detectors=%s)",
+            type(camera).__name__ if camera is not None else None,
+            type(stage).__name__ if stage is not None else None,
+            type(focus).__name__ if focus is not None else None,
+            type(light).__name__ if light is not None else None,
+            type(fw).__name__ if fw is not None else None,
+            det_count,
+        )
+    except Exception:
+        pass
 
     return camera, stage, focus, light, fw, detector

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScaledStageXY:
@@ -37,6 +41,16 @@ class ScaledStageXY:
     def move_to(self, x: float, y: float) -> None:
         rx = float(x) * self.x_scale + self.x_offset
         ry = float(y) * self.y_scale + self.y_offset
+        try:
+            logger.info(
+                "Stage move_to (scaled) logical=(%s,%s) raw=(%s,%s)",
+                x,
+                y,
+                rx,
+                ry,
+            )
+        except Exception:
+            pass
         self._stage.move_to(rx, ry)
 
     def get_position(self) -> Tuple[float, float]:
@@ -64,6 +78,10 @@ class ScaledFocusZ:
 
     def move_to(self, z: float) -> None:
         rz = float(z) * self.scale + self.offset
+        try:
+            logger.info("Focus move_to (scaled) logical=%s raw=%s", z, rz)
+        except Exception:
+            pass
         self._focus.move_to(rz)
 
     def get_position(self) -> float:

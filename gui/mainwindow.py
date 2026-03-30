@@ -4,6 +4,7 @@ import threading
 import json
 import base64
 from pathlib import Path
+import logging
 
 import importlib.util
 import numpy as np
@@ -27,6 +28,18 @@ except Exception:
          "Install it in the project's venv: `pip install PyQt6`.\n"
       )
    sys.exit(1)
+
+# Make this module runnable both ways:
+# - as a script: `python gui/mainwindow.py` (needs repo root on sys.path for `core`)
+# - as a module: `python -m gui.mainwindow` (needs `gui/` on sys.path for `tabs`)
+try:
+   _repo_root = Path(__file__).resolve().parents[1]
+   _gui_dir = Path(__file__).resolve().parent
+   for _p in (str(_repo_root), str(_gui_dir)):
+      if _p not in sys.path:
+         sys.path.insert(0, _p)
+except Exception:
+   pass
 
 from core.factory import build_devices, load_config
 from core.orchestrator import Orchestrator
@@ -71,6 +84,9 @@ except Exception:
    from utils.image_h5_saver import ImageH5Saver
 
 
+logger = logging.getLogger(__name__)
+
+
 class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
@@ -78,6 +94,11 @@ class MainWindow(QtWidgets.QMainWindow):
    def __init__(self, config_path: str = "config/default_devices.json"):
       super().__init__()
       self.setWindowTitle("Microscope Control System")
+
+      try:
+         logger.info("MainWindow init (config=%s)", config_path)
+      except Exception:
+         pass
 
       # Paths supplied on the command line (or defaults)
       self._config_path = config_path
@@ -1400,6 +1421,11 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.orch_thread is not None:
             return
 
+      try:
+         logger.info("Starting strip-chart experiment (config=%s)", cfg)
+      except Exception:
+         pass
+
       cam, stage, focus, light, fw, det = build_devices(self._config_path)
       # populate available detectors in multi-axis tab
       try:
@@ -1428,6 +1454,11 @@ class MainWindow(QtWidgets.QMainWindow):
       )
       self.orch.initialize()
 
+      try:
+         logger.info("Orchestrator initialized")
+      except Exception:
+         pass
+
       # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
       try:
          out_dir = Path(cfg.get("output_dir") or Path.cwd() / "data")
@@ -1445,6 +1476,16 @@ class MainWindow(QtWidgets.QMainWindow):
          for det_id in det_list:
             if _SAVING_ENABLED:
                self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+
+         try:
+            logger.info(
+               "Stream saving %s (out_dir=%s detectors=%s)",
+               "enabled" if _SAVING_ENABLED else "disabled",
+               out_dir,
+               det_list,
+            )
+         except Exception:
+            pass
 
          # brief status so users know where data is written
          try:
@@ -1573,6 +1614,10 @@ class MainWindow(QtWidgets.QMainWindow):
    def _on_stream_toggled(self, det_id: str, enabled: bool):
       """Create or close stream saver when user toggles streaming from the LiveTab."""
       try:
+         try:
+            logger.info("Stream toggle (detector=%s enabled=%s)", det_id, enabled)
+         except Exception:
+            pass
          if enabled:
             if _SAVING_ENABLED and det_id not in self.stream_savers:
                out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
@@ -1598,6 +1643,11 @@ class MainWindow(QtWidgets.QMainWindow):
       """
       if self.orch is None:
          return
+
+      try:
+         logger.info("Stopping strip-chart experiment")
+      except Exception:
+         pass
 
       try:
          self.statusBar().showMessage("Stopping experiment… closing files…")
@@ -1648,16 +1698,46 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.multi_thread is not None:
             return
 
+      try:
+         logger.info(
+            "Starting multi-axis run (devices_built=%s devices_released=%s config=%s)",
+            getattr(self, "devices_built", None),
+            getattr(self, "devices_released", None),
+            getattr(self, "_config_path", None),
+         )
+      except Exception:
+         pass
+
       cfgs: list[AxisConfig] = self.multi_tab.get_axis_configs()
       if not cfgs:
             QtWidgets.QMessageBox.warning(self, "Multi‑Axis", "No axes defined.")
             return
+
+      try:
+         axis_types = [getattr(c, "axis_type", "?") for c in cfgs]
+         logger.info("Multi-axis axes: n=%s types=%s", len(cfgs), axis_types)
+      except Exception:
+         pass
 
       # Build devices only if not already built or if previously released
       if not self.devices_built or self.devices_released:
          self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
          self.devices_built = True
          self.devices_released = False
+
+         try:
+            det_count = len(self.det) if isinstance(self.det, list) else (1 if self.det is not None else 0)
+            logger.info(
+               "Devices built for multi-axis (camera=%s stage=%s focus=%s light=%s fw=%s detectors=%s)",
+               type(self.cam).__name__ if self.cam is not None else None,
+               type(self.stage).__name__ if self.stage is not None else None,
+               type(self.focus).__name__ if self.focus is not None else None,
+               type(self.light).__name__ if self.light is not None else None,
+               type(self.fw).__name__ if self.fw is not None else None,
+               det_count,
+            )
+         except Exception:
+            pass
 
          # populate available detectors in multi-axis tab
          try:
@@ -1800,10 +1880,22 @@ class MainWindow(QtWidgets.QMainWindow):
                         cur = dev.get_position()
                         if isinstance(cur, tuple):
                            if cfg.axis_type == 'X':
+                              try:
+                                 logger.info("Pre-position stage X -> %s (keeping Y=%s)", p['pre_pos'], cur[1])
+                              except Exception:
+                                 pass
                               dev.move_to(p['pre_pos'], cur[1])
                            else:
+                              try:
+                                 logger.info("Pre-position stage Y -> %s (keeping X=%s)", p['pre_pos'], cur[0])
+                              except Exception:
+                                 pass
                               dev.move_to(cur[0], p['pre_pos'])
                         else:
+                           try:
+                              logger.info("Pre-position stage %s -> %s", cfg.axis_type, p['pre_pos'])
+                           except Exception:
+                              pass
                            dev.move_to(p['pre_pos'])
                      except Exception:
                         pass
@@ -1811,6 +1903,10 @@ class MainWindow(QtWidgets.QMainWindow):
                   dev = device_map.get('focus')
                   if dev and hasattr(dev, 'move_to'):
                      try:
+                        try:
+                           logger.info("Pre-position focus Z -> %s", p['pre_pos'])
+                        except Exception:
+                           pass
                         dev.move_to(p['pre_pos'])
                      except Exception:
                         pass
@@ -1921,7 +2017,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
       def worker():
             try:
+               try:
+                  logger.info("Multi-axis worker started")
+               except Exception:
+                  pass
                self.multi_runner.run()
+               try:
+                  logger.info("Multi-axis worker finished")
+               except Exception:
+                  pass
+            except Exception:
+               try:
+                  logger.exception("Multi-axis worker crashed")
+               except Exception:
+                  pass
             finally:
                # When the measurement finishes, stop stream saving.
                self._close_all_stream_savers()
@@ -1932,6 +2041,11 @@ class MainWindow(QtWidgets.QMainWindow):
       self.multi_thread.start()
 
    def _stop_multiaxis(self):
+      try:
+         logger.info("Stopping multi-axis run")
+      except Exception:
+         pass
+
       if self.multi_runner is not None:
             self.multi_runner.stop()
 
@@ -1939,8 +2053,23 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.devices_built and not self.devices_released:
          for dev in [self.cam, self.stage, self.focus, self.light, self.fw, self.det]:
                if dev and hasattr(dev, 'disconnect'):
-                  dev.disconnect()
+                  try:
+                     logger.info("Disconnecting device: %s", type(dev).__name__)
+                  except Exception:
+                     pass
+                  try:
+                     dev.disconnect()
+                  except Exception:
+                     try:
+                        logger.exception("Device disconnect failed: %s", type(dev).__name__)
+                     except Exception:
+                        pass
          self.devices_released = True
+
+      try:
+         logger.info("Multi-axis stopped (devices_released=%s)", getattr(self, "devices_released", None))
+      except Exception:
+         pass
       # close any stream savers
       self._close_all_stream_savers()
       self._close_image_saver()
@@ -1952,6 +2081,16 @@ class MainWindow(QtWidgets.QMainWindow):
          return
 
       try:
+         logger.info(
+            "Starting multiview scan (devices_built=%s devices_released=%s config=%s)",
+            getattr(self, "devices_built", None),
+            getattr(self, "devices_released", None),
+            getattr(self, "_config_path", None),
+         )
+      except Exception:
+         pass
+
+      try:
          cfgs: list[AxisConfig] = self.multiviewctl_tab.get_axis_configs()
       except Exception:
          cfgs = []
@@ -1960,11 +2099,29 @@ class MainWindow(QtWidgets.QMainWindow):
          QtWidgets.QMessageBox.warning(self, "Multi View", "No axes defined.")
          return
 
+      try:
+         axis_types = [getattr(c, "axis_type", "?") for c in cfgs]
+         logger.info("Multiview axes: n=%s types=%s", len(cfgs), axis_types)
+      except Exception:
+         pass
+
       # Build devices only if not already built or if previously released.
       if not self.devices_built or self.devices_released:
          self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
          self.devices_built = True
          self.devices_released = False
+
+         try:
+            logger.info(
+               "Devices built for multiview (camera=%s stage=%s focus=%s light=%s fw=%s)",
+               type(self.cam).__name__ if self.cam is not None else None,
+               type(self.stage).__name__ if self.stage is not None else None,
+               type(self.focus).__name__ if self.focus is not None else None,
+               type(self.light).__name__ if self.light is not None else None,
+               type(self.fw).__name__ if self.fw is not None else None,
+            )
+         except Exception:
+            pass
 
       cam, stage, focus, light, fw = self.cam, self.stage, self.focus, self.light, self.fw
 
@@ -2093,7 +2250,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
       def worker():
          try:
+            try:
+               logger.info("Multiview worker started")
+            except Exception:
+               pass
             self.multiview_runner.run()
+            try:
+               logger.info("Multiview worker finished")
+            except Exception:
+               pass
+         except Exception:
+            try:
+               logger.exception("Multiview worker crashed")
+            except Exception:
+               pass
          finally:
             self.multiview_runner = None
             self.multiview_thread = None
@@ -2102,11 +2272,21 @@ class MainWindow(QtWidgets.QMainWindow):
       self.multiview_thread.start()
 
    def _stop_multiview_scan(self) -> None:
+      try:
+         logger.info("Stopping multiview scan")
+      except Exception:
+         pass
+
       if self.multiview_runner is not None:
          try:
             self.multiview_runner.stop()
          except Exception:
             pass
+
+      try:
+         logger.info("Multiview stop requested")
+      except Exception:
+         pass
 
    def _on_live_view_changed(self, mode: str):
       try:
@@ -2156,6 +2336,16 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          if not isinstance(payload, dict):
             payload = {"value": payload}
+
+         # Log axis/motion events for traceability.
+         try:
+            s = repr(payload)
+            if len(s) > 2000:
+               s = s[:2000] + "…"
+            logger.info("Axis event: %s payload=%s", event, s)
+         except Exception:
+            pass
+
          self._append_event_to_stream_savers(event, payload)
       except Exception:
          pass
@@ -2173,6 +2363,17 @@ class MainWindow(QtWidgets.QMainWindow):
             "pos": pos,
             "state": state,
          }
+
+         # Log every move so hardware actions are traceable from the log file.
+         try:
+            st = state if isinstance(state, dict) else {"state": state}
+            st_s = repr(st)
+            if len(st_s) > 2000:
+               st_s = st_s[:2000] + "…"
+            logger.info("Axis move: axis=%s pos=%r state=%s", axis_name, pos, st_s)
+         except Exception:
+            pass
+
          self._append_event_to_stream_savers("axis_move", payload)
 
          # Post a status bar update to the GUI thread (never call Qt from worker thread).
@@ -2622,6 +2823,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
 def main():
    import argparse
+   # Initialize logging as early as possible (before Qt starts).
+   try:
+      try:
+         from utils.logging_setup import setup_app_logging
+      except Exception:
+         pkg_root = Path(__file__).resolve().parents[1]
+         if str(pkg_root) not in sys.path:
+            sys.path.insert(0, str(pkg_root))
+         from utils.logging_setup import setup_app_logging
+
+      _, log_file = setup_app_logging(app_name="microscope_controller")
+      try:
+         logger.info("GUI starting (log=%s)", log_file)
+      except Exception:
+         pass
+   except Exception:
+      # Logging must never prevent the GUI from launching.
+      pass
+
    parser = argparse.ArgumentParser(description="Microscope Controller GUI")
    parser.add_argument(
       "--config", "-c",

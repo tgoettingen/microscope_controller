@@ -2,9 +2,14 @@ import time
 import math
 from typing import Dict, Any, Tuple
 
+import logging
+
 import numpy as np
 
 from .base import Camera, StageXY, FocusZ, LightSource, FilterWheel, Detector
+
+
+logger = logging.getLogger(__name__)
 
 
 class MockCamera(Camera):
@@ -64,6 +69,10 @@ class MockStageXY(StageXY):
         self._x, self._y = 0.0, 0.0
 
     def move_to(self, x: float, y: float) -> None:
+        try:
+            logger.info("Stage move_to (mock) x=%s y=%s", x, y)
+        except Exception:
+            pass
         self._x, self._y = x, y
         time.sleep(0.05)
 
@@ -89,6 +98,10 @@ class MockFocusZ(FocusZ):
         self._z = 100.0
 
     def move_to(self, z: float) -> None:
+        try:
+            logger.info("Focus move_to (mock) z=%s", z)
+        except Exception:
+            pass
         self._z = z
         time.sleep(0.02)
 

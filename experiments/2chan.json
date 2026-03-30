@@ -6,7 +6,7 @@
     "z_start": 90.0,
     "z_end": 110.0,
     "z_step": 10.0,
-    "output_dir": "C:\\source\\mscontrol\\microscope_controller\\data",
+    "output_dir": "data",
     "det_scale": 1.0,
     "det_offset": 0.0
   },
@@ -47,7 +47,7 @@
     ],
     "detectors": []
   },
-  "output_dir": "C:\\source\\mscontrol\\microscope_controller\\data",
+  "output_dir": "data",
   "devices": {
     "detector_scale": 1.0,
     "detector_offset": 0.0
