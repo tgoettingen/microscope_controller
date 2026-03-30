@@ -26,6 +26,10 @@ class LiveTab(QtWidgets.QWidget):
         self._detector_buffers: dict[str, deque] = {}
         self._detector_times: dict[str, deque] = {}
         self._detector_curves: dict[str, pg.PlotDataItem] = {}
+
+        # Tracks whether the shared plot is currently being used for strip-chart
+        # or for multi-axis numeric plotting.
+        self._plot_mode: str = "strip"  # "strip" | "multiaxis"
         self._t0 = time.time()
         
         # Selection filter (None => show all)
@@ -154,6 +158,12 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_widget.setLabel("left", "Detector", units="a.u.")
         self.plot_widget.setLabel("bottom", "Time / Coord", units="a.u.")
         self.plot_widget.addLegend(offset=(10, 10))
+        # Hide the legend initially; it is visually noisy when no curves exist.
+        # We'll show it lazily once a named curve is added.
+        try:
+            self._set_legend_visible(False)
+        except Exception:
+            pass
         # Disable pyqtgraph's built-in export dialog/menu so all exports go
         # through our Save dialog flow with explicit folder+filename choice.
         try:
@@ -231,6 +241,55 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_timer = QtCore.QTimer(self)
         self.plot_timer.timeout.connect(self._update_plot)
         self.plot_timer.start(100)
+
+    def _set_legend_visible(self, visible: bool) -> None:
+        """Show/hide the plot legend.
+
+        The legend is created up-front, but we keep it hidden until at least
+        one named curve exists.
+        """
+        plot_item = None
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+        except Exception:
+            try:
+                plot_item = getattr(self.plot_widget, "plotItem", None)
+            except Exception:
+                plot_item = None
+
+        if plot_item is None:
+            return
+
+        leg = None
+        try:
+            leg = getattr(plot_item, "legend", None)
+        except Exception:
+            leg = None
+
+        if visible:
+            if leg is None:
+                try:
+                    plot_item.addLegend(offset=(10, 10))
+                except Exception:
+                    try:
+                        self.plot_widget.addLegend(offset=(10, 10))
+                    except Exception:
+                        pass
+                try:
+                    leg = getattr(plot_item, "legend", None)
+                except Exception:
+                    leg = None
+            try:
+                if leg is not None:
+                    leg.show()
+            except Exception:
+                pass
+        else:
+            try:
+                if leg is not None:
+                    leg.hide()
+            except Exception:
+                pass
 
     def _clear_plot_and_legend(self) -> None:
         """Clear plot items and reset legend entries without duplicating legends."""
@@ -328,6 +387,12 @@ class LiveTab(QtWidgets.QWidget):
                     self.plot_widget.addLegend(offset=(10, 10))
             else:
                 self.plot_widget.addLegend(offset=(10, 10))
+        except Exception:
+            pass
+
+        # After a clear/reset there are no curves; keep legend hidden.
+        try:
+            self._set_legend_visible(False)
         except Exception:
             pass
 
@@ -833,6 +898,12 @@ class LiveTab(QtWidgets.QWidget):
         self.z_slider.setValue(0)
         try:
             self._detector_last_images.clear()
+        except Exception:
+            pass
+
+        # Reset plot mode back to strip-chart.
+        try:
+            self._plot_mode = "strip"
         except Exception:
             pass
         # refresh x-axis choices
@@ -1418,8 +1489,11 @@ class LiveTab(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        # 1D detector plot
-        if self._detector_times:
+        # 1D detector plot (strip-chart)
+        # When a multi-axis run is active, the shared plot is repurposed for
+        # numeric scan plotting; do not update or recreate strip-chart curves.
+        if self._detector_times and not self.multi_coords:
+            any_1d_data = False
             # update each detector curve
             for det_id, times in self._detector_times.items():
                 vals = self._detector_buffers.get(det_id, [])
@@ -1440,8 +1514,19 @@ class LiveTab(QtWidgets.QWidget):
                         self._detector_curves[det_id] = curve
 
                     curve.setData(list(times), list(vals))
+                    try:
+                        if len(times) > 0:
+                            any_1d_data = True
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+
+            # Show legend only once we actually have data points.
+            try:
+                self._set_legend_visible(bool(any_1d_data))
+            except Exception:
+                pass
 
         # multi-axis visualization (heatmap + numeric plot)
         # Throttle to avoid UI slowdown on large scans; update regardless of view mode
@@ -1454,7 +1539,19 @@ class LiveTab(QtWidgets.QWidget):
                 self._update_multiaxis_visualization()
                 # numeric plot: detector value vs. selected axis
                 xaxis = self.xaxis_combo.currentText() if hasattr(self, 'xaxis_combo') else 'Index'
-                self._clear_plot_and_legend()
+
+                # On entry to multi-axis numeric plotting, clear the plot once so
+                # we don't end up with *both* strip-chart curves and scan curves
+                # (which would duplicate legend entries).
+                try:
+                    if getattr(self, "_plot_mode", "strip") != "multiaxis":
+                        self._plot_mode = "multiaxis"
+                        self._clear_plot_and_legend()
+                except Exception:
+                    pass
+
+                any_curve = False
+                updated: set[str] = set()
                 for det_id, det_list in self.multi_coords.items():
                     if not self._is_detector_visible(det_id):
                         continue
@@ -1476,15 +1573,49 @@ class LiveTab(QtWidgets.QWidget):
                             xs.append(float(val) if val is not None else idx)
                         ys.append(v)
                     if xs:
-                        # look up the registered color for this detector; default white
-                        reg_color = None
-                        if det_id in self._detector_curves:
-                            pen = self._detector_curves[det_id].opts.get('pen')
-                            if pen is not None:
-                                reg_color = pen
-                        if reg_color is None:
-                            reg_color = pg.mkPen(color=(255, 255, 255), width=2)
-                        self.plot_widget.plot(xs, ys, pen=pg.mkPen(reg_color, width=2), name=det_id)
+                        # Reuse the existing per-detector curve objects. If the
+                        # plot was cleared, recreate them once.
+                        curve = self._detector_curves.get(det_id)
+                        if curve is None or curve.scene() is None:
+                            reg_pen = None
+                            try:
+                                if curve is not None:
+                                    reg_pen = curve.opts.get('pen')
+                            except Exception:
+                                reg_pen = None
+                            if reg_pen is None:
+                                reg_pen = pg.mkPen(color=(255, 255, 255), width=2)
+                            curve = self.plot_widget.plot([], [], pen=pg.mkPen(reg_pen, width=2), name=det_id)
+                            self._detector_curves[det_id] = curve
+
+                        try:
+                            curve.setVisible(True)
+                        except Exception:
+                            pass
+                        try:
+                            curve.setData(xs, ys)
+                        except Exception:
+                            pass
+
+                        any_curve = True
+                        updated.add(det_id)
+
+                # Hide curves that were not updated (e.g., detector hidden/filtered).
+                try:
+                    for det_id, curve in list(self._detector_curves.items()):
+                        if det_id in updated:
+                            continue
+                        try:
+                            curve.setVisible(False)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if any_curve:
+                    try:
+                        self._set_legend_visible(True)
+                    except Exception:
+                        pass
                 try:
                     self.plot_widget.setLabel('bottom', xaxis)
                 except Exception:
