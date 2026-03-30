@@ -1,5 +1,9 @@
 from pylablib.devices import Standa
 from .base import SingleAxis
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 class StandaAxis(SingleAxis):
    """Low-level controller for a single Standa axis on one COM port."""
@@ -12,7 +16,10 @@ class StandaAxis(SingleAxis):
       try:
             self.dev = Standa.Standa8SMC(com_port)
       except Exception as e:
-            print(f"Warning: could not open Standa axis on {com_port}: {e}")
+         try:
+            logger.warning("Could not open Standa axis on %s: %s", com_port, e)
+         except Exception:
+            pass
             self.dev = None
 
    def connect(self):
@@ -29,6 +36,10 @@ class StandaAxis(SingleAxis):
       pass
 
    def move_by(self, delta: float):
+      try:
+         logger.info("StandaAxis move_by (com=%s delta=%s)", getattr(self, "com_port", None), delta)
+      except Exception:
+         pass
       if self.dev is None:
          if self.com_port is not None:
             try:
@@ -43,6 +54,10 @@ class StandaAxis(SingleAxis):
             self.pos += int(delta)
 
    def move_to(self, target: float):
+      try:
+         logger.info("StandaAxis move_to (com=%s target=%s)", getattr(self, "com_port", None), target)
+      except Exception:
+         pass
       cur = self.get_position()
       delta = target - cur
       self.move_by(delta)
@@ -82,6 +97,10 @@ class StandaStageXY:
 
 
    def move_to(self, x: float, y: float):
+      try:
+         logger.info("StandaStageXY move_to x=%s y=%s", x, y)
+      except Exception:
+         pass
       self.x.move_to(x)
       self.y.move_to(y)
 

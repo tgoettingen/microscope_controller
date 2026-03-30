@@ -1,5 +1,9 @@
 import time
 import numpy as np
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _caps(kind: str, **extra):
@@ -27,6 +31,10 @@ class SimulatedStageXY:
         return _caps("stage_xy")
 
     def move_to(self, x: float, y: float):
+        try:
+            logger.info("Stage move_to (simulated) x=%s y=%s", x, y)
+        except Exception:
+            pass
         self.x = float(x)
         self.y = float(y)
 
@@ -61,6 +69,10 @@ class SimulatedFocus:
         return _caps("focus_z")
 
     def move_to(self, z: float):
+        try:
+            logger.info("Focus move_to (simulated) z=%s", z)
+        except Exception:
+            pass
         self.z = float(z)
 
     def move_by(self, dz: float):
