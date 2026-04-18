@@ -5,9 +5,16 @@ import json
 import base64
 from pathlib import Path
 import logging
+import uuid
 
 import importlib.util
 import numpy as np
+
+try:
+   from version import APP_VERSION, APP_NAME
+except Exception:
+   APP_VERSION = "unknown"
+   APP_NAME = "Microscope Controller"
 
 # Prefer importing PyQt6. If it's importable, proceed. If not, give a helpful
 # message guiding the user to install PyQt6 in the venv. Avoid failing based on
@@ -76,6 +83,11 @@ except Exception:
    from utils.stream_saver import StreamSaver
 
 try:
+   from utils.multichannel_saver import MultiChannelSaver
+except Exception:
+   MultiChannelSaver = None  # type: ignore
+
+try:
    from utils.image_h5_saver import ImageH5Saver
 except Exception:
    pkg_root = Path(__file__).resolve().parents[1]
@@ -129,6 +141,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self._t0 = time.time()
       self.stream_savers: dict[str, StreamSaver] = {}
+      self._mc_saver = None  # MultiChannelSaver instance when active
+      self._measurement_id: str | None = None  # Universal ID for current measurement
       self.image_saver: ImageH5Saver | None = None
       self._image_saver_out_dir: Path | None = None
 
@@ -155,11 +169,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
    def _close_all_stream_savers(self):
-      """Close and remove all active StreamSaver instances.
-
-      This is safe to call multiple times and is used to ensure that stream
-      saving stops automatically when a measurement run completes.
-      """
+      """Close and remove all active StreamSaver instances and any MultiChannelSaver."""
       try:
          for saver in list(self.stream_savers.values()):
             try:
@@ -169,6 +179,18 @@ class MainWindow(QtWidgets.QMainWindow):
       finally:
          try:
             self.stream_savers.clear()
+         except Exception:
+            pass
+      self._close_mc_saver()
+      self._measurement_id = None
+
+   def _close_mc_saver(self):
+      """Close and remove the active MultiChannelSaver (if any)."""
+      saver = getattr(self, "_mc_saver", None)
+      self._mc_saver = None
+      if saver is not None:
+         try:
+            saver.close()
          except Exception:
             pass
 
@@ -417,8 +439,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # --- Create tabs as dock widgets instead of a central tab widget ---
       self.demo_tab = ExperimentTab()
-      self.multi_tab = MultiAxisTab()
-      self.multiviewctl_tab = MultiViewControlTab()
+      self.multi_tab = MultiAxisTab(config_path=self._config_path)
+      self.multiviewctl_tab = MultiViewControlTab(config_path=self._config_path)
 
       # Strip chart dock (historically called "Demo")
       self.demo_dock = QtWidgets.QDockWidget("Strip Chart", self)
@@ -478,6 +500,8 @@ class MainWindow(QtWidgets.QMainWindow):
       self.live_tab = LiveTab()
       # connect hover info to status bar
       self.live_tab.hover_info.connect(lambda s: self.statusBar().showMessage(s))
+      # connect load/save status messages to status bar
+      self.live_tab.status_message.connect(lambda msg, ms: self.statusBar().showMessage(msg, ms))
       # connect stream toggle signals from live tab
       self.live_tab.stream_toggled.connect(self._on_stream_toggled)
       # NOTE: multi-axis samples are delivered via live_tab.queue_multiaxis_sample()
@@ -638,6 +662,28 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          if hasattr(self.multi_tab, 'detectors_changed'):
             self.multi_tab.detectors_changed.connect(self._on_detector_selection_changed)
+      except Exception:
+         pass
+
+      # Live-update the plot X axis when the Default X Axis combo changes.
+      try:
+         if hasattr(self.multi_tab, 'xaxis_changed'):
+            def _on_xaxis_changed(name: str):
+               try:
+                  # Always store as the run-scoped preference so every future
+                  # combo rebuild during a run will consistently re-apply it.
+                  if hasattr(self.live_tab, 'set_preferred_plot_xaxis'):
+                     self.live_tab.set_preferred_plot_xaxis(name)
+                  # If multi_coords already has data (e.g. post-run browsing),
+                  # immediately apply the axis and force a re-render.
+                  if hasattr(self.live_tab, 'multi_coords') and self.live_tab.multi_coords:
+                     if hasattr(self.live_tab, 'set_xaxis'):
+                        self.live_tab.set_xaxis(name)
+                     self.live_tab._multi_dirty = True
+                     self.live_tab._last_multi_render = 0.0
+               except Exception:
+                  pass
+            self.multi_tab.xaxis_changed.connect(_on_xaxis_changed)
       except Exception:
          pass
 
@@ -959,6 +1005,61 @@ class MainWindow(QtWidgets.QMainWindow):
       file_menu.addAction(load_exp)
       file_menu.addSeparator()
 
+      load_data_action = QAction("Load Data…", self)
+      load_data_action.setShortcut("Ctrl+O")
+      load_data_action.triggered.connect(lambda: self.live_tab._on_load_data())
+      file_menu.addAction(load_data_action)
+
+      keep_layout_action = QAction("Keep Current Layout When Loading", self)
+      keep_layout_action.setCheckable(True)
+      keep_layout_action.setChecked(True)
+      keep_layout_action.setToolTip(
+          "When checked, the current view mode, X axis, Z slice, draw-lines and\n"
+          "window size are preserved after loading data.\n"
+          "When unchecked, the layout is inferred from the loaded data."
+      )
+      # Keep in sync with the toolbar button's menu action on live_tab
+      def _sync_keep_layout(checked: bool):
+          try:
+              self.live_tab.keep_layout_action.setChecked(checked)
+          except Exception:
+              pass
+      keep_layout_action.toggled.connect(_sync_keep_layout)
+      # Also sync back when live_tab's own action is toggled
+      try:
+          self.live_tab.keep_layout_action.toggled.connect(keep_layout_action.setChecked)
+      except Exception:
+          pass
+      file_menu.addAction(keep_layout_action)
+
+      save_multichannel_action = QAction("Save as Multi-Channel File", self)
+      save_multichannel_action.setCheckable(True)
+      save_multichannel_action.setChecked(True)   # mirrors demo_tab default
+      save_multichannel_action.setToolTip(
+          "When checked, all detector streams are saved into a single\n"
+          "multi-channel HDF5 file that can be loaded in one go.\n"
+          "When unchecked, each detector gets its own .h5/.txt pair."
+      )
+      # Bidirectional sync with demo_tab.multichannel_cb
+      def _sync_mc_to_cb(checked: bool):
+          try:
+              self.demo_tab.multichannel_cb.setChecked(checked)
+          except Exception:
+              pass
+      save_multichannel_action.toggled.connect(_sync_mc_to_cb)
+      try:
+          self.demo_tab.multichannel_cb.toggled.connect(save_multichannel_action.setChecked)
+      except Exception:
+          pass
+      file_menu.addAction(save_multichannel_action)
+      file_menu.addSeparator()
+
+      export_channels_action = QAction("Export All Channels…", self)
+      export_channels_action.setShortcut("Ctrl+Shift+E")
+      export_channels_action.triggered.connect(lambda: self.live_tab.export_all_channels())
+      file_menu.addAction(export_channels_action)
+      file_menu.addSeparator()
+
       save_layout_action = QAction("Save Layout as Default", self)
       save_layout_action.triggered.connect(lambda: self._save_layout(kind="default", notify=True))
       file_menu.addAction(save_layout_action)
@@ -1008,6 +1109,16 @@ class MainWindow(QtWidgets.QMainWindow):
       stop_demo_action.setShortcut("Ctrl+E")
       stop_demo_action.triggered.connect(self._stop_experiment)
       action_menu.addAction(stop_demo_action)
+
+      action_menu.addSeparator()
+
+      calibrate_stage_action = QAction("Calibrate Stage…", self)
+      calibrate_stage_action.setToolTip(
+          "Move & Measure wizard: move the stage a known physical distance\n"
+          "and compute the steps-per-mm scaling factor for X and Y."
+      )
+      calibrate_stage_action.triggered.connect(self._open_stage_calibration)
+      action_menu.addAction(calibrate_stage_action)
 
       help_menu = menubar.addMenu("&Help")
       about_action = QAction("About", self)
@@ -1388,6 +1499,56 @@ class MainWindow(QtWidgets.QMainWindow):
             "Microscope Controller\nPyQt6 + pyqtgraph, multi‑axis + detector visualization.",
       )
 
+   def _open_stage_calibration(self):
+      """Open the Move & Measure stage calibration wizard."""
+      try:
+         from gui.dialogs.stage_calibration_dialog import StageCalibrationDialog
+      except ImportError:
+         try:
+            from dialogs.stage_calibration_dialog import StageCalibrationDialog
+         except ImportError as exc:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Could not load calibration dialog:\n{exc}")
+            return
+
+      # Try to get a live stage object — prefer the already-built one.
+      stage = getattr(self, "stage", None)
+      if stage is None:
+         # Try building devices just to get the stage
+         try:
+            from core.factory import build_devices
+            _, stage, *_ = build_devices(self._config_path)
+         except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+               self,
+               "Stage Not Available",
+               f"Could not connect to stage:\n{exc}\n\n"
+               "Please ensure the stage is connected and the correct COM ports are configured."
+            )
+            return
+
+      if stage is None:
+         QtWidgets.QMessageBox.warning(self, "Stage Not Available", "No stage device is configured.")
+         return
+
+      dlg = StageCalibrationDialog(stage, self._config_path, parent=self)
+      dlg.calibration_saved.connect(self._on_calibration_saved)
+      dlg.exec()
+
+   def _on_calibration_saved(self, x_scale: float, y_scale: float):
+      """Called when the calibration wizard has written new scale values."""
+      try:
+         logger.info("Stage calibration saved: x_scale=%s y_scale=%s", x_scale, y_scale)
+      except Exception:
+         pass
+      try:
+         self.statusBar().showMessage(
+            f"Stage calibrated: X={x_scale:.4f} steps/mm  Y={y_scale:.4f} steps/mm  "
+            "(takes effect on next run)",
+            10_000,
+         )
+      except Exception:
+         pass
+
    # ----------------- classic experiment -----------------
 
    def _build_experiment(self, cfg: dict) -> ExperimentDefinition:
@@ -1462,6 +1623,11 @@ class MainWindow(QtWidgets.QMainWindow):
       # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
       try:
          out_dir = Path(cfg.get("output_dir") or Path.cwd() / "data")
+         out_dir.mkdir(parents=True, exist_ok=True)
+         # Generate a unique measurement ID for this run
+         self._measurement_id = str(uuid.uuid4())
+         layout_json = self.live_tab.get_display_layout_json()
+         use_multichannel = bool(cfg.get("multichannel", False) and MultiChannelSaver is not None)
          selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
          det_list = []
          if selected:
@@ -1472,27 +1638,48 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
 
-         # create savers for chosen ids
-         for det_id in det_list:
-            if _SAVING_ENABLED:
-               self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+         if use_multichannel and _SAVING_ENABLED:
+            # One shared file for all detectors
+            self._close_mc_saver()
+            self._mc_saver = MultiChannelSaver(
+               out_dir,
+               measurement_id=self._measurement_id,
+               layout_json=layout_json,
+               software_version=APP_VERSION,
+               experiment_type="strip_chart",
+            )
+            try:
+               self.statusBar().showMessage(
+                  f"Saving multi-channel → {self._mc_saver.h5_path.name}", 8000)
+            except Exception:
+               pass
+         else:
+            # create savers for chosen ids
+            for det_id in det_list:
+               if _SAVING_ENABLED:
+                  self.stream_savers[det_id] = StreamSaver(
+                     out_dir, det_id,
+                     measurement_id=self._measurement_id,
+                     layout_json=layout_json,
+                     software_version=APP_VERSION,
+                     experiment_type="strip_chart",
+                  )
+            try:
+               if _SAVING_ENABLED:
+                  self.statusBar().showMessage(f"Saving detector streams to: {out_dir}", 8000)
+               else:
+                  self.statusBar().showMessage("Saving disabled (debug mode)", 4000)
+            except Exception:
+               pass
 
          try:
             logger.info(
-               "Stream saving %s (out_dir=%s detectors=%s)",
+               "Stream saving %s (out_dir=%s detectors=%s multichannel=%s)",
                "enabled" if _SAVING_ENABLED else "disabled",
                out_dir,
                det_list,
+               use_multichannel,
             )
-         except Exception:
-            pass
-
-         # brief status so users know where data is written
-         try:
-            if _SAVING_ENABLED:
-               self.statusBar().showMessage(f"Saving detector streams to: {out_dir}", 8000)
-            else:
-               self.statusBar().showMessage("Saving disabled (debug mode)", 4000)
          except Exception:
             pass
       except Exception:
@@ -1621,7 +1808,13 @@ class MainWindow(QtWidgets.QMainWindow):
          if enabled:
             if _SAVING_ENABLED and det_id not in self.stream_savers:
                out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
-               self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+               self.stream_savers[det_id] = StreamSaver(
+                  out_dir, det_id,
+                  measurement_id=self._measurement_id,
+                  layout_json=self.live_tab.get_display_layout_json(),
+                  software_version=APP_VERSION,
+                  experiment_type="strip_chart",
+               )
          else:
             saver = self.stream_savers.pop(det_id, None)
             if saver:
@@ -1917,6 +2110,11 @@ class MainWindow(QtWidgets.QMainWindow):
       # (if any); otherwise default to all
       try:
          out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+         # Generate a new universal measurement ID for this run
+         self._measurement_id = str(uuid.uuid4())
+         use_multichannel = bool(getattr(self.demo_tab, 'multichannel_cb', None) and
+                                 self.demo_tab.multichannel_cb.isChecked() and
+                                 MultiChannelSaver is not None)
          selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
          det_list = []
          if selected:
@@ -1927,34 +2125,53 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
 
-         # create savers for chosen ids (do not overwrite existing savers)
-         for det_id in det_list:
-            # ensure live tab knows about this detector (create image view and controls)
+         if use_multichannel and _SAVING_ENABLED:
+            # One shared file for all detectors
+            self._close_mc_saver()
+            self._mc_saver = MultiChannelSaver(
+               out_dir,
+               measurement_id=self._measurement_id,
+               layout_json=self.live_tab.get_display_layout_json(),
+               software_version=APP_VERSION,
+               experiment_type="multiaxis",
+            )
+            for det_id in det_list:
+               try:
+                  self.live_tab.register_detector(det_id)
+               except Exception:
+                  pass
             try:
-               self.live_tab.register_detector(det_id)
+               self.statusBar().showMessage(
+                  f"Saving multi-channel → {self._mc_saver.h5_path.name}", 8000)
             except Exception:
                pass
-            if _SAVING_ENABLED and det_id not in self.stream_savers:
-               self.stream_savers[det_id] = StreamSaver(out_dir, det_id)
+         else:
+            # create savers for chosen ids (do not overwrite existing savers)
+            for det_id in det_list:
+               # ensure live tab knows about this detector (create image view and controls)
+               try:
+                  self.live_tab.register_detector(det_id)
+               except Exception:
+                  pass
+               if _SAVING_ENABLED and det_id not in self.stream_savers:
+                  self.stream_savers[det_id] = StreamSaver(
+                     out_dir, det_id,
+                     measurement_id=self._measurement_id,
+                     layout_json=self.live_tab.get_display_layout_json(),
+                     software_version=APP_VERSION,
+                     experiment_type="multiaxis",
+                  )
 
          # brief status so users know where data is written
          try:
-            if _SAVING_ENABLED:
+            if _SAVING_ENABLED and not use_multichannel:
                self.statusBar().showMessage(f"Saving detector streams to: {out_dir}", 8000)
             else:
                self.statusBar().showMessage("Saving disabled (debug mode)", 4000)
          except Exception:
             pass
-         # apply default X-axis selection from MultiAxisTab (if provided)
-         try:
-            default_x = self.multi_tab.get_default_xaxis() if hasattr(self.multi_tab, 'get_default_xaxis') else None
-            if default_x and hasattr(self.live_tab, 'set_xaxis'):
-               try:
-                  self.live_tab.set_xaxis(default_x)
-               except Exception:
-                  pass
-         except Exception:
-            pass
+         # apply default X-axis selection from MultiAxisTab via the preference
+         # mechanism (handled by set_preferred_plot_xaxis called earlier above).
       except Exception:
          pass
 
@@ -2003,9 +2220,13 @@ class MainWindow(QtWidgets.QMainWindow):
                         pass
                      # stream-save if enabled per detector id
                      try:
-                        saver = self.stream_savers.get(det_id)
-                        if saver:
-                           saver.append_sample(time.time(), float(val), meta=state)
+                        mc = getattr(self, '_mc_saver', None)
+                        if mc is not None:
+                           mc.append_sample(str(det_id), time.time(), float(val), meta=state)
+                        else:
+                           saver = self.stream_savers.get(det_id)
+                           if saver:
+                              saver.append_sample(time.time(), float(val), meta=state)
                      except Exception:
                         pass
                   except Exception:
@@ -2049,22 +2270,12 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.multi_runner is not None:
             self.multi_runner.stop()
 
-      # Release devices when stopping
-      if self.devices_built and not self.devices_released:
-         for dev in [self.cam, self.stage, self.focus, self.light, self.fw, self.det]:
-               if dev and hasattr(dev, 'disconnect'):
-                  try:
-                     logger.info("Disconnecting device: %s", type(dev).__name__)
-                  except Exception:
-                     pass
-                  try:
-                     dev.disconnect()
-                  except Exception:
-                     try:
-                        logger.exception("Device disconnect failed: %s", type(dev).__name__)
-                     except Exception:
-                        pass
-         self.devices_released = True
+      # NOTE: do not automatically disconnect devices when the user presses
+      # Stop. Disconnecting here caused the stage (and other devices) to become
+      # inactive and prevented subsequent runs from rebuilding cleanly. Keep
+      # devices connected so the user can immediately restart a run. If a
+      # full release of devices is desired, use the application's shutdown
+      # path or an explicit "Release devices" action.
 
       try:
          logger.info("Multi-axis stopped (devices_released=%s)", getattr(self, "devices_released", None))
@@ -2293,6 +2504,11 @@ class MainWindow(QtWidgets.QMainWindow):
          if mode == 'camera':
             if hasattr(self, 'cam_dock'):
                self.cam_dock.show()
+               # Ensure the content widget is visible inside the dock
+               try:
+                  self.live_tab.camera_panel.show()
+               except Exception:
+                  pass
             if hasattr(self, 'detimg_dock'):
                self.detimg_dock.hide()
             if hasattr(self, 'plot_dock'):
@@ -2302,6 +2518,13 @@ class MainWindow(QtWidgets.QMainWindow):
                self.cam_dock.hide()
             if hasattr(self, 'detimg_dock'):
                self.detimg_dock.show()
+               # Ensure the content widget is visible inside the dock — calling
+               # .hide() on a dock's content widget collapses it permanently
+               # until it is explicitly re-shown here.
+               try:
+                  self.live_tab.detector_image_panel.show()
+               except Exception:
+                  pass
             if hasattr(self, 'plot_dock'):
                self.plot_dock.show()
       except Exception:
@@ -2543,9 +2766,13 @@ class MainWindow(QtWidgets.QMainWindow):
          )
          # stream-save if enabled
          try:
-            saver = self.stream_savers.get(det_id)
-            if saver:
-               saver.append_sample(timestamp, float(value), meta=meta)
+            mc = getattr(self, '_mc_saver', None)
+            if mc is not None:
+               mc.append_sample(str(det_id), timestamp, float(value), meta=meta)
+            else:
+               saver = self.stream_savers.get(det_id)
+               if saver:
+                  saver.append_sample(timestamp, float(value), meta=meta)
          except Exception:
             pass
       except Exception:

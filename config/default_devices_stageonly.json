@@ -1,0 +1,57 @@
+{
+  "stage": {
+    "type": "StandaStageXY",
+    "name": "standa_stage_xy",
+    "com_x": "com4",
+    "com_y": "com5",
+    "scaling": {
+      "x_scale": 1031494.266667,
+      "x_offset": 0.0,
+      "y_scale": 1029509.733333,
+      "y_offset": 0.0
+    }
+  },
+  "focus": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  },
+  "camera": {
+    "type": "simulated"
+  },
+  "light": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  },
+  "filter_wheel": {
+    "type": "simulated"
+  },
+  "detector": [
+    {
+      "type": "simulated",
+      "name": "detector1",
+      "port": "com16",
+      "scale": 10.0,
+      "offset": -1.0
+    },
+    {
+      "type": "simulated",
+      "name": "detector2",
+      "port": "com17",
+      "scale": 1.0,
+      "offset": 11.0
+    },
+    {
+      "type": "simulated",
+      "name": "detector3",
+      "port": "com18",
+      "scale": 1.0,
+      "offset": 11.0
+    }
+  ]
+}

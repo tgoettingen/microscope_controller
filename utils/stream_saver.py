@@ -29,6 +29,10 @@ class StreamSaver:
         mode: str = "stream",
         flush_every: int = 256,
         base_path: str | Path | None = None,
+        measurement_id: str | None = None,
+        layout_json: str | None = None,
+        software_version: str | None = None,
+        experiment_type: str | None = None,
     ):
         """Create a StreamSaver.
 
@@ -64,6 +68,14 @@ class StreamSaver:
         # Open HDF5 file and create a resizable dataset.
         # Columns: timestamp, value, x, y, z
         self._h5_file = h5py.File(self.h5_path, "w")
+        if measurement_id is not None:
+            self._h5_file.attrs["measurement_id"] = str(measurement_id)
+        if layout_json is not None:
+            self._h5_file.attrs["display_layout"] = str(layout_json)
+        if software_version is not None:
+            self._h5_file.attrs["software_version"] = str(software_version)
+        if experiment_type is not None:
+            self._h5_file.attrs["experiment_type"] = str(experiment_type)
         self._h5_ds = self._h5_file.create_dataset(
             "data",
             shape=(0, 5),

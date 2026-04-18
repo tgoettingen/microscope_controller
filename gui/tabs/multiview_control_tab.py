@@ -21,8 +21,9 @@ class MultiViewControlTab(QtWidgets.QWidget):
     start_requested = QtCore.pyqtSignal()
     stop_requested = QtCore.pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
+        self._config_path = config_path
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -75,7 +76,7 @@ class MultiViewControlTab(QtWidgets.QWidget):
         axis_type = dlg.textValue()
 
         if axis_type in ("X", "Y", "Z"):
-            d = MotorAxisDialog(axis_type, self)
+            d = MotorAxisDialog(axis_type, self, config_path=self._config_path)
         elif axis_type == "Channel":
             d = ChannelAxisDialog(self)
         elif axis_type == "Round":
@@ -99,7 +100,8 @@ class MultiViewControlTab(QtWidgets.QWidget):
             return
 
         if cfg.axis_type in ("X", "Y", "Z"):
-            dlg = MotorAxisDialog(cfg.axis_type, config=cfg)
+            dlg = MotorAxisDialog(cfg.axis_type, config=cfg,
+                                  config_path=self._config_path)
         elif cfg.axis_type == "Channel":
             dlg = ChannelAxisDialog(self)
         elif cfg.axis_type == "Round":

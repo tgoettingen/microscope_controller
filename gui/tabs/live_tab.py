@@ -11,12 +11,19 @@ from .plot_panel import PlotPanel
 from .detector_image_panel import DetectorImagePanel
 from .detector_control_panel import DetectorControlPanel
 
+try:
+    from utils import multichannel_h5
+except ImportError:
+    multichannel_h5 = None  # type: ignore
+
 
 class LiveTab(QtWidgets.QWidget):
     hover_info = QtCore.pyqtSignal(str)
     view_changed = QtCore.pyqtSignal(str)
     # emitted when user toggles streaming for a detector: (detector_id, enabled)
     stream_toggled = QtCore.pyqtSignal(str, bool)
+    # emitted to post a message to the main window status bar: (message, timeout_ms)
+    status_message = QtCore.pyqtSignal(str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,6 +75,10 @@ class LiveTab(QtWidgets.QWidget):
         # view mode: "camera" or "detector"
         self.view_mode = "camera"
 
+        # Remember last-used layout-preference for the Load dialog
+        # True  → keep current layout, False → use data layout
+        self._load_keep_layout: bool = True
+
         self._build_ui()
 
     def _build_ui(self):
@@ -82,8 +93,30 @@ class LiveTab(QtWidgets.QWidget):
         self.camera_btn.setChecked(True)
         toggle_layout.addWidget(self.camera_btn)
         toggle_layout.addWidget(self.detector_btn)
-        # Load data button
-        self.load_btn = QtWidgets.QPushButton("Load Data")
+
+        # "Load Data" tool-button with a drop-down for the layout preference.
+        # Using QToolButton lets us attach a small menu arrow without a second widget.
+        self.load_btn = QtWidgets.QToolButton()
+        self.load_btn.setText("Load Data")
+        self.load_btn.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self.load_btn.setPopupMode(
+            QtWidgets.QToolButton.ToolButtonPopupMode.MenuButtonPopup
+        )
+        load_menu = QtWidgets.QMenu(self.load_btn)
+        self._load_data_action = load_menu.addAction("Load Data…")
+        self._load_data_action.setShortcut("Ctrl+O")
+        load_menu.addSeparator()
+        self.keep_layout_action = load_menu.addAction("Keep Current Layout When Loading")
+        self.keep_layout_action.setCheckable(True)
+        self.keep_layout_action.setChecked(self._load_keep_layout)
+        self.keep_layout_action.setToolTip(
+            "When checked, the current view mode, X axis, Z slice, draw-lines\n"
+            "and window size are preserved after loading data.\n"
+            "When unchecked, the layout is inferred from the loaded data."
+        )
+        self.load_btn.setMenu(load_menu)
         toggle_layout.addWidget(self.load_btn)
 
         # Export heatmap button
@@ -98,6 +131,8 @@ class LiveTab(QtWidgets.QWidget):
         self.camera_btn.clicked.connect(self._set_camera_view)
         self.detector_btn.clicked.connect(self._set_detector_view)
         self.load_btn.clicked.connect(self._on_load_data)
+        self._load_data_action.triggered.connect(self._on_load_data)
+        self.keep_layout_action.toggled.connect(self._on_keep_layout_toggled)
         self.export_heatmap_btn.clicked.connect(self._on_export_heatmap)
         self.export_plot_btn.clicked.connect(self._on_export_plot_data)
 
@@ -188,14 +223,21 @@ class LiveTab(QtWidgets.QWidget):
             (255, 255, 255),  # white
         ]
         self._det_color_idx = 0
-        # X-axis selector for multi-axis plots
+        # X-axis selector for multi-axis plots + line toggle
         xsel_layout = QtWidgets.QHBoxLayout()
         xsel_layout.addWidget(QtWidgets.QLabel("X Axis:"))
         self.xaxis_combo = QtWidgets.QComboBox()
         self.xaxis_combo.addItem("Index")
         self.xaxis_combo.currentTextChanged.connect(self._update_plot)
         xsel_layout.addWidget(self.xaxis_combo)
+        xsel_layout.addSpacing(12)
+        self.draw_lines_cb = QtWidgets.QCheckBox("Lines")
+        self.draw_lines_cb.setChecked(True)
+        self.draw_lines_cb.toggled.connect(self._on_draw_lines_toggled)
+        xsel_layout.addWidget(self.draw_lines_cb)
+        xsel_layout.addStretch(1)
         layout.addLayout(xsel_layout)
+        self._draw_lines: bool = True
 
         # Preferred x-axis to select after the next refresh of available axes.
         # This is used to apply the Multi-Axis tab's "Default X Axis" to the
@@ -729,34 +771,55 @@ class LiveTab(QtWidgets.QWidget):
     # -----------------------------
     # view mode
     # -----------------------------
-    def _set_camera_view(self):
-        self.view_mode = "camera"
-        self.camera_btn.setChecked(True)
-        self.detector_btn.setChecked(False)
+    def _apply_view_mode(self, mode: str, *, emit_signal: bool = True) -> None:
+        """Update view_mode state and button appearance.
+
+        Parameters
+        ----------
+        mode : "camera" | "detector"
+        emit_signal : bool
+            When True (the default), ``view_changed`` is emitted so that the
+            main window can show/hide the appropriate dock widgets.
+            Pass False when calling from data-loading paths where dock layout
+            must **not** be disturbed (the caller is responsible for any dock
+            management after data is fully loaded).
+        """
+        self.view_mode = mode
+        is_det = (mode == "detector")
+        self.camera_btn.setChecked(not is_det)
+        self.detector_btn.setChecked(is_det)
+
+        # Only touch widget visibility when NOT inside a dock; when docked the
+        # main window handles show/hide via the view_changed signal.
         try:
-            self.camera_panel.show()
-            self.detector_image_panel.hide()
-            # notify main window so docks can be toggled
+            det_parent = self.detector_image_panel.parent()
+            cam_parent = self.camera_panel.parent()
+            in_dock = isinstance(det_parent, QtWidgets.QDockWidget) or isinstance(cam_parent, QtWidgets.QDockWidget)
+        except Exception:
+            in_dock = False
+
+        if not in_dock:
+            try:
+                if is_det:
+                    self.camera_panel.hide()
+                    self.detector_image_panel.show()
+                else:
+                    self.camera_panel.show()
+                    self.detector_image_panel.hide()
+            except Exception:
+                pass
+
+        if emit_signal:
             try:
                 self.view_changed.emit(self.view_mode)
             except Exception:
                 pass
-        except Exception:
-            pass
+
+    def _set_camera_view(self):
+        self._apply_view_mode("camera", emit_signal=True)
 
     def _set_detector_view(self):
-        self.view_mode = "detector"
-        self.camera_btn.setChecked(False)
-        self.detector_btn.setChecked(True)
-        try:
-            self.camera_panel.hide()
-            self.detector_image_panel.show()
-            try:
-                self.view_changed.emit(self.view_mode)
-            except Exception:
-                pass
-        except Exception:
-            pass
+        self._apply_view_mode("detector", emit_signal=True)
 
     # -----------------------------
     # reset helpers
@@ -906,6 +969,8 @@ class LiveTab(QtWidgets.QWidget):
             self._plot_mode = "strip"
         except Exception:
             pass
+        # Clear any run-scoped x-axis preference so strip-chart mode is unaffected.
+        self._preferred_plot_xaxis = None
         # refresh x-axis choices
         self._refresh_xaxis_options()
 
@@ -1083,14 +1148,17 @@ class LiveTab(QtWidgets.QWidget):
                 for it in items:
                     self.xaxis_combo.addItem(it)
 
+                # _preferred_plot_xaxis stays set for the entire run so that every
+                # rebuild of the combo (from register_detector, visibility changes,
+                # etc.) consistently re-applies the user's chosen axis.
+                # It is only cleared by reset_multiaxis() when the run ends.
                 desired = self._preferred_plot_xaxis or current
                 idx = self.xaxis_combo.findText(desired)
                 if idx >= 0:
                     self.xaxis_combo.setCurrentIndex(idx)
-                    # consume the preference once it has been applied
-                    self._preferred_plot_xaxis = None
                 else:
-                    # fall back to prior selection if possible
+                    # Desired axis not available yet (no data); fall back to
+                    # prior selection if possible.
                     idx2 = self.xaxis_combo.findText(current)
                     if idx2 >= 0:
                         self.xaxis_combo.setCurrentIndex(idx2)
@@ -1149,14 +1217,124 @@ class LiveTab(QtWidgets.QWidget):
         return "detector"
 
     def _on_load_data(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Load Data",
             "",
             "Data files (*.h5 *.hdf5 *.txt *.npy *.csv);;All files (*)",
         )
-        if not path:
+        if not paths:
             return
+
+        # ── Snapshot current display layout before touching anything ──────
+        layout_snapshot = self._capture_display_layout()
+
+        try:
+            self.status_message.emit(f"Loading {len(paths)} file(s) …", 0)
+        except Exception:
+            pass
+
+        # ── 1. Parse every selected file ──────────────────────────────────
+        parsed: list[tuple] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                mid, channels, file_layout = self._parse_data_file(path)
+                parsed.append((mid, channels, file_layout))
+            except Exception as exc:
+                errors.append(f"{Path(path).name}: {exc}")
+
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self, "Load errors",
+                "Some files could not be read:\n" + "\n".join(errors),
+            )
+
+        if not parsed:
+            self.status_message.emit("Load failed — no valid files.", 6000)
+            return
+
+        # ── 2. Group files by measurement UUID ────────────────────────────
+        import uuid as _uuid
+        groups: dict[str, list[dict]] = {}
+        saved_layouts: list[dict] = []        # collect all non-None saved layouts
+        for mid, channels, file_layout in parsed:
+            key = mid if mid else str(_uuid.uuid4())
+            groups.setdefault(key, []).append(channels)
+            if file_layout:
+                saved_layouts.append(file_layout)
+
+        # ── 3. Warn when files belong to different measurements ───────────
+        if len(groups) > 1:
+            msg_lines = ["The selected files belong to different measurements:"]
+            for k, grp in groups.items():
+                total_ch = sum(len(g) for g in grp)
+                short_k = (k[:8] + "…") if len(k) >= 8 else k
+                msg_lines.append(f"  • {short_k}  ({total_ch} channel(s))")
+            msg_lines.append(
+                "\nThey will be loaded together.\n"
+                "Conflicting channel names are renamed automatically "
+                "(e.g. detector1 → detector1_2)."
+            )
+            QtWidgets.QMessageBox.information(
+                self, "Multiple measurements", "\n".join(msg_lines)
+            )
+
+        # ── 4. Merge all groups, renaming duplicate channel ids ───────────
+        merged: dict[str, np.ndarray] = {}
+        for group_list in groups.values():
+            for channels in group_list:
+                for det_id, arr in channels.items():
+                    if det_id not in merged:
+                        merged[det_id] = arr
+                    else:
+                        suffix = 2
+                        new_id = f"{det_id}_{suffix}"
+                        while new_id in merged:
+                            suffix += 1
+                            new_id = f"{det_id}_{suffix}"
+                        merged[new_id] = arr
+
+        # ── 5. Keep or replace the layout based on the persistent toggle ──
+        keep_layout = self._load_keep_layout
+
+        # ── 6. Load data (always data-driven first) ───────────────────────
+        self._load_channels_into_view(merged)
+
+        # ── 7. Apply layout ───────────────────────────────────────────────
+        if keep_layout:
+            # User wants to preserve the current display layout
+            self._restore_display_layout(layout_snapshot)
+        else:
+            # Try to restore the layout saved in the file(s).
+            # Use the first file's layout; if none found or restore fails,
+            # silently fall back to the data-driven layout already applied.
+            if saved_layouts:
+                try:
+                    self._restore_display_layout(saved_layouts[0])
+                except Exception:
+                    pass   # data-driven layout already in place — keep it
+
+        # ── 8. Emit view_changed so docks settle into the final state ────────
+        # When the user chose to KEEP the current layout, the docks have not
+        # moved at all (every internal state change used emit_signal=False).
+        # Emitting here would cause _on_live_view_changed to aggressively
+        # hide/show docks based on view_mode, overriding the user's layout.
+        # So only emit when we actually want the docks to follow the data.
+        if not keep_layout:
+            try:
+                self.view_changed.emit(self.view_mode)
+            except Exception:
+                pass
+
+        total_pts = sum(len(a) for a in merged.values())
+        uuid_count = len(groups)
+        label = "same measurement" if uuid_count == 1 else f"{uuid_count} different measurements"
+        self.status_message.emit(
+            f"Loaded {len(merged)} channel(s), {total_pts} points  ({label})", 8000
+        )
+        return
+
         try:
             # Load into numpy arrays
             times = None
@@ -1345,6 +1523,13 @@ class LiveTab(QtWidgets.QWidget):
                     self._update_multiaxis_visualization()
                 except Exception:
                     pass
+                try:
+                    n_pts = len(coords)
+                    self.status_message.emit(
+                        f"Loaded scan: {Path(path).name}  ({n_pts} points, detector: {det_id})", 8000
+                    )
+                except Exception:
+                    pass
 
             else:
                 # Treat as strip chart (value vs time)
@@ -1395,9 +1580,491 @@ class LiveTab(QtWidgets.QWidget):
                 # Prefer camera view for strip chart mode (keeps camera panel visible);
                 # plot is always visible underneath.
                 self._set_camera_view()
+                try:
+                    n_pts = len(t_plot)
+                    self.status_message.emit(
+                        f"Loaded strip chart: {Path(path).name}  ({n_pts} samples, detector: {det_id})", 8000
+                    )
+                except Exception:
+                    pass
 
         except Exception as e:
+            try:
+                self.status_message.emit(f"Load failed: {Path(path).name} — {e}", 8000)
+            except Exception:
+                pass
             QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}\n\nError: {e}")
+
+    def _load_multichannel_h5(self, path: str) -> None:
+        """Load all detectors from a multi-channel HDF5 file."""
+        if multichannel_h5 is None:
+            QtWidgets.QMessageBox.warning(self, "Load Data", "multichannel_h5 module not available.")
+            return
+        try:
+            channels = multichannel_h5.load(path)
+        except Exception as e:
+            self.status_message.emit(f"Load failed: {Path(path).name} — {e}", 8000)
+            QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}\n\n{e}")
+            return
+
+        if not channels:
+            self.status_message.emit(f"No channels found in {Path(path).name}", 6000)
+            return
+
+        # Reset prior data
+        try:
+            self.reset_1d_detector()
+        except Exception:
+            pass
+        try:
+            self.reset_multiaxis()
+        except Exception:
+            pass
+
+        det_ids = list(channels.keys())
+        try:
+            self.set_selected_detectors(det_ids)
+        except Exception:
+            pass
+
+        total_pts = 0
+        for det_id, arr in channels.items():
+            # arr columns: [timestamp, value, x, y, z]
+            if arr.ndim != 2 or arr.shape[1] < 2:
+                continue
+            vals = arr[:, 1]
+            xs = arr[:, 2] if arr.shape[1] > 2 else None
+            ys = arr[:, 3] if arr.shape[1] > 3 else None
+            zs = arr[:, 4] if arr.shape[1] > 4 else None
+
+            finite_vals = np.isfinite(vals)
+            has_xy = (xs is not None and ys is not None and
+                      np.any(np.isfinite(xs) & np.isfinite(ys) & finite_vals))
+
+            self.register_detector(det_id)
+
+            if has_xy:
+                coords: list[tuple[dict, float]] = []
+                zvals: set[float] = set()
+                for i in range(len(vals)):
+                    if not np.isfinite(vals[i]):
+                        continue
+                    st: dict = {}
+                    try:
+                        st["X"] = float(xs[i])
+                        st["Y"] = float(ys[i])
+                        if zs is not None and np.isfinite(zs[i]):
+                            zf = float(zs[i])
+                            st["Z"] = zf
+                            zvals.add(zf)
+                    except Exception:
+                        continue
+                    coords.append((st, float(vals[i])))
+                self.multi_coords[det_id] = coords
+                total_pts += len(coords)
+                for z in zvals:
+                    self._z_values_set.add(z)
+            else:
+                # strip-chart channel
+                times = arr[:, 0]
+                t0 = float(times[0]) if len(times) > 0 else 0.0
+                t_rel = times - t0
+                mask = np.isfinite(vals)
+                self._detector_times[det_id] = deque(t_rel[mask].tolist(), maxlen=self._window_size)
+                self._detector_buffers[det_id] = deque(vals[mask].tolist(), maxlen=self._window_size)
+                total_pts += int(mask.sum())
+
+        if self.multi_coords:
+            self._z_values = sorted(self._z_values_set)
+            try:
+                self.z_slider.setMaximum(max(0, len(self._z_values) - 1))
+            except Exception:
+                pass
+            self._multi_dirty = True
+            self._last_multi_render = 0.0
+            self._set_detector_view()
+            try:
+                self._refresh_xaxis_options()
+            except Exception:
+                pass
+            try:
+                self._update_multiaxis_visualization()
+            except Exception:
+                pass
+        else:
+            self._set_camera_view()
+
+        self.status_message.emit(
+            f"Loaded {len(det_ids)} channel(s) from {Path(path).name}  ({total_pts} points)", 8000
+        )
+
+    def _capture_display_layout(self) -> dict:
+        """Return a snapshot of the current display settings.
+
+        Captured state
+        --------------
+        view_mode      : "camera" | "detector"
+        xaxis          : current X-axis combo text
+        z_slider       : z-slider integer value
+        draw_lines     : bool
+        window_size    : int
+        """
+        snap: dict = {}
+        try:
+            snap["view_mode"] = str(getattr(self, "view_mode", "camera"))
+        except Exception:
+            snap["view_mode"] = "camera"
+        try:
+            snap["xaxis"] = self.xaxis_combo.currentText()
+        except Exception:
+            snap["xaxis"] = "Index"
+        try:
+            snap["z_slider"] = self.z_slider.value()
+        except Exception:
+            snap["z_slider"] = 0
+        try:
+            snap["draw_lines"] = bool(self.draw_lines_cb.isChecked())
+        except Exception:
+            snap["draw_lines"] = True
+        try:
+            snap["window_size"] = int(self._window_size)
+        except Exception:
+            snap["window_size"] = 200
+        return snap
+
+    def get_display_layout_json(self) -> str:
+        """Return the current display layout as a JSON string for embedding in HDF5 headers."""
+        import json as _json
+        try:
+            return _json.dumps(self._capture_display_layout())
+        except Exception:
+            return "{}"
+
+    def _restore_display_layout(self, snap: dict) -> None:
+        """Restore display settings from a snapshot produced by _capture_display_layout.
+
+        Does NOT emit view_changed — the caller (_on_load_data) emits it once
+        after all layout decisions have been made.
+        """
+        try:
+            mode = snap.get("view_mode", "camera")
+            self._apply_view_mode(mode, emit_signal=False)
+        except Exception:
+            pass
+
+        # Restore X-axis selection — the combo may have been repopulated by the
+        # load, so we try to find the same text first; if missing, keep whatever
+        # the load chose.
+        try:
+            target = snap.get("xaxis", "Index")
+            idx = self.xaxis_combo.findText(target)
+            if idx >= 0:
+                self.xaxis_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+        try:
+            self.z_slider.setValue(int(snap.get("z_slider", 0)))
+        except Exception:
+            pass
+
+        try:
+            self.draw_lines_cb.setChecked(bool(snap.get("draw_lines", True)))
+        except Exception:
+            pass
+
+        try:
+            ws = int(snap.get("window_size", 200))
+            self.set_window_size(ws)
+            self.window_spin.blockSignals(True)
+            self.window_spin.setValue(ws)
+            self.window_spin.blockSignals(False)
+        except Exception:
+            pass
+
+        # Re-render with restored settings
+        try:
+            self._update_plot()
+        except Exception:
+            pass
+
+    def _on_keep_layout_toggled(self, checked: bool) -> None:
+        """Called when the 'Keep Current Layout When Loading' menu item is toggled."""
+        self._load_keep_layout = bool(checked)
+        # Keep the action check-state in sync if called programmatically
+        try:
+            self.keep_layout_action.setChecked(self._load_keep_layout)
+        except Exception:
+            pass
+
+    def _parse_data_file(self, path: str) -> tuple:
+        """Parse one data file.
+
+        Returns
+        -------
+        (measurement_id | None, {det_id: ndarray(N,5)}, layout_dict | None)
+
+        Output arrays always have exactly 5 columns: [timestamp, value, x, y, z].
+        Missing columns are filled with NaN.
+
+        Supported formats:
+          • multi-channel HDF5  (format attr == "multichannel_stream")
+          • single-channel HDF5 (StreamSaver format, dataset 'data')
+          • txt / csv           (comma-separated, optional header)
+          • npy                 (2-D float array)
+        """
+        import h5py
+        import json as _json
+
+        p = Path(path)
+        channels: dict[str, np.ndarray] = {}
+        mid: str | None = None
+        layout: dict | None = None
+
+        if p.suffix.lower() in (".h5", ".hdf5"):
+            with h5py.File(path, "r") as f:
+                raw_mid = f.attrs.get("measurement_id", None)
+                mid = str(raw_mid) if raw_mid is not None else None
+
+                # Read saved display layout (JSON string)
+                raw_layout = f.attrs.get("display_layout", None)
+                if raw_layout is not None:
+                    try:
+                        layout = _json.loads(str(raw_layout))
+                    except Exception:
+                        layout = None
+
+                if str(f.attrs.get("format", "")) == "multichannel_stream":
+                    # multi-channel format (MultiChannelSaver)
+                    dets_grp = f.get("detectors")
+                    if dets_grp:
+                        for det_id in dets_grp:
+                            ds = dets_grp[det_id].get("data")
+                            if ds is not None:
+                                channels[det_id] = np.asarray(ds[:], dtype=float)
+                elif "data" in f:
+                    # single-channel StreamSaver format
+                    arr = np.asarray(f["data"][:], dtype=float)
+                    if arr.ndim == 1:
+                        arr = arr.reshape(1, -1)
+                    raw_det = f["data"].attrs.get("detector", None)
+                    det_id = (
+                        str(raw_det)
+                        if raw_det is not None
+                        else self._infer_loaded_detector_id(path, None)
+                    )
+                    channels[det_id] = arr
+                else:
+                    raise KeyError("No 'data' dataset or 'detectors' group found")
+
+        elif p.suffix.lower() in (".txt", ".csv"):
+            def _f(s: str) -> float:
+                s = (s or "").strip()
+                if not s:
+                    return float("nan")
+                try:
+                    return float(s)
+                except Exception:
+                    return float("nan")
+
+            t_list: list[float] = []
+            v_list: list[float] = []
+            x_list: list[float] = []
+            y_list: list[float] = []
+            z_list: list[float] = []
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                header = fh.readline()
+                if header and "timestamp" not in header.lower():
+                    fh.seek(0)
+                for ln in fh:
+                    ln = ln.strip()
+                    if not ln or ln.startswith("#"):
+                        continue
+                    parts = ln.split(",", 5)
+                    if len(parts) < 2:
+                        continue
+                    t_list.append(_f(parts[0]))
+                    v_list.append(_f(parts[1]))
+                    x_list.append(_f(parts[2]) if len(parts) > 2 else float("nan"))
+                    y_list.append(_f(parts[3]) if len(parts) > 3 else float("nan"))
+                    z_list.append(_f(parts[4]) if len(parts) > 4 else float("nan"))
+            if not t_list:
+                raise ValueError("No numeric rows found")
+            arr = np.column_stack([
+                np.asarray(t_list, float),
+                np.asarray(v_list, float),
+                np.asarray(x_list, float),
+                np.asarray(y_list, float),
+                np.asarray(z_list, float),
+            ])
+            # infer det_id from filename pattern  YYYYMMDD__<id>__stream
+            name_parts = p.stem.split("__")
+            det_id = name_parts[1] if len(name_parts) >= 2 else p.stem
+            channels[det_id] = arr
+
+        elif p.suffix.lower() == ".npy":
+            arr = np.load(path)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            channels[p.stem] = arr
+
+        else:
+            raise ValueError(f"Unsupported file format: {p.suffix!r}")
+
+        # Normalise every array to exactly (N, 5)
+        for k, a in list(channels.items()):
+            if a.ndim == 1:
+                a = a.reshape(1, -1)
+            if a.shape[1] < 5:
+                pad = np.full((a.shape[0], 5 - a.shape[1]), float("nan"))
+                a = np.hstack([a, pad])
+            channels[k] = a
+
+        if not channels:
+            raise ValueError("No channel data could be extracted from the file")
+
+        return mid, channels, layout
+
+    def _load_channels_into_view(self, merged: dict) -> None:
+        """Display merged {det_id: ndarray(N,5)} in the live tab.
+
+        Channels that have finite X+Y coordinates are treated as scan data
+        (multi_coords).  Channels with only timestamp+value become strip-chart
+        traces.
+        """
+        # Reset prior data
+        try:
+            self.reset_1d_detector()
+        except Exception:
+            pass
+        try:
+            self.reset_multiaxis()
+        except Exception:
+            pass
+
+        det_ids = list(merged.keys())
+        try:
+            self.set_selected_detectors(det_ids)
+        except Exception:
+            pass
+
+        has_scan = False
+
+        for det_id, arr in merged.items():
+            arr = np.asarray(arr)
+            if arr.ndim != 2 or arr.shape[1] < 2:
+                continue
+
+            vals = arr[:, 1]
+            xs   = arr[:, 2] if arr.shape[1] > 2 else None
+            ys   = arr[:, 3] if arr.shape[1] > 3 else None
+            zs   = arr[:, 4] if arr.shape[1] > 4 else None
+
+            finite_vals = np.isfinite(vals)
+            has_xy = (
+                xs is not None and ys is not None
+                and np.any(np.isfinite(xs) & np.isfinite(ys) & finite_vals)
+            )
+
+            self.register_detector(det_id)
+
+            if has_xy:
+                has_scan = True
+                coords: list[tuple[dict, float]] = []
+                zvals: set[float] = set()
+                for i in range(len(vals)):
+                    if not np.isfinite(vals[i]):
+                        continue
+                    st: dict = {}
+                    try:
+                        st["X"] = float(xs[i])
+                        st["Y"] = float(ys[i])
+                        if zs is not None and np.isfinite(zs[i]):
+                            zf = float(zs[i])
+                            st["Z"] = zf
+                            zvals.add(zf)
+                    except Exception:
+                        continue
+                    coords.append((st, float(vals[i])))
+                self.multi_coords[det_id] = coords
+                for z in zvals:
+                    self._z_values_set.add(z)
+            else:
+                # strip-chart trace
+                times = arr[:, 0]
+                t0 = float(times[0]) if len(times) > 0 else 0.0
+                t_rel = times - t0
+                mask = np.isfinite(vals)
+                self._detector_times[det_id] = deque(
+                    t_rel[mask].tolist(), maxlen=self._window_size
+                )
+                self._detector_buffers[det_id] = deque(
+                    vals[mask].tolist(), maxlen=self._window_size
+                )
+
+        if has_scan:
+            self._z_values = sorted(self._z_values_set)
+            try:
+                self.z_slider.setMaximum(max(0, len(self._z_values) - 1))
+            except Exception:
+                pass
+            self._multi_dirty = True
+            self._last_multi_render = 0.0
+            # Update internal state only — dock show/hide is handled by the
+            # caller (_on_load_data) after layout preference is applied.
+            self._apply_view_mode("detector", emit_signal=False)
+            try:
+                self._refresh_xaxis_options()
+            except Exception:
+                pass
+            try:
+                self._update_multiaxis_visualization()
+            except Exception:
+                pass
+        else:
+            self._apply_view_mode("camera", emit_signal=False)
+
+    def export_all_channels(self) -> None:
+        """Save all currently loaded/acquired multi-channel data to one HDF5 file."""
+        if multichannel_h5 is None:
+            QtWidgets.QMessageBox.warning(self, "Export", "multichannel_h5 module not available.")
+            return
+        if not self.multi_coords:
+            QtWidgets.QMessageBox.information(self, "Export", "No multi-channel scan data to export.")
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"{ts}__multichannel.h5"
+        try:
+            default_dir = str(Path(__file__).resolve().parents[2] / "data")
+        except Exception:
+            default_dir = ""
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export All Channels",
+            str(Path(default_dir) / default_name),
+            "HDF5 files (*.h5 *.hdf5);;All files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            self.status_message.emit(f"Exporting channels to {Path(path).name} …", 0)
+            out = multichannel_h5.save(path, self.multi_coords)
+            self.status_message.emit(
+                f"Exported {len(self.multi_coords)} channel(s) → {out.name}", 8000
+            )
+        except Exception as e:
+            self.status_message.emit(f"Export failed: {e}", 8000)
+            QtWidgets.QMessageBox.warning(self, "Export", f"Failed to export:\n{e}")
+
+    def _on_draw_lines_toggled(self, checked: bool) -> None:
+        """Toggle connecting lines between data points in the multi-axis plot."""
+        self._draw_lines = bool(checked)
+        # Force immediate re-render with updated line style.
+        self._multi_dirty = True
+        self._last_multi_render = 0.0
 
     def set_xaxis(self, name: str):
         if not hasattr(self, 'xaxis_combo'):
@@ -1547,6 +2214,9 @@ class LiveTab(QtWidgets.QWidget):
                     if getattr(self, "_plot_mode", "strip") != "multiaxis":
                         self._plot_mode = "multiaxis"
                         self._clear_plot_and_legend()
+                        # First data has arrived: refresh x-axis options so the
+                        # preferred x-axis (set before data existed) gets applied.
+                        self._refresh_xaxis_options()
                 except Exception:
                     pass
 
@@ -1587,6 +2257,23 @@ class LiveTab(QtWidgets.QWidget):
                                 reg_pen = pg.mkPen(color=(255, 255, 255), width=2)
                             curve = self.plot_widget.plot([], [], pen=pg.mkPen(reg_pen, width=2), name=det_id)
                             self._detector_curves[det_id] = curve
+
+                        # Apply line/dot style based on toggle
+                        draw_lines = getattr(self, '_draw_lines', True)
+                        try:
+                            existing_pen = curve.opts.get('pen')
+                            if draw_lines:
+                                curve.setPen(existing_pen)
+                                curve.setSymbol(None)
+                            else:
+                                curve.setPen(None)
+                                curve.setSymbol('o')
+                                curve.setSymbolSize(5)
+                                sp = pg.mkPen(existing_pen) if existing_pen else pg.mkPen(color=(255, 255, 255))
+                                curve.setSymbolPen(sp)
+                                curve.setSymbolBrush(sp.color())
+                        except Exception:
+                            pass
 
                         try:
                             curve.setVisible(True)

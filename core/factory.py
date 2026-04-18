@@ -138,7 +138,7 @@ def build_devices(config_path="config/default_devices.json"):
 
     # Stage
     stage_cfg = cfg.get("stage", {"type": "simulated"})
-    if stage_cfg.get("type") == "standa_xy":
+    if stage_cfg.get("type") == "StandaStageXY":
         stage = StandaStageXY(
             com_x=stage_cfg["com_x"],
             com_y=stage_cfg["com_y"]
