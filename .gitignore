@@ -7,3 +7,12 @@ data
 __pycache__/
 devices/plugin_loader.py
 *.h5
+config/default_devices_lab.json
+experiments/big range.json
+experiments/demo.json
+experiments/stage_volt.json
+.vscode/launch.json
+experiments/0.2x0.4scan.json
+.vscode/launch.json
+config/default_devices_stageonly copy.json
+experiments/0.2x0.4scan.json
