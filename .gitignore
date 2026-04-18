@@ -16,3 +16,7 @@ experiments/0.2x0.4scan.json
 .vscode/launch.json
 config/default_devices_stageonly copy.json
 experiments/0.2x0.4scan.json
+dist/
+build/
+*.egg-info/
+
