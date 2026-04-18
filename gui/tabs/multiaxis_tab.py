@@ -14,9 +14,12 @@ class MultiAxisTab(QtWidgets.QWidget):
     stop_requested = QtCore.pyqtSignal()
     # emitted whenever the user changes which detectors are checked
     detectors_changed = QtCore.pyqtSignal(list)
+    # emitted when the Default X Axis combo changes
+    xaxis_changed = QtCore.pyqtSignal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
+        self._config_path = config_path
         self._build_ui()
 
     def _build_ui(self):
@@ -35,6 +38,8 @@ class MultiAxisTab(QtWidgets.QWidget):
             pass
 
         self.axis_list = QtWidgets.QListWidget()
+        self.axis_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.axis_list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         layout.addWidget(QtWidgets.QLabel("Defined Axes:"))
         layout.addWidget(self.axis_list)
 
@@ -43,21 +48,20 @@ class MultiAxisTab(QtWidgets.QWidget):
         xsel_layout.addWidget(QtWidgets.QLabel("Default X Axis:"))
         self.default_xaxis_combo = QtWidgets.QComboBox()
         self.default_xaxis_combo.addItem("Index")
+        self.default_xaxis_combo.currentTextChanged.connect(
+            lambda text: self.xaxis_changed.emit(text)
+        )
         xsel_layout.addWidget(self.default_xaxis_combo)
         layout.addLayout(xsel_layout)
 
-        # Buttons for axis management: add/remove/edit and reorder
+        # Buttons for axis management: add/remove/edit
         btns = QtWidgets.QHBoxLayout()
         self.add_axis_btn = QtWidgets.QPushButton("Add Axis")
         self.edit_axis_btn = QtWidgets.QPushButton("Edit Selected")
         self.remove_axis_btn = QtWidgets.QPushButton("Remove Selected")
-        self.up_axis_btn = QtWidgets.QPushButton("Move Up")
-        self.down_axis_btn = QtWidgets.QPushButton("Move Down")
         btns.addWidget(self.add_axis_btn)
         btns.addWidget(self.edit_axis_btn)
         btns.addWidget(self.remove_axis_btn)
-        btns.addWidget(self.up_axis_btn)
-        btns.addWidget(self.down_axis_btn)
         layout.addLayout(btns)
 
         run_btns = QtWidgets.QHBoxLayout()
@@ -72,10 +76,14 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.add_axis_btn.clicked.connect(self._add_axis_dialog)
         self.edit_axis_btn.clicked.connect(self._edit_selected)
         self.remove_axis_btn.clicked.connect(self._remove_selected)
-        self.up_axis_btn.clicked.connect(self._move_selected_up)
-        self.down_axis_btn.clicked.connect(self._move_selected_down)
         self.start_btn.clicked.connect(self.start_requested.emit)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
+
+        # Enable editing axis by double-clicking the list item
+        self.axis_list.itemDoubleClicked.connect(lambda _: self._edit_selected())
+
+        # Ctrl+Up / Ctrl+Down reorders the selected axis
+        self.axis_list.keyPressEvent = self._axis_list_key_press
 
     def set_available_detectors(self, detectors: list[str]):
         """Populate the available detector list with checkable items.
@@ -162,7 +170,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         axis_type = dlg.textValue()
 
         if axis_type in ("X", "Y", "Z"):
-            d = MotorAxisDialog(axis_type, self)
+            d = MotorAxisDialog(axis_type, self, config_path=self._config_path)
         elif axis_type == "Channel":
             d = ChannelAxisDialog(self)
         elif axis_type == "Detector":
@@ -193,7 +201,8 @@ class MultiAxisTab(QtWidgets.QWidget):
             return
         # Launch the appropriate dialog populated with current config
         if cfg.axis_type in ("X", "Y", "Z"):
-            dlg = MotorAxisDialog(cfg.axis_type, config=cfg)
+            dlg = MotorAxisDialog(cfg.axis_type, config=cfg,
+                                  config_path=self._config_path)
         elif cfg.axis_type == "Channel":
             dlg = ChannelAxisDialog(self)
         elif cfg.axis_type == "Detector":
@@ -237,36 +246,6 @@ class MultiAxisTab(QtWidgets.QWidget):
             item.setText(new_cfg.label())
             item.setData(QtCore.Qt.ItemDataRole.UserRole, new_cfg)
 
-    def _move_selected_up(self):
-        items = self.axis_list.selectedItems()
-        if not items:
-            return
-        row = self.axis_list.row(items[0])
-        if row <= 0:
-            return
-        item = self.axis_list.takeItem(row)
-        self.axis_list.insertItem(row - 1, item)
-        item.setSelected(True)
-        try:
-            self.refresh_default_xaxis_options()
-        except Exception:
-            pass
-
-    def _move_selected_down(self):
-        items = self.axis_list.selectedItems()
-        if not items:
-            return
-        row = self.axis_list.row(items[0])
-        if row >= self.axis_list.count() - 1:
-            return
-        item = self.axis_list.takeItem(row)
-        self.axis_list.insertItem(row + 1, item)
-        item.setSelected(True)
-        try:
-            self.refresh_default_xaxis_options()
-        except Exception:
-            pass
-
     def _remove_selected(self):
         for item in self.axis_list.selectedItems():
             self.axis_list.takeItem(self.axis_list.row(item))
@@ -274,6 +253,37 @@ class MultiAxisTab(QtWidgets.QWidget):
             self.refresh_default_xaxis_options()
         except Exception:
             pass
+
+    def _axis_list_key_press(self, event):
+        """Handle Ctrl+Up / Ctrl+Down to reorder the selected axis."""
+        mod = event.modifiers()
+        key = event.key()
+        ctrl = QtCore.Qt.KeyboardModifier.ControlModifier
+        if mod & ctrl:
+            if key == QtCore.Qt.Key.Key_Up:
+                self._move_axis(-1)
+                return
+            if key == QtCore.Qt.Key.Key_Down:
+                self._move_axis(+1)
+                return
+        # Fall back to default list-widget behaviour for all other keys
+        QtWidgets.QListWidget.keyPressEvent(self.axis_list, event)
+
+    def _move_axis(self, direction: int):
+        """Move the selected axis up (direction=-1) or down (direction=+1)."""
+        items = self.axis_list.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        row = self.axis_list.row(item)
+        new_row = row + direction
+        if new_row < 0 or new_row >= self.axis_list.count():
+            return          # already at the boundary
+
+        # Take the item out and re-insert at the new position
+        taken = self.axis_list.takeItem(row)
+        self.axis_list.insertItem(new_row, taken)
+        self.axis_list.setCurrentItem(taken)   # keep it selected after the move
 
     def get_axis_configs(self) -> list[AxisConfig]:
         cfgs: list[AxisConfig] = []

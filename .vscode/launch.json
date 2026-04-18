@@ -20,7 +20,7 @@
             "program": "${workspaceFolder}/gui/mainwindow.py",
             "args": [
                 "--config", "config/default_devices.json",
-                "--experiment", "experiments/2chan.json"
+                "--experiment", "experiments/0.2x0.4scan.json"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

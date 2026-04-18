@@ -61,35 +61,47 @@ class ExperimentTab(QtWidgets.QWidget):
         self.z_step_spin.setValue(10.0)
 
         self.output_dir_edit = QtWidgets.QLineEdit(str(self._default_output_dir()))
-        self.browse_btn = QtWidgets.QPushButton("Browse...")
+        self.browse_btn = QtWidgets.QPushButton("…")
+        self.browse_btn.setFixedWidth(28)
 
-        # Strip-chart controls (detector streaming only)
+        # Constrain spinbox widths for compactness; hide stepper arrows
+        for spin in (self.interval_spin, self.window_time_spin):
+            spin.setFixedWidth(80)
+            spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+
+        # Strip-chart timing controls – both spinboxes in one compact row
         timing_row = QtWidgets.QWidget()
         timing_layout = QtWidgets.QHBoxLayout(timing_row)
         timing_layout.setContentsMargins(0, 0, 0, 0)
-        timing_layout.setSpacing(8)
-        timing_layout.addWidget(QtWidgets.QLabel("Sample interval [s]"), 0)
+        timing_layout.setSpacing(4)
+        timing_layout.addWidget(QtWidgets.QLabel("Interval:"), 0)
         timing_layout.addWidget(self.interval_spin, 0)
-        timing_layout.addSpacing(10)
-        timing_layout.addWidget(QtWidgets.QLabel("Moving window [s]"), 0)
+        timing_layout.addSpacing(6)
+        timing_layout.addWidget(QtWidgets.QLabel("Window:"), 0)
         timing_layout.addWidget(self.window_time_spin, 0)
         timing_layout.addStretch(1)
-        form.addRow("Timing", timing_row)
+        form.addRow("Timing:", timing_row)
+
         out_row = QtWidgets.QWidget()
         out_row_layout = QtWidgets.QHBoxLayout(out_row)
         out_row_layout.setContentsMargins(0, 0, 0, 0)
-        out_row_layout.setSpacing(6)
+        out_row_layout.setSpacing(4)
         out_row_layout.addWidget(self.output_dir_edit, 1)
         out_row_layout.addWidget(self.browse_btn, 0)
-        form.addRow("Output dir", out_row)
+        form.addRow("Output:", out_row)
+
+        # multichannel_cb is kept as a hidden attribute so the menu action in
+        # mainwindow can still read/write its state without touching the UI.
+        self.multichannel_cb = QtWidgets.QCheckBox()
+        self.multichannel_cb.setChecked(True)
 
         layout.addLayout(form)
 
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(6)
-        self.start_btn = QtWidgets.QPushButton("Start Strip Chart")
-        self.stop_btn = QtWidgets.QPushButton("Stop Strip Chart")
+        btn_layout.setSpacing(4)
+        self.start_btn = QtWidgets.QPushButton("Start")
+        self.stop_btn = QtWidgets.QPushButton("Stop")
         btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.stop_btn)
         layout.addLayout(btn_layout)
@@ -142,5 +154,6 @@ class ExperimentTab(QtWidgets.QWidget):
             # it in the strip-chart UI.
             "det_scale": 1.0,
             "det_offset": 0.0,
+            "multichannel": self.multichannel_cb.isChecked(),
         }
         self.start_requested.emit(cfg)
