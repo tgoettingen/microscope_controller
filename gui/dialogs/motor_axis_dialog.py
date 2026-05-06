@@ -4,9 +4,10 @@ import json
 import re
 from pathlib import Path
 
-from PyQt6 import QtWidgets, QtGui
+from PyQt6 import QtWidgets, QtGui, QtCore
 
 from core.multiaxis import AxisConfig
+from core.factory import build_devices, load_config
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -110,6 +111,9 @@ class MotorAxisDialog(QtWidgets.QDialog):
                  config_path: str | Path | None = None):
         super().__init__(parent)
         self.axis_type = axis_type
+        self._config_path = config_path
+        self._fallback_stage = None
+        self._fallback_focus = None
         self.setWindowTitle(f"{axis_type} Axis Settings")
 
         # Determine unit for X/Y stage axes from the device config
@@ -190,6 +194,13 @@ class MotorAxisDialog(QtWidgets.QDialog):
         layout.addRow("Motors", self.motors_edit)
         layout.addRow("Motor mode", self.mode_combo)
 
+        # ── Live motor position (read-only, updates every second) ──────────
+        self.current_pos_edit = QtWidgets.QLineEdit()
+        self.current_pos_edit.setReadOnly(True)
+        self.current_pos_edit.setPlaceholderText("N/A")
+        self._set_current_pos_style(False)
+        layout.addRow("Current position", self.current_pos_edit)
+
         # ── Synchronized-move parameters ─────────────────────────────────────
         self.sync_timeout_spin = ScientificSpinBox()
         self.sync_timeout_spin.setRange(0.001, 3600.0)
@@ -240,6 +251,121 @@ class MotorAxisDialog(QtWidgets.QDialog):
         # Restore values from a previous AxisConfig if provided
         if config is not None:
             self._restore(config)
+
+        self._pos_timer = QtCore.QTimer(self)
+        self._pos_timer.setInterval(1000)
+        self._pos_timer.timeout.connect(self._update_current_position)
+        self._pos_timer.start()
+        self._update_current_position()
+
+    def _root_main_window(self):
+        """Return top-level window to access live stage/focus devices if available."""
+        try:
+            return self.window()
+        except Exception:
+            return None
+
+    def _configured_device_type(self, key: str) -> str | None:
+        """Return the configured device type for the given config section."""
+        try:
+            cfg = load_config(self._config_path) if self._config_path else {}
+            section = cfg.get(key, {}) if isinstance(cfg, dict) else {}
+            if isinstance(section, dict):
+                dev_type = section.get("type")
+                return str(dev_type) if dev_type is not None else None
+        except Exception:
+            pass
+        return None
+
+    def _fallback_position_device(self, key: str):
+        """Build a simulated stage/focus only when no live device exists yet."""
+        cache_name = "_fallback_stage" if key == "stage" else "_fallback_focus"
+        cached = getattr(self, cache_name, None)
+        if cached is not None:
+            return cached
+
+        dev_type = self._configured_device_type(key)
+        if dev_type != "simulated":
+            return None
+
+        try:
+            _, stage, focus, *_ = build_devices(self._config_path or "config/default_devices.json")
+            device = stage if key == "stage" else focus
+            setattr(self, cache_name, device)
+            return device
+        except Exception:
+            return None
+
+    def _read_axis_position(self) -> float | None:
+        """Read the current axis position from connected devices."""
+        root = self._root_main_window()
+
+        try:
+            if self.axis_type in ("X", "Y"):
+                stage = getattr(root, "stage", None) if root is not None else None
+                if stage is None:
+                    stage = self._fallback_position_device("stage")
+                if stage is None or not hasattr(stage, "get_position"):
+                    return None
+                pos = stage.get_position()
+                if isinstance(pos, (tuple, list)) and len(pos) >= 2:
+                    return float(pos[0] if self.axis_type == "X" else pos[1])
+                # Fallback for unusual stage implementations returning a scalar.
+                return float(pos)
+
+            if self.axis_type == "Z":
+                focus = getattr(root, "focus", None) if root is not None else None
+                if focus is None:
+                    focus = self._fallback_position_device("focus")
+                if focus is None or not hasattr(focus, "get_position"):
+                    return None
+                return float(focus.get_position())
+        except Exception:
+            return None
+
+        return None
+
+    def _update_current_position(self) -> None:
+        """Refresh the read-only current-position field."""
+        try:
+            pos = self._read_axis_position()
+            if pos is None:
+                self.current_pos_edit.setText("N/A")
+                self._set_current_pos_style(False)
+                return
+            unit = self._unit if self.axis_type in ("X", "Y") else "steps"
+            self.current_pos_edit.setText(f"{pos:.6g} {unit}")
+            self._set_current_pos_style(True)
+        except Exception:
+            try:
+                self.current_pos_edit.setText("N/A")
+                self._set_current_pos_style(False)
+            except Exception:
+                pass
+
+    def _set_current_pos_style(self, live: bool) -> None:
+        """Colorize current-position field based on live-data availability."""
+        try:
+            if live:
+                # Soft green when we can read a live position value.
+                self.current_pos_edit.setStyleSheet(
+                    "QLineEdit { background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7; }"
+                )
+            else:
+                # Muted gray when motor is unavailable.
+                self.current_pos_edit.setStyleSheet(
+                    "QLineEdit { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }"
+                )
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        try:
+            if hasattr(self, "_pos_timer") and self._pos_timer is not None:
+                self._pos_timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     # ── Restore from existing config ──────────────────────────────────────────
 

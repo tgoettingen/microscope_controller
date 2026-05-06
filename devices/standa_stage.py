@@ -1,6 +1,7 @@
 from pylablib.devices import Standa
 from .base import SingleAxis
 import logging
+import argparse
 
 
 logger = logging.getLogger(__name__)
@@ -114,3 +115,44 @@ class StandaStageXY:
    def stop(self):
       self.x.stop()
       self.y.stop()
+
+
+def main():
+   parser = argparse.ArgumentParser(description="Quick Standa stage tester")
+   parser.add_argument("--com", required=True, help="COM port, e.g. COM7")
+   parser.add_argument("--delta", type=float, default=0.0, help="Relative move in steps")
+   parser.add_argument("--target", type=float, help="Absolute target position in steps")
+   parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+   args = parser.parse_args()
+
+   logging.basicConfig(
+      level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+      format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+   )
+
+   axis = StandaAxis(args.com)
+   try:
+      print(f"Connected to {args.com}")
+      print(f"Current position: {axis.get_position()}")
+
+      if args.target is not None:
+         print(f"Moving to target: {args.target}")
+         axis.move_to(args.target)
+         print(f"Position after move_to: {axis.get_position()}")
+      elif args.delta != 0:
+         print(f"Moving by delta: {args.delta}")
+         axis.move_by(args.delta)
+         print(f"Position after move_by: {axis.get_position()}")
+      else:
+         print("No move requested. Use --delta or --target to command motion.")
+   except Exception as exc:
+      logger.exception("Stage test failed: %s", exc)
+      raise
+   finally:
+      axis.stop()
+      axis.disconnect()
+      print("Stage stopped and disconnected")
+
+
+if __name__ == "__main__":
+   main()

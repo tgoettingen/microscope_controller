@@ -28,6 +28,30 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
+        },
+        {
+            "name": "sim (default_devices + 2chan)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/gui/mainwindow.py",
+            "args": [
+                "--config", "config/default_devices.json",
+                "--experiment", "experiments/test.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }

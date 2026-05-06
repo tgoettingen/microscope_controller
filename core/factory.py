@@ -234,7 +234,12 @@ def build_devices(config_path="config/default_devices.json"):
                 # set optional scale/offset
                 d.set_scale(dc.get("scale", 1000.0), dc.get("offset", 0.0))
             elif dc.get("type") == "Multimeter":
-                d = Multimeter(gpib=dc.get("gpib"), name=dc.get("name"))
+                d = Multimeter(
+                    gpib=dc.get("gpib"),
+                    nplc=float(dc.get("nplc", 0.02)),
+                    name=dc.get("name"),
+                    mode=dc.get("mode", "volt_dc"),
+                )
                 try:
                     d.set_scale(dc.get("scale", 1.0), dc.get("offset", 0.0))
                 except Exception:
@@ -269,7 +274,12 @@ def build_devices(config_path="config/default_devices.json"):
             )
             detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
         elif detector_cfg.get("type") == "Multimeter":
-            detector = Multimeter(gpib=detector_cfg.get("gpib"), name=detector_cfg.get("name"))
+            detector = Multimeter(
+                gpib=detector_cfg.get("gpib"),
+                nplc=float(detector_cfg.get("nplc", 0.02)),
+                name=detector_cfg.get("name"),
+                mode=detector_cfg.get("mode", "volt_dc"),
+            )
             try:
                 detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
             except Exception:

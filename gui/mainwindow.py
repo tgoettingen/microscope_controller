@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
+   measurement_state_changed = QtCore.pyqtSignal(object)
 
    def __init__(self, config_path: str = "config/default_devices.json"):
       super().__init__()
@@ -143,6 +144,9 @@ class MainWindow(QtWidgets.QMainWindow):
       self.stream_savers: dict[str, StreamSaver] = {}
       self._mc_saver = None  # MultiChannelSaver instance when active
       self._measurement_id: str | None = None  # Universal ID for current measurement
+      self._measurement_state: str = "Finished"
+      self._measurement_kind: str = "Idle"
+      self._measurement_status_label: QtWidgets.QLabel | None = None
       self.image_saver: ImageH5Saver | None = None
       self._image_saver_out_dir: Path | None = None
 
@@ -163,9 +167,61 @@ class MainWindow(QtWidgets.QMainWindow):
       self._original_layout_state: object | None = None
       self._original_layout_geometry: object | None = None
       self._build_ui()
+      self.measurement_state_changed.connect(self._apply_measurement_state)
+      self._set_measurement_state("Finished", kind="Idle")
       self._apply_full_layout()
       self._capture_original_layout()
       self._load_layout(kind="default")
+
+
+   def _set_measurement_state(self, state: str, kind: str | None = None) -> None:
+      """Request a thread-safe update of the measurement state indicator."""
+      try:
+         self.measurement_state_changed.emit({"state": str(state), "kind": kind})
+      except Exception:
+         pass
+
+
+   @QtCore.pyqtSlot(object)
+   def _apply_measurement_state(self, payload: object) -> None:
+      """Apply measurement state text on the GUI thread."""
+      try:
+         if isinstance(payload, dict):
+            state = payload.get("state", "Finished")
+            kind = payload.get("kind", None)
+         else:
+            state = payload
+            kind = None
+         normalized = str(state).strip().title() if state is not None else "Finished"
+      except Exception:
+         normalized = "Finished"
+         kind = None
+      if normalized not in {"Running", "Finished"}:
+         normalized = "Finished"
+
+      if kind is None:
+         kind_text = str(getattr(self, "_measurement_kind", "Idle") or "Idle")
+      else:
+         try:
+            kind_text = str(kind).strip() or "Idle"
+         except Exception:
+            kind_text = "Idle"
+
+      self._measurement_state = normalized
+      self._measurement_kind = kind_text
+      lbl = getattr(self, "_measurement_status_label", None)
+      if lbl is None:
+         return
+      try:
+         if normalized == "Running":
+            lbl.setText(f"Measurement: {normalized} ({kind_text})")
+         else:
+            if kind_text and kind_text != "Idle":
+               lbl.setText(f"Measurement: {normalized} ({kind_text})")
+            else:
+               lbl.setText(f"Measurement: {normalized}")
+      except Exception:
+         pass
 
 
    def _close_all_stream_savers(self):
@@ -206,6 +262,60 @@ class MainWindow(QtWidgets.QMainWindow):
          saver.close()
       except Exception:
          pass
+
+   def _project_root_dir(self) -> Path:
+      """Return the repository root directory for this application."""
+      try:
+         return Path(__file__).resolve().parents[1]
+      except Exception:
+         return Path.cwd()
+
+   def _project_data_dir(self) -> Path:
+      """Return the default data directory under the repository root."""
+      p = self._project_root_dir() / "data"
+      try:
+         p.mkdir(parents=True, exist_ok=True)
+      except Exception:
+         pass
+      return p
+
+   def _project_experiments_dir(self) -> Path:
+      """Return the default experiments directory under the repository root."""
+      p = self._project_root_dir() / "experiments"
+      try:
+         p.mkdir(parents=True, exist_ok=True)
+      except Exception:
+         pass
+      return p
+
+   def _resolve_output_dir(self, raw_path: object | None = None, *, coerce_legacy_data_path: bool = False) -> Path:
+      """Resolve an output directory, defaulting to the project data folder."""
+      text = ""
+      try:
+         text = str(raw_path).strip() if raw_path is not None else ""
+      except Exception:
+         text = ""
+
+      if text:
+         try:
+            p = Path(text).expanduser()
+            if coerce_legacy_data_path and p.is_absolute() and p.name.lower() == "data":
+               try:
+                  p.relative_to(self._project_root_dir())
+               except Exception:
+                  p = self._project_data_dir()
+            if not p.is_absolute():
+               p = self._project_root_dir() / p
+         except Exception:
+            p = self._project_data_dir()
+      else:
+         p = self._project_data_dir()
+
+      try:
+         p.mkdir(parents=True, exist_ok=True)
+      except Exception:
+         pass
+      return p
 
 
    def _wire_view_menu_dock_sync(self):
@@ -439,6 +549,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # --- Create tabs as dock widgets instead of a central tab widget ---
       self.demo_tab = ExperimentTab()
+      try:
+         self.demo_tab.output_dir_edit.setText(str(self._project_data_dir()))
+      except Exception:
+         pass
       self.multi_tab = MultiAxisTab(config_path=self._config_path)
       self.multiviewctl_tab = MultiViewControlTab(config_path=self._config_path)
 
@@ -502,6 +616,12 @@ class MainWindow(QtWidgets.QMainWindow):
       self.live_tab.hover_info.connect(lambda s: self.statusBar().showMessage(s))
       # connect load/save status messages to status bar
       self.live_tab.status_message.connect(lambda msg, ms: self.statusBar().showMessage(msg, ms))
+      try:
+         self._measurement_status_label = QtWidgets.QLabel(self)
+         self._measurement_status_label.setMinimumWidth(180)
+         self.statusBar().addPermanentWidget(self._measurement_status_label)
+      except Exception:
+         self._measurement_status_label = None
       # connect stream toggle signals from live tab
       self.live_tab.stream_toggled.connect(self._on_stream_toggled)
       # NOTE: multi-axis samples are delivered via live_tab.queue_multiaxis_sample()
@@ -994,6 +1114,11 @@ class MainWindow(QtWidgets.QMainWindow):
       menubar = self.menuBar()
 
       file_menu = menubar.addMenu("&File")
+
+      load_hw_cfg = QAction("Load Hardware Config…", self)
+      load_hw_cfg.triggered.connect(self.load_hardware_config)
+      file_menu.addAction(load_hw_cfg)
+      file_menu.addSeparator()
 
       save_exp = QAction("Save Experiment", self)
       load_exp = QAction("Load Experiment", self)
@@ -1622,8 +1747,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
       try:
-         out_dir = Path(cfg.get("output_dir") or Path.cwd() / "data")
-         out_dir.mkdir(parents=True, exist_ok=True)
+         out_dir = self._resolve_output_dir(cfg.get("output_dir"))
          # Generate a unique measurement ID for this run
          self._measurement_id = str(uuid.uuid4())
          layout_json = self.live_tab.get_display_layout_json()
@@ -1794,9 +1918,11 @@ class MainWindow(QtWidgets.QMainWindow):
                self._close_image_saver()
                self.orch = None
                self.orch_thread = None
+               self._set_measurement_state("Finished", kind="Strip Chart")
 
       self.orch_thread = threading.Thread(target=worker, daemon=True)
       self.orch_thread.start()
+      self._set_measurement_state("Running", kind="Strip Chart")
 
    def _on_stream_toggled(self, det_id: str, enabled: bool):
       """Create or close stream saver when user toggles streaming from the LiveTab."""
@@ -1807,7 +1933,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
          if enabled:
             if _SAVING_ENABLED and det_id not in self.stream_savers:
-               out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+               out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
                self.stream_savers[det_id] = StreamSaver(
                   out_dir, det_id,
                   measurement_id=self._measurement_id,
@@ -1873,6 +1999,7 @@ class MainWindow(QtWidgets.QMainWindow):
                   self.statusBar().showMessage("Experiment finished. Stream saved closed.", 5000)
                except Exception:
                   pass
+               self._set_measurement_state("Finished", kind="Strip Chart")
             except Exception:
                try:
                   timer.stop()
@@ -2109,7 +2236,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # register detector views in LiveTab and start stream saver(s) for detector(s) selected in UI
       # (if any); otherwise default to all
       try:
-         out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+         out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
          # Generate a new universal measurement ID for this run
          self._measurement_id = str(uuid.uuid4())
          use_multichannel = bool(getattr(self.demo_tab, 'multichannel_cb', None) and
@@ -2257,9 +2384,11 @@ class MainWindow(QtWidgets.QMainWindow):
                self._close_all_stream_savers()
                self.multi_runner = None
                self.multi_thread = None
+               self._set_measurement_state("Finished", kind="Multi-Axis")
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
       self.multi_thread.start()
+      self._set_measurement_state("Running", kind="Multi-Axis")
 
    def _stop_multiaxis(self):
       try:
@@ -2478,9 +2607,11 @@ class MainWindow(QtWidgets.QMainWindow):
          finally:
             self.multiview_runner = None
             self.multiview_thread = None
+            self._set_measurement_state("Finished", kind="Multi View")
 
       self.multiview_thread = threading.Thread(target=worker, daemon=True)
       self.multiview_thread.start()
+      self._set_measurement_state("Running", kind="Multi View")
 
    def _stop_multiview_scan(self) -> None:
       try:
@@ -2653,13 +2784,12 @@ class MainWindow(QtWidgets.QMainWindow):
       out_dir = None
       # prefer explicit output_dir in meta, otherwise fall back to Demo tab setting
       if isinstance(meta, dict) and meta.get("output_dir"):
-         out_dir = Path(meta.get("output_dir"))
+         out_dir = self._resolve_output_dir(meta.get("output_dir"))
       else:
          try:
-            out_dir = Path(self.demo_tab.output_dir_edit.text() or Path.cwd() / "data")
+            out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
          except Exception:
-            out_dir = Path.cwd() / "data"
-      out_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = self._project_data_dir()
 
       if not _SAVING_ENABLED:
          return
@@ -2793,8 +2923,12 @@ class MainWindow(QtWidgets.QMainWindow):
          pass
 
    def save_full_experiment(self):
+      try:
+         default_path = self._project_experiments_dir() / "experiment.json"
+      except Exception:
+         default_path = Path("experiment.json")
       path, _ = QtWidgets.QFileDialog.getSaveFileName(
-         self, "Save Experiment", "", "Experiment (*.json)"
+         self, "Save Experiment", str(default_path), "Experiment (*.json)"
       )
       if not path:
          return
@@ -2807,7 +2941,7 @@ class MainWindow(QtWidgets.QMainWindow):
          "z_start": self.demo_tab.z_start_spin.value(),
          "z_end": self.demo_tab.z_end_spin.value(),
          "z_step": self.demo_tab.z_step_spin.value(),
-         "output_dir": self.demo_tab.output_dir_edit.text(),
+         "output_dir": str(self._resolve_output_dir(self.demo_tab.output_dir_edit.text())),
          # Legacy keys: scaling is defined in config/default_devices.json.
          "det_scale": 1.0,
          "det_offset": 0.0,
@@ -2840,9 +2974,69 @@ class MainWindow(QtWidgets.QMainWindow):
       with open(path, "w") as f:
          json.dump(data, f, indent=2)
 
-   def load_full_experiment(self):
+   def load_hardware_config(self):
+      """Load a hardware/device config JSON and make it the active config."""
+      try:
+         default_dir = str(self._project_root_dir() / "config")
+      except Exception:
+         default_dir = ""
+
       path, _ = QtWidgets.QFileDialog.getOpenFileName(
-         self, "Load Experiment", "", "Experiment (*.json)"
+         self, "Load Hardware Config", default_dir, "Hardware Config (*.json);;JSON (*.json)"
+      )
+      if not path:
+         return
+
+      try:
+         cfg = load_config(path)
+      except Exception as exc:
+         QtWidgets.QMessageBox.warning(self, "Load Hardware Config", f"Could not read {path}:\n{exc}")
+         return
+
+      self._config_path = path
+
+      # Keep child tabs in sync so new axis dialogs use the selected config.
+      try:
+         self.multi_tab._config_path = path
+      except Exception:
+         pass
+      try:
+         self.multiviewctl_tab._config_path = path
+      except Exception:
+         pass
+
+      # Refresh detector availability from the newly loaded hardware config.
+      try:
+         det_cfg = cfg.get("detector", []) if isinstance(cfg, dict) else []
+         available: list[str] = []
+         if isinstance(det_cfg, list):
+            for i, dc in enumerate(det_cfg):
+               if isinstance(dc, dict):
+                  available.append(dc.get("name") or dc.get("port") or f"detector{i + 1}")
+         elif isinstance(det_cfg, dict):
+            available.append(det_cfg.get("name") or det_cfg.get("port") or "detector")
+
+         if available:
+            self.multi_tab.set_available_detectors(available)
+            if hasattr(self.multi_tab, "set_selected_detectors"):
+               self.multi_tab.set_selected_detectors(list(available))
+            for det_id in available:
+               self.live_tab.register_detector(det_id)
+      except Exception:
+         pass
+
+      try:
+         self.statusBar().showMessage(f"Hardware config loaded: {path}", 5000)
+      except Exception:
+         pass
+
+   def load_full_experiment(self):
+      try:
+         default_dir = str(self._project_experiments_dir())
+      except Exception:
+         default_dir = ""
+      path, _ = QtWidgets.QFileDialog.getOpenFileName(
+         self, "Load Experiment", default_dir, "Experiment (*.json)"
       )
       if not path:
          return
@@ -2858,7 +3052,9 @@ class MainWindow(QtWidgets.QMainWindow):
       self.demo_tab.z_start_spin.setValue(demo["z_start"])
       self.demo_tab.z_end_spin.setValue(demo["z_end"])
       self.demo_tab.z_step_spin.setValue(demo["z_step"])
-      self.demo_tab.output_dir_edit.setText(demo["output_dir"])
+      self.demo_tab.output_dir_edit.setText(
+         str(self._resolve_output_dir(demo.get("output_dir"), coerce_legacy_data_path=True))
+      )
       # det_scale/det_offset are ignored (scaling comes from device config)
 
       # --- Restore Multi-axis tab ---
@@ -2962,7 +3158,9 @@ class MainWindow(QtWidgets.QMainWindow):
          self.demo_tab.z_start_spin.setValue(demo["z_start"])
          self.demo_tab.z_end_spin.setValue(demo["z_end"])
          self.demo_tab.z_step_spin.setValue(demo["z_step"])
-         self.demo_tab.output_dir_edit.setText(demo["output_dir"])
+         self.demo_tab.output_dir_edit.setText(
+            str(self._resolve_output_dir(demo.get("output_dir"), coerce_legacy_data_path=True))
+         )
          # det_scale/det_offset are ignored (scaling comes from device config)
       except Exception:
          pass

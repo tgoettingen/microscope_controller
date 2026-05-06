@@ -170,7 +170,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         axis_type = dlg.textValue()
 
         if axis_type in ("X", "Y", "Z"):
-            d = MotorAxisDialog(axis_type, self, config_path=self._config_path)
+            d = MotorAxisDialog(axis_type, parent=self, config_path=self._config_path)
         elif axis_type == "Channel":
             d = ChannelAxisDialog(self)
         elif axis_type == "Detector":
@@ -201,8 +201,12 @@ class MultiAxisTab(QtWidgets.QWidget):
             return
         # Launch the appropriate dialog populated with current config
         if cfg.axis_type in ("X", "Y", "Z"):
-            dlg = MotorAxisDialog(cfg.axis_type, config=cfg,
-                                  config_path=self._config_path)
+            dlg = MotorAxisDialog(
+                cfg.axis_type,
+                config=cfg,
+                parent=self,
+                config_path=self._config_path,
+            )
         elif cfg.axis_type == "Channel":
             dlg = ChannelAxisDialog(self)
         elif cfg.axis_type == "Detector":
