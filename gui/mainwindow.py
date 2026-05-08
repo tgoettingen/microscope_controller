@@ -61,12 +61,20 @@ from core.multiaxis import (
    ChannelAxis, DetectorAxis, RoundAxis,
 )
 
-from tabs.experiment_tab import ExperimentTab
-from tabs.live_tab import LiveTab
-from tabs.multiaxis_tab import MultiAxisTab
-from tabs.camera_control_tab import CameraControlTab
-from tabs.multiview_camera_tab import MultiViewCameraTab
-from tabs.multiview_control_tab import MultiViewControlTab
+try:
+   from tabs.experiment_tab import ExperimentTab
+   from tabs.live_tab import LiveTab
+   from tabs.multiaxis_tab import MultiAxisTab
+   from tabs.camera_control_tab import CameraControlTab
+   from tabs.multiview_camera_tab import MultiViewCameraTab
+   from tabs.multiview_control_tab import MultiViewControlTab
+except Exception:
+   from gui.tabs.experiment_tab import ExperimentTab
+   from gui.tabs.live_tab import LiveTab
+   from gui.tabs.multiaxis_tab import MultiAxisTab
+   from gui.tabs.camera_control_tab import CameraControlTab
+   from gui.tabs.multiview_camera_tab import MultiViewCameraTab
+   from gui.tabs.multiview_control_tab import MultiViewControlTab
 
 # ── Saving toggle ────────────────────────────────────────────────────────────
 # Set to False to completely disable HDF5/CSV saving (useful for debugging UI).
