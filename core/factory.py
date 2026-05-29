@@ -236,7 +236,7 @@ def build_devices(config_path="config/default_devices.json"):
             elif dc.get("type") == "Multimeter":
                 d = Multimeter(
                     gpib=dc.get("gpib"),
-                    nplc=float(dc.get("nplc", 0.02)),
+                    nplc=float(dc.get("nplc", 1.1)),
                     name=dc.get("name"),
                     mode=dc.get("mode", "volt_dc"),
                 )
@@ -276,7 +276,7 @@ def build_devices(config_path="config/default_devices.json"):
         elif detector_cfg.get("type") == "Multimeter":
             detector = Multimeter(
                 gpib=detector_cfg.get("gpib"),
-                nplc=float(detector_cfg.get("nplc", 0.02)),
+                nplc=float(detector_cfg.get("nplc", 1.1)),
                 name=detector_cfg.get("name"),
                 mode=detector_cfg.get("mode", "volt_dc"),
             )
