@@ -158,6 +158,11 @@ class DetectorImagePanel(QtWidgets.QWidget):
             self.overlay_view.ui.histogram.hide()
         except Exception:
             pass
+        try:
+            self.overlay_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            self.overlay_view.customContextMenuRequested.connect(self._show_overlay_context_menu)
+        except Exception:
+            pass
         self.overlay_view.hide()
 
         main_layout = QtWidgets.QVBoxLayout(self)
@@ -178,6 +183,59 @@ class DetectorImagePanel(QtWidgets.QWidget):
     def _save_setting(self, key: str, value) -> None:
         try:
             self._settings.setValue(key, value)
+        except Exception:
+            pass
+
+    def _reset_image_view(self, img_view: pg.ImageView) -> None:
+        """Reset an ImageView's view range and displayed levels."""
+        try:
+            view = img_view.getView()
+        except Exception:
+            view = None
+        try:
+            item = img_view.getImageItem()
+        except Exception:
+            item = None
+
+        try:
+            if view is not None:
+                view.autoRange()
+        except Exception:
+            pass
+
+        try:
+            if item is not None:
+                image = getattr(item, "image", None)
+                if image is not None:
+                    arr = np.asarray(image)
+                    finite = arr[np.isfinite(arr)]
+                    if finite.size > 0:
+                        item.setLevels(float(np.min(finite)), float(np.max(finite)))
+                        return
+            if hasattr(img_view, "autoLevels"):
+                img_view.autoLevels()
+        except Exception:
+            pass
+
+    def _show_detector_context_menu(self, detector_id: str, img_view: pg.ImageView, pos) -> None:
+        """Show right-click menu for a detector image view."""
+        try:
+            menu = QtWidgets.QMenu(self)
+            reset_action = menu.addAction("Reset Image View")
+            chosen = menu.exec(img_view.mapToGlobal(pos))
+            if chosen == reset_action:
+                self._reset_image_view(img_view)
+        except Exception:
+            pass
+
+    def _show_overlay_context_menu(self, pos) -> None:
+        """Show right-click menu for the overlay image view."""
+        try:
+            menu = QtWidgets.QMenu(self)
+            reset_action = menu.addAction("Reset Image View")
+            chosen = menu.exec(self.overlay_view.mapToGlobal(pos))
+            if chosen == reset_action:
+                self._reset_image_view(self.overlay_view)
         except Exception:
             pass
 
@@ -204,6 +262,13 @@ class DetectorImagePanel(QtWidgets.QWidget):
         try:
             img_view.ui.histogram.show()
             img_view.ui.histogram.setFixedWidth(36)
+        except Exception:
+            pass
+        try:
+            img_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            img_view.customContextMenuRequested.connect(
+                lambda pos, did=detector_id, iv=img_view: self._show_detector_context_menu(did, iv, pos)
+            )
         except Exception:
             pass
 

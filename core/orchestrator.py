@@ -61,14 +61,15 @@ class Orchestrator:
             except Exception:
                 pass
 
-    def shutdown(self) -> None:
-        for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel] + self.detectors:
-            if dev is None:
-                continue
-            try:
-                dev.disconnect()
-            except Exception:
-                pass
+    def shutdown(self, disconnect_devices: bool = True) -> None:
+        if disconnect_devices:
+            for dev in [self.camera, self.stage, self.focus, self.light, self.filter_wheel] + self.detectors:
+                if dev is None:
+                    continue
+                try:
+                    dev.disconnect()
+                except Exception:
+                    pass
         # disconnect signals
         for det in self.detectors:
             try:

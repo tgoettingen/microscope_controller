@@ -30,6 +30,10 @@ class LiveTab(QtWidgets.QWidget):
 
         # per-detector moving window buffers
         self._window_size = 200
+        # Strip-chart should normally follow the newest samples as a moving window.
+        self._follow_strip_x_window = True
+        # Multi-axis scans always auto-fit the x-axis to show the full scan span.
+        self._follow_multiaxis_x_window = True
         self._detector_buffers: dict[str, deque] = {}
         self._detector_times: dict[str, deque] = {}
         self._detector_curves: dict[str, pg.PlotDataItem] = {}
@@ -757,13 +761,204 @@ class LiveTab(QtWidgets.QWidget):
                 "Unsupported file extension. Use .csv, .h5, or .hdf5.",
             )
 
+    def _plot_view_box(self):
+        """Return the PlotWidget's ViewBox when available."""
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+        except Exception:
+            plot_item = getattr(self.plot_widget, "plotItem", None)
+        if plot_item is None:
+            return None
+        try:
+            return plot_item.getViewBox()
+        except Exception:
+            return getattr(plot_item, "vb", None)
+
+    def _plot_data_bounds(self):
+        """Compute x/y bounds from current plot data items."""
+        x_vals: list[float] = []
+        y_vals: list[float] = []
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+        except Exception:
+            plot_item = getattr(self.plot_widget, "plotItem", None)
+        if plot_item is None:
+            return None
+
+        try:
+            items = list(plot_item.listDataItems())
+        except Exception:
+            items = []
+
+        for item in items:
+            try:
+                x, y = item.getData()
+            except Exception:
+                continue
+            if x is None or y is None:
+                continue
+            try:
+                x_arr = np.asarray(x, dtype=float)
+                y_arr = np.asarray(y, dtype=float)
+            except Exception:
+                continue
+            if x_arr.size == 0 or y_arr.size == 0:
+                continue
+            x_arr = x_arr[np.isfinite(x_arr)]
+            y_arr = y_arr[np.isfinite(y_arr)]
+            if x_arr.size == 0 or y_arr.size == 0:
+                continue
+            x_vals.extend([float(np.min(x_arr)), float(np.max(x_arr))])
+            y_vals.extend([float(np.min(y_arr)), float(np.max(y_arr))])
+
+        if not x_vals or not y_vals:
+            return None
+
+        x0, x1 = min(x_vals), max(x_vals)
+        y0, y1 = min(y_vals), max(y_vals)
+        if x0 == x1:
+            x0 -= 1.0
+            x1 += 1.0
+        if y0 == y1:
+            y0 -= 1.0
+            y1 += 1.0
+        return (x0, x1, y0, y1)
+
+    def _follow_strip_chart_window(self) -> None:
+        """Keep the strip-chart x-axis pinned to the newest buffer window."""
+        if getattr(self, "_plot_mode", "strip") != "strip":
+            return
+        if not getattr(self, "_follow_strip_x_window", True):
+            return
+
+        x0 = None
+        x1 = None
+        for times in self._detector_times.values():
+            try:
+                if times:
+                    start = float(times[0])
+                    end = float(times[-1])
+                    x0 = start if x0 is None else min(x0, start)
+                    x1 = end if x1 is None else max(x1, end)
+            except Exception:
+                continue
+
+        if x0 is None or x1 is None:
+            return
+        if x0 == x1:
+            x0 -= 1.0
+            x1 += 1.0
+
+        vb = self._plot_view_box()
+        if vb is None:
+            return
+        try:
+            vb.setXRange(x0, x1, padding=0.02)
+        except Exception:
+            pass
+
+    def _reset_plot_x_axis(self) -> None:
+        self._follow_strip_x_window = True
+        try:
+            self._follow_strip_chart_window()
+        except Exception:
+            pass
+        if getattr(self, "_plot_mode", "strip") != "strip":
+            return
+        if not self._detector_times:
+            vb = self._plot_view_box()
+            if vb is not None:
+                try:
+                    vb.autoRange()
+                except Exception:
+                    pass
+
+    def _reset_plot_y_axis(self) -> None:
+        vb = self._plot_view_box()
+        bounds = self._plot_data_bounds()
+        if vb is None or bounds is None:
+            return
+        _, _, y0, y1 = bounds
+        try:
+            vb.setYRange(y0, y1, padding=0.05)
+        except Exception:
+            try:
+                vb.autoRange()
+            except Exception:
+                pass
+
+    def _reset_plot_axes(self) -> None:
+        self._follow_strip_x_window = True
+        vb = self._plot_view_box()
+        if vb is None:
+            return
+        try:
+            vb.autoRange()
+        except Exception:
+            pass
+
+    def _fit_multiaxis_x_range(self, curves: list[list[float]]) -> None:
+        """Fit the plot x-range to the full multi-axis scan span."""
+        if getattr(self, "_plot_mode", "strip") != "multiaxis":
+            return
+        if not getattr(self, "_follow_multiaxis_x_window", True):
+            return
+        x0 = None
+        x1 = None
+        for xs in curves:
+            try:
+                if not xs:
+                    continue
+                finite = [float(x) for x in xs if np.isfinite(x)]
+                if not finite:
+                    continue
+                lo = min(finite)
+                hi = max(finite)
+                x0 = lo if x0 is None else min(x0, lo)
+                x1 = hi if x1 is None else max(x1, hi)
+            except Exception:
+                continue
+
+        if x0 is None or x1 is None:
+            return
+        if x0 == x1:
+            x0 -= 1.0
+            x1 += 1.0
+
+        vb = self._plot_view_box()
+        if vb is None:
+            return
+        try:
+            vb.setXRange(x0, x1, padding=0.05)
+        except Exception:
+            try:
+                vb.autoRange()
+            except Exception:
+                pass
+
     def _show_plot_context_menu(self, pos) -> None:
-        """Show right-click context menu on the plot with export actions."""
+        """Show right-click context menu on the plot with export and reset actions."""
         try:
             menu = QtWidgets.QMenu(self)
+            follow_x_action = menu.addAction("Follow X")
+            follow_x_action.setCheckable(True)
+            follow_x_action.setChecked(bool(self._follow_strip_x_window))
+            menu.addSeparator()
+            reset_x_action = menu.addAction("Reset X Axis")
+            reset_y_action = menu.addAction("Reset Y Axis")
+            reset_all_action = menu.addAction("Reset X/Y Axes")
+            menu.addSeparator()
             export_action = menu.addAction("Export Plot Data...")
             chosen = menu.exec(self.plot_widget.mapToGlobal(pos))
-            if chosen == export_action:
+            if chosen == follow_x_action:
+                self._on_follow_strip_x_toggled(not self._follow_strip_x_window)
+            elif chosen == reset_x_action:
+                self._reset_plot_x_axis()
+            elif chosen == reset_y_action:
+                self._reset_plot_y_axis()
+            elif chosen == reset_all_action:
+                self._reset_plot_axes()
+            elif chosen == export_action:
                 self._on_export_plot_data()
         except Exception:
             pass
@@ -978,6 +1173,7 @@ class LiveTab(QtWidgets.QWidget):
         """Reset shared plot state so strip-chart traces render after multi-axis runs."""
         # Drop multi-axis data/queue so _update_plot no longer overwrites with scan curves.
         self.reset_multiaxis()
+        self._follow_strip_x_window = True
 
         # Multi-axis rendering clears the plot widget, so recreate detector curves.
         try:
@@ -2066,6 +2262,15 @@ class LiveTab(QtWidgets.QWidget):
         self._multi_dirty = True
         self._last_multi_render = 0.0
 
+    def _on_follow_strip_x_toggled(self, checked: bool) -> None:
+        """Toggle whether the strip-chart x-axis follows the newest samples."""
+        self._follow_strip_x_window = bool(checked)
+        if checked:
+            try:
+                self._follow_strip_chart_window()
+            except Exception:
+                pass
+
     def set_xaxis(self, name: str):
         if not hasattr(self, 'xaxis_combo'):
             return
@@ -2195,6 +2400,11 @@ class LiveTab(QtWidgets.QWidget):
             except Exception:
                 pass
 
+            try:
+                self._follow_strip_chart_window()
+            except Exception:
+                pass
+
         # multi-axis visualization (heatmap + numeric plot)
         # Throttle to avoid UI slowdown on large scans; update regardless of view mode
         # so the heatmap is ready when the user switches to detector view.
@@ -2222,6 +2432,7 @@ class LiveTab(QtWidgets.QWidget):
 
                 any_curve = False
                 updated: set[str] = set()
+                plotted_xs: list[list[float]] = []
                 for det_id, det_list in self.multi_coords.items():
                     if not self._is_detector_visible(det_id):
                         continue
@@ -2243,6 +2454,7 @@ class LiveTab(QtWidgets.QWidget):
                             xs.append(float(val) if val is not None else idx)
                         ys.append(v)
                     if xs:
+                        plotted_xs.append(list(xs))
                         # Reuse the existing per-detector curve objects. If the
                         # plot was cleared, recreate them once.
                         curve = self._detector_curves.get(det_id)
@@ -2286,6 +2498,12 @@ class LiveTab(QtWidgets.QWidget):
 
                         any_curve = True
                         updated.add(det_id)
+
+                try:
+                    if any_curve:
+                        self._fit_multiaxis_x_range(plotted_xs)
+                except Exception:
+                    pass
 
                 # Hide curves that were not updated (e.g., detector hidden/filtered).
                 try:

@@ -229,6 +229,7 @@ def build_devices(config_path="config/default_devices.json"):
                     baudrate=baud,
                     read_timeout=timeout,
                     sample_format=fmt,
+                    mode=dc.get("mode"),
                     name=dc.get("name"),
                 )
                 # set optional scale/offset
@@ -270,6 +271,7 @@ def build_devices(config_path="config/default_devices.json"):
                 baudrate=int(detector_cfg.get("baudrate", 115200)),
                 read_timeout=float(detector_cfg.get("read_timeout", 0.1)),
                 sample_format=detector_cfg.get("format", detector_cfg.get("sample_format", "int24")),
+                mode=detector_cfg.get("mode"),
                 name=detector_cfg.get("name"),
             )
             detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
@@ -285,7 +287,7 @@ def build_devices(config_path="config/default_devices.json"):
             except Exception:
                 pass
         else:
-            detector = SimulatedDetector()  # default
+            raise ValueError(f"Unknown detector type: {detector_cfg.get('type')}")
 
         # Prefer display/ID name from config for UI and saving (single detector config)
         try:

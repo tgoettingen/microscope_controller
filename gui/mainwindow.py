@@ -278,6 +278,58 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          return Path.cwd()
 
+   def _set_comport_mode_for_all(self, detector_obj, mode: int | None = None) -> None:
+      """Apply ComPort mode to one detector or a detector list.
+
+      If mode is None, each detector keeps its current `mode` attribute.
+      """
+      try:
+         dets = detector_obj if isinstance(detector_obj, list) else [detector_obj]
+      except Exception:
+         dets = [detector_obj]
+
+      for d in dets:
+         if d is None or not hasattr(d, "set_mode"):
+            continue
+         try:
+            target_mode = mode if mode is not None else getattr(d, "mode", None)
+            if target_mode is None:
+               continue
+            d.set_mode(int(target_mode))
+         except Exception as e:
+            try:
+               logger.warning(
+                  "Failed to set detector mode for %s: %s",
+                  getattr(d, "name", getattr(d, "port", "detector")),
+                  e,
+               )
+            except Exception:
+               pass
+
+   def _connect_detector_errors(self, detector_obj) -> None:
+      """Show detector errors in the status bar when the detector exposes an error signal."""
+      try:
+         dets = detector_obj if isinstance(detector_obj, list) else [detector_obj]
+      except Exception:
+         dets = [detector_obj]
+
+      for d in dets:
+         if d is None or not hasattr(d, "error"):
+            continue
+         try:
+            d.error.connect(lambda msg, det=d: self.statusBar().showMessage(
+               f"Detector error ({getattr(det, 'name', getattr(det, 'port', 'detector'))}): {msg}",
+               8000,
+            ))
+         except Exception:
+            try:
+               logger.warning(
+                  "Failed to connect detector error signal for %s",
+                  getattr(d, "name", getattr(d, "port", "detector")),
+               )
+            except Exception:
+               pass
+
    def _project_data_dir(self) -> Path:
       """Return the default data directory under the repository root."""
       p = self._project_root_dir() / "data"
@@ -1720,7 +1772,17 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
-      cam, stage, focus, light, fw, det = build_devices(self._config_path)
+      # Reuse existing devices if they are already built and still connected.
+      if not self.devices_built or self.devices_released:
+         cam, stage, focus, light, fw, det = build_devices(self._config_path)
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det = cam, stage, focus, light, fw, det
+         self.devices_built = True
+         self.devices_released = False
+         # Ensure ComPort detectors are in their intended stream mode before acquisition.
+         self._set_comport_mode_for_all(det)
+         self._connect_detector_errors(det)
+      else:
+         cam, stage, focus, light, fw, det = self.cam, self.stage, self.focus, self.light, self.fw, self.det
       # populate available detectors in multi-axis tab
       try:
          det_ids = []
@@ -1918,7 +1980,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      time.sleep(remaining)
             finally:
                try:
-                  self.orch.shutdown()
+                  self.orch.shutdown(disconnect_devices=False)
                except Exception:
                   pass
                # When the measurement finishes, stop stream saving.
@@ -2050,6 +2112,9 @@ class MainWindow(QtWidgets.QMainWindow):
       # Build devices only if not already built or if previously released
       if not self.devices_built or self.devices_released:
          self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         # Ensure ComPort detectors are in their intended stream mode before acquisition.
+         self._set_comport_mode_for_all(self.det)
+         self._connect_detector_errors(self.det)
          self.devices_built = True
          self.devices_released = False
 
@@ -2456,6 +2521,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # Build devices only if not already built or if previously released.
       if not self.devices_built or self.devices_released:
          self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         self._connect_detector_errors(self.det)
          self.devices_built = True
          self.devices_released = False
 
