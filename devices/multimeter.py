@@ -14,7 +14,7 @@ class Multimeter(Detector):
    def __init__(
       self,
       gpib: str | int | None = None,
-      nplc: float = 0.02,
+      nplc: float = 1.1,
       name: str | None = None,
       auto_connect: bool = True,
       mode: str = "volt_dc",

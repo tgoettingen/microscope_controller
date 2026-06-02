@@ -82,6 +82,15 @@ class ComPort(Detector):
             # Open serial port; for binary int16 sampling we still rely on timeout
             # to avoid blocking shutdown.
             self._serial = serial.Serial(self.port, self.baudrate, timeout=self.read_timeout)
+            time.sleep(0.1)  # wait for port to stabilize
+            # Command to send
+            # command = [0x02, 0x0e]   # Add newline if your device expects it
+            # command = b'\0x02 \0x0e'   # Add newline if your device expects it
+            command = b'\0x02 \0x0e'   # Add newline if your device expects it
+            # Send the command
+            self._serial.write(command)
+            print("Command sent:", command)
+
         except Exception as e:
             self.error.emit(f'Failed to open serial port {self.port}: {e}')
             return
