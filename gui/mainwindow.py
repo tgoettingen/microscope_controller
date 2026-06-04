@@ -21,7 +21,7 @@ except Exception:
 # distribution metadata (which can be present even after partial uninstalls).
 try:
    from PyQt6 import QtWidgets, QtCore
-   from PyQt6.QtGui import QAction
+   from PyQt6.QtGui import QAction, QActionGroup
 except Exception:
    # PyQt6 not importable — check whether PyQt5 is present to give targeted advice
    if importlib.util.find_spec("PyQt5") is not None:
@@ -152,6 +152,9 @@ class MainWindow(QtWidgets.QMainWindow):
       self.stream_savers: dict[str, StreamSaver] = {}
       self._mc_saver = None  # MultiChannelSaver instance when active
       self._measurement_id: str | None = None  # Universal ID for current measurement
+      self._last_measurement_paths: list[str] = []
+      self._last_measurement_label: str | None = None
+      self._playback_speed: float = 1.0
       self._measurement_state: str = "Finished"
       self._measurement_kind: str = "Idle"
       self._measurement_status_label: QtWidgets.QLabel | None = None
@@ -234,6 +237,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
    def _close_all_stream_savers(self):
       """Close and remove all active StreamSaver instances and any MultiChannelSaver."""
+      # Keep last completed measurement output path(s) for replay.
+      try:
+         last_paths: list[str] = []
+         mc = getattr(self, "_mc_saver", None)
+         if mc is not None:
+            p = getattr(mc, "h5_path", None)
+            if p is not None:
+               last_paths.append(str(p))
+         for saver in list(self.stream_savers.values()):
+            p = getattr(saver, "h5_path", None)
+            if p is not None:
+               last_paths.append(str(p))
+         if last_paths:
+            self._last_measurement_paths = last_paths
+            try:
+               if len(last_paths) == 1:
+                  self._last_measurement_label = Path(last_paths[0]).name
+               else:
+                  self._last_measurement_label = f"{len(last_paths)} measurement files ({Path(last_paths[0]).name})"
+            except Exception:
+               self._last_measurement_label = "Last measurement"
+      except Exception:
+         pass
       try:
          for saver in list(self.stream_savers.values()):
             try:
@@ -247,6 +273,87 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
       self._close_mc_saver()
       self._measurement_id = None
+
+   def _set_playback_speed(self, speed: float) -> None:
+      try:
+         s = float(speed)
+         if s <= 0:
+            s = 1.0
+      except Exception:
+         s = 1.0
+      self._playback_speed = s
+      try:
+         if hasattr(self, "live_tab") and hasattr(self.live_tab, "set_playback_speed"):
+            self.live_tab.set_playback_speed(s)
+      except Exception:
+         pass
+
+   def _build_replay_channels_from_paths(self, paths: list[str]) -> dict[str, np.ndarray]:
+      """Parse and merge channels from saved file paths for replay."""
+      merged: dict[str, np.ndarray] = {}
+      if not paths:
+         return merged
+      for p in paths:
+         try:
+            _mid, channels, _layout = self.live_tab._parse_data_file(str(p))
+         except Exception:
+            continue
+         for det_id, arr in channels.items():
+            if det_id not in merged:
+               merged[det_id] = arr
+            else:
+               suffix = 2
+               new_id = f"{det_id}_{suffix}"
+               while new_id in merged:
+                  suffix += 1
+                  new_id = f"{det_id}_{suffix}"
+               merged[new_id] = arr
+      return merged
+
+   def _on_play_action(self) -> None:
+      """Play loaded source first; fall back to last completed measurement."""
+      try:
+         loaded = self.live_tab.get_loaded_replay_source() if hasattr(self.live_tab, "get_loaded_replay_source") else None
+      except Exception:
+         loaded = None
+
+      channels = None
+      label = None
+      if loaded is not None:
+         try:
+            channels, label, _paths = loaded
+         except Exception:
+            channels = None
+            label = None
+      elif self._last_measurement_paths:
+         channels = self._build_replay_channels_from_paths(list(self._last_measurement_paths))
+         label = self._last_measurement_label or "Last measurement"
+
+      if not channels:
+         try:
+            self.statusBar().showMessage("No source to play.", 6000)
+         except Exception:
+            pass
+         return
+
+      try:
+         ok = self.live_tab.start_playback(channels, str(label or "source"), speed=self._playback_speed)
+      except Exception:
+         ok = False
+
+      if not ok:
+         try:
+            self.statusBar().showMessage("Failed to start playback.", 6000)
+         except Exception:
+            pass
+
+   def _on_stop_play_action(self) -> None:
+      """Stop/pause current playback."""
+      try:
+         if hasattr(self.live_tab, "stop_playback"):
+            self.live_tab.stop_playback()
+      except Exception:
+         pass
 
    def _close_mc_saver(self):
       """Close and remove the active MultiChannelSaver (if any)."""
@@ -845,6 +952,14 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+      try:
+         if hasattr(self.multi_tab, 'detector_offset_toggled'):
+            self.multi_tab.detector_offset_toggled.connect(self._on_detector_offset_toggled)
+         if hasattr(self.multi_tab, 'detector_offset_value_changed'):
+            self.multi_tab.detector_offset_value_changed.connect(self._on_detector_offset_value_changed)
+      except Exception:
+         pass
+
       # Live-update the plot X axis when the Default X Axis combo changes.
       try:
          if hasattr(self.multi_tab, 'xaxis_changed'):
@@ -1270,6 +1385,31 @@ class MainWindow(QtWidgets.QMainWindow):
       quit_action.triggered.connect(self.close)
       file_menu.addAction(quit_action)
 
+      # --- Play menu ---
+      play_menu = menubar.addMenu("&Play")
+
+      play_action = QAction("Play", self)
+      play_action.setShortcut("Ctrl+D")
+      play_action.triggered.connect(self._on_play_action)
+      play_menu.addAction(play_action)
+
+      stop_play_action = QAction("Stop", self)
+      stop_play_action.setShortcut("Ctrl+E")
+      stop_play_action.triggered.connect(self._on_stop_play_action)
+      play_menu.addAction(stop_play_action)
+
+      speed_menu = play_menu.addMenu("Speed")
+      speed_group = QActionGroup(self)
+      speed_group.setExclusive(True)
+      for txt, val in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("5x", 5.0)):
+         act = QAction(txt, self)
+         act.setCheckable(True)
+         if abs(val - 1.0) < 1e-9:
+            act.setChecked(True)
+         act.triggered.connect(lambda checked, s=val: self._set_playback_speed(s) if checked else None)
+         speed_group.addAction(act)
+         speed_menu.addAction(act)
+
       # --- Action menu ---
       action_menu = menubar.addMenu("&Action")
 
@@ -1285,18 +1425,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
       action_menu.addSeparator()
 
-      run_demo_action = QAction("Run Strip Chart", self)
-      run_demo_action.setShortcut("Ctrl+D")
-      run_demo_action.triggered.connect(lambda: self._start_experiment(self.demo_tab.get_config() if hasattr(self.demo_tab, 'get_config') else {}))
-      action_menu.addAction(run_demo_action)
-
-      stop_demo_action = QAction("Stop Strip Chart", self)
-      stop_demo_action.setShortcut("Ctrl+E")
-      stop_demo_action.triggered.connect(self._stop_experiment)
-      action_menu.addAction(stop_demo_action)
-
-      action_menu.addSeparator()
-
       calibrate_stage_action = QAction("Calibrate Stage…", self)
       calibrate_stage_action.setToolTip(
           "Move & Measure wizard: move the stage a known physical distance\n"
@@ -1304,11 +1432,6 @@ class MainWindow(QtWidgets.QMainWindow):
       )
       calibrate_stage_action.triggered.connect(self._open_stage_calibration)
       action_menu.addAction(calibrate_stage_action)
-
-      help_menu = menubar.addMenu("&Help")
-      about_action = QAction("About", self)
-      about_action.triggered.connect(self._show_about)
-      help_menu.addAction(about_action)
 
       # View menu for toggling docks
       view_menu = menubar.addMenu("&View")
@@ -1373,6 +1496,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
       except Exception:
          pass
+
+      # Help should be the last menu on the menubar.
+      help_menu = menubar.addMenu("&Help")
+      about_action = QAction("About", self)
+      about_action.triggered.connect(self._show_about)
+      help_menu.addAction(about_action)
    
    def _reset_layout_to_default(self):
       """Reset the current layout to the last-saved default layout (if any)."""
@@ -1958,15 +2087,31 @@ class MainWindow(QtWidgets.QMainWindow):
                   if dets:
                      for d in dets:
                         try:
-                           val = d.read_value() if hasattr(d, "read_value") else None
-                           if val is None:
+                           sample = d.read_value() if hasattr(d, "read_value") else None
+                           if sample is None:
                               continue
+                           temp = None
+                           if isinstance(sample, tuple):
+                              val = float(sample[0])
+                              try:
+                                 temp = float(sample[1])
+                              except Exception:
+                                 temp = None
+                           else:
+                              val = float(sample)
                            det_id = getattr(d, "name", getattr(d, "port", "detector"))
                            meta = {
                               "experiment": "strip_chart",
                               "timestamp": time.time(),
                               "output_dir": str(out_dir),
                            }
+                           try:
+                              mode = str(getattr(d, "mode", "")).strip().lower()
+                              meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
+                           except Exception:
+                              pass
+                           if temp is not None:
+                              meta["temperature"] = temp
                            self._on_detector_sample(str(det_id), float(val), meta)
                         except Exception:
                            continue
@@ -2401,8 +2546,33 @@ class MainWindow(QtWidgets.QMainWindow):
                dets = det if isinstance(det, list) else [det]
                for d in dets:
                   try:
-                     val = d.read_value()
+                     sample = d.read_value()
+                     temp = None
+                     if isinstance(sample, tuple):
+                        val = float(sample[0])
+                        try:
+                           temp = float(sample[1])
+                        except Exception:
+                           temp = None
+                     else:
+                        val = float(sample)
                      det_id = getattr(d, "name", getattr(d, "port", "detector"))
+                     sample_meta = dict(state)
+                     try:
+                        mode = str(getattr(d, "mode", "")).strip().lower()
+                        sample_meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
+                     except Exception:
+                        pass
+                     if temp is not None:
+                        sample_meta["temperature"] = temp
+                     else:
+                        try:
+                           if hasattr(d, "read_temperature"):
+                              t = d.read_temperature()
+                              if t is not None:
+                                 sample_meta["temperature"] = float(t)
+                        except Exception:
+                           pass
 
                      # Apply current detector selection for display/visualization.
                      try:
@@ -2415,18 +2585,18 @@ class MainWindow(QtWidgets.QMainWindow):
                      # Thread-safe GUI update: push directly to live_tab's deque
                      # (avoids Qt signal queue overflow on fast scans)
                      try:
-                        self.live_tab.queue_multiaxis_sample(str(det_id), dict(state), float(val))
+                        self.live_tab.queue_multiaxis_sample(str(det_id), sample_meta, float(val))
                      except Exception:
                         pass
                      # stream-save if enabled per detector id
                      try:
                         mc = getattr(self, '_mc_saver', None)
                         if mc is not None:
-                           mc.append_sample(str(det_id), time.time(), float(val), meta=state)
+                           mc.append_sample(str(det_id), time.time(), float(val), meta=sample_meta)
                         else:
                            saver = self.stream_savers.get(det_id)
                            if saver:
-                              saver.append_sample(time.time(), float(val), meta=state)
+                              saver.append_sample(time.time(), float(val), meta=sample_meta)
                      except Exception:
                         pass
                   except Exception:
@@ -2945,6 +3115,32 @@ class MainWindow(QtWidgets.QMainWindow):
          else:
             return
 
+         temp_value = None
+         if isinstance(meta, dict):
+            try:
+               t = meta.get("temperature", None)
+               if t is not None:
+                  temp_value = float(t)
+            except Exception:
+               temp_value = None
+
+         # If upstream did not pass temperature in metadata, read latest cached
+         # detector temperature (ComPort mode 1) from the detector instance.
+         if temp_value is None:
+            try:
+               dets = self.det if isinstance(self.det, list) else ([self.det] if self.det is not None else [])
+               for d in dets:
+                  did = getattr(d, "name", getattr(d, "port", "detector"))
+                  if str(did) != str(det_id):
+                     continue
+                  if hasattr(d, "read_temperature"):
+                     t = d.read_temperature()
+                     if t is not None:
+                        temp_value = float(t)
+                  break
+            except Exception:
+               temp_value = None
+
          # Apply detector selection filtering for display.
          allowed = getattr(self, '_selected_detectors_for_display', None)
          if allowed is not None and det_id not in allowed:
@@ -2959,14 +3155,41 @@ class MainWindow(QtWidgets.QMainWindow):
                return
 
          timestamp = meta.get("timestamp", time.time()) if isinstance(meta, dict) else time.time()
-         # forward to live tab (queued)
+
+         if isinstance(meta, dict) and temp_value is not None:
+            try:
+               meta = dict(meta)
+               meta["temperature"] = float(temp_value)
+            except Exception:
+               pass
+
+         if isinstance(meta, dict):
+            try:
+               dets = self.det if isinstance(self.det, list) else ([self.det] if self.det is not None else [])
+               for d in dets:
+                  did = getattr(d, "name", getattr(d, "port", "detector"))
+                  if str(did) != str(det_id):
+                     continue
+                  mode = str(getattr(d, "mode", "")).strip().lower()
+                  meta = dict(meta)
+                  meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
+                  break
+            except Exception:
+               pass
+
+         # forward to live tab (queued) with metadata so temperature survives
+         try:
+            gui_meta = dict(meta) if isinstance(meta, dict) else {}
+         except Exception:
+            gui_meta = {}
          QtCore.QMetaObject.invokeMethod(
                self.live_tab,
-               "add_detector_sample_qt",
+               "add_detector_sample_qt_meta",
                QtCore.Qt.ConnectionType.QueuedConnection,
                QtCore.Q_ARG(str, det_id),
                QtCore.Q_ARG(float, float(value)),
                QtCore.Q_ARG(float, float(timestamp)),
+               QtCore.Q_ARG(object, gui_meta),
          )
          # stream-save if enabled
          try:
@@ -2993,6 +3216,28 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          if hasattr(self, 'live_tab') and hasattr(self.live_tab, 'set_selected_detectors'):
             self.live_tab.set_selected_detectors(detector_ids)
+      except Exception:
+         pass
+
+   def _on_detector_offset_toggled(self, detector_id: str, enabled: bool):
+      """Apply per-detector display-offset toggle from MultiAxisTab UI."""
+      try:
+         applied = 0.0
+         if hasattr(self, 'live_tab') and hasattr(self.live_tab, 'set_detector_display_offset_state'):
+            applied = float(self.live_tab.set_detector_display_offset_state(detector_id, enabled=bool(enabled), value=None))
+         if hasattr(self, 'multi_tab') and hasattr(self.multi_tab, 'set_detector_offset_state'):
+            self.multi_tab.set_detector_offset_state(detector_id, enabled=bool(enabled), value=applied)
+      except Exception:
+         pass
+
+   def _on_detector_offset_value_changed(self, detector_id: str, value: float):
+      """Apply manual per-detector display-offset value from MultiAxisTab UI."""
+      try:
+         applied = float(value)
+         if hasattr(self, 'live_tab') and hasattr(self.live_tab, 'set_detector_display_offset_state'):
+            applied = float(self.live_tab.set_detector_display_offset_state(detector_id, enabled=None, value=float(value)))
+         if hasattr(self, 'multi_tab') and hasattr(self.multi_tab, 'set_detector_offset_state'):
+            self.multi_tab.set_detector_offset_state(detector_id, enabled=None, value=applied)
       except Exception:
          pass
 

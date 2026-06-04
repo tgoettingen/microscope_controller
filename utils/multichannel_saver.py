@@ -5,7 +5,7 @@ File layout follows utils/multichannel_h5.py:
       attrs: format="multichannel_stream", version="1"
       detectors/
         <detector_id>/
-          data  (N, 5) float64  [timestamp, value, x, y, z]
+                    data  (N, 6) float64  [timestamp, value, x, y, z, temperature]
 """
 
 from __future__ import annotations
@@ -92,11 +92,18 @@ class MultiChannelSaver:
             return
         meta = meta or {}
         x = y = z = float("nan")
+        temp = float("nan")
         try:
             state = meta.get("state", meta)
             x = float(state.get("X", state.get("x", float("nan"))))
             y = float(state.get("Y", state.get("y", float("nan"))))
             z = float(state.get("Z", state.get("z", float("nan"))))
+            # Temperature may be attached either to the nested state payload
+            # or directly on the sample metadata.
+            if isinstance(meta, dict) and "temperature" in meta:
+                temp = float(meta.get("temperature", float("nan")))
+            else:
+                temp = float(state.get("temperature", float("nan")))
         except Exception:
             pass
 
@@ -105,7 +112,7 @@ class MultiChannelSaver:
                 return
             self._ensure_detector(detector_id)
             self._buffers[detector_id].append(
-                (float(timestamp), float(value), x, y, z)
+                (float(timestamp), float(value), x, y, z, temp)
             )
             if len(self._buffers[detector_id]) >= self.flush_every:
                 self._flush_detector(detector_id)
@@ -138,10 +145,10 @@ class MultiChannelSaver:
         grp = self._dets_grp.require_group(safe)
         ds = grp.create_dataset(
             "data",
-            shape=(0, 5),
-            maxshape=(None, 5),
+            shape=(0, 6),
+            maxshape=(None, 6),
             dtype="float64",
-            chunks=(256, 5),
+            chunks=(256, 6),
         )
         ds.attrs["columns"] = COLUMNS
         ds.attrs["detector"] = det_id

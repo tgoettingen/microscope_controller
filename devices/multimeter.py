@@ -148,7 +148,10 @@ class Multimeter(Detector):
       return float(self.dmm.query("READ?").strip())
 
    def read_value(self) -> float:
-      raw = self.read_voltage()
+      if self.mode == "res":
+         raw = self.read_resistance()
+      else:
+         raw = self.read_voltage()
       try:
          return float(self.scale) * float(raw) + float(self.offset)
       except Exception:

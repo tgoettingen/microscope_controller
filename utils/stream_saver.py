@@ -14,7 +14,7 @@ class StreamSaver:
     place — no temp files, no merge step, no data loss on crash (h5py flushes
     after each write).
 
-    Columns: [timestamp, value, x, y, z]
+    Columns: [timestamp, value, x, y, z, temperature]
 
     Usage:
         saver = StreamSaver(output_dir, detector_id, mode='stream', flush_every=256)
@@ -66,7 +66,7 @@ class StreamSaver:
             self.h5_path = self.output_dir / f"{self.base_name}.h5"
 
         # Open HDF5 file and create a resizable dataset.
-        # Columns: timestamp, value, x, y, z
+        # Columns: timestamp, value, x, y, z, temperature
         self._h5_file = h5py.File(self.h5_path, "w")
         if measurement_id is not None:
             self._h5_file.attrs["measurement_id"] = str(measurement_id)
@@ -78,12 +78,12 @@ class StreamSaver:
             self._h5_file.attrs["experiment_type"] = str(experiment_type)
         self._h5_ds = self._h5_file.create_dataset(
             "data",
-            shape=(0, 5),
-            maxshape=(None, 5),
+            shape=(0, 6),
+            maxshape=(None, 6),
             dtype="float64",
-            chunks=(256, 5),
+            chunks=(256, 6),
         )
-        self._h5_ds.attrs["columns"] = ["timestamp", "value", "x", "y", "z"]
+        self._h5_ds.attrs["columns"] = ["timestamp", "value", "x", "y", "z", "temperature"]
         self._h5_ds.attrs["detector"] = str(detector_id)
 
         # Full-fidelity event log (axis/motor events, etc.)
@@ -101,7 +101,7 @@ class StreamSaver:
 
         self._ascii_file = open(self.ascii_path, "a", buffering=1)
         if self.ascii_path.stat().st_size == 0:
-            self._ascii_file.write("timestamp,value,x,y,z,meta\n")
+            self._ascii_file.write("timestamp,value,x,y,z,temperature,meta\n")
 
         self._buffer = []
         self._lock = threading.Lock()
@@ -168,7 +168,17 @@ class StreamSaver:
         except Exception:
             x = y = z = ""
 
-        # format x/y/z for ascii output (empty if not present)
+        temp = ""
+        try:
+            if isinstance(meta, dict):
+                if "temperature" in meta:
+                    temp = meta.get("temperature")
+                elif "state" in meta and isinstance(meta.get("state"), dict):
+                    temp = meta["state"].get("temperature", "")
+        except Exception:
+            temp = ""
+
+        # format x/y/z/temp for ascii output (empty if not present)
         def _fmt(v):
             try:
                 return f"{float(v):.6f}"
@@ -178,11 +188,13 @@ class StreamSaver:
         xs = _fmt(x)
         ys = _fmt(y)
         zs = _fmt(z)
+        ts = _fmt(temp)
 
-        line = f"{timestamp:.6f},{value:.6g},{xs},{ys},{zs},{meta}\n"
+        line = f"{timestamp:.6f},{value:.6g},{xs},{ys},{zs},{ts},{meta}\n"
         with self._lock:
             self._ascii_file.write(line)
-            # buffer now contains timestamp, value, x, y, z (floats, use nan for missing)
+            # buffer now contains timestamp, value, x, y, z, temperature
+            # (floats, use nan for missing)
             try:
                 xf = float(xs) if xs != "" else float('nan')
             except Exception:
@@ -195,8 +207,12 @@ class StreamSaver:
                 zf = float(zs) if zs != "" else float('nan')
             except Exception:
                 zf = float('nan')
+            try:
+                tf = float(ts) if ts != "" else float('nan')
+            except Exception:
+                tf = float('nan')
 
-            self._buffer.append((timestamp, float(value), xf, yf, zf))
+            self._buffer.append((timestamp, float(value), xf, yf, zf, tf))
             if len(self._buffer) >= self.flush_every:
                 self._flush_h5()
 

@@ -37,6 +37,14 @@ class LiveTab(QtWidgets.QWidget):
         self._detector_buffers: dict[str, deque] = {}
         self._detector_times: dict[str, deque] = {}
         self._detector_curves: dict[str, pg.PlotDataItem] = {}
+        self._temperature_buffers: dict[str, deque] = {}
+        self._temperature_times: dict[str, deque] = {}
+        self._temperature_curves: dict[str, pg.PlotDataItem] = {}
+        self._syncing_temp_range = False
+        self._resistance_buffers: dict[str, deque] = {}
+        self._resistance_times: dict[str, deque] = {}
+        self._resistance_curves: dict[str, pg.PlotDataItem] = {}
+        self._syncing_res_range = False
 
         # Tracks whether the shared plot is currently being used for strip-chart
         # or for multi-axis numeric plotting.
@@ -49,7 +57,17 @@ class LiveTab(QtWidgets.QWidget):
         # Keep references to per-detector controls so other UI parts can drive them.
         self._detector_show_cbs: dict[str, QtWidgets.QCheckBox] = {}
         self._detector_stream_cbs: dict[str, QtWidgets.QCheckBox] = {}
+        self._detector_offset_cbs: dict[str, QtWidgets.QCheckBox] = {}
+        self._detector_offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._detector_offset_value_labels: dict[str, QtWidgets.QLabel] = {}
+        self._detector_display_offsets: dict[str, float] = {}
+        self._detector_display_recent: dict[str, deque] = {}
         self._detector_control_rows: dict[str, QtWidgets.QWidget] = {}
+        self._detector_labels: dict[str, QtWidgets.QLabel] = {}
+        self._temp_legend: pg.LegendItem | None = None
+        self._res_axis = None
+        self._temp_axis_visible = True
+        self._res_axis_visible = True
 
         # per-detector image views for heatmaps (created in _build_ui)
         self._detector_image_views: dict[str, pg.ImageView] = {}
@@ -82,6 +100,23 @@ class LiveTab(QtWidgets.QWidget):
         # Remember last-used layout-preference for the Load dialog
         # True  → keep current layout, False → use data layout
         self._load_keep_layout: bool = True
+
+        # Loaded-source replay context (highest priority replay source).
+        self._loaded_replay_channels: dict[str, np.ndarray] | None = None
+        self._loaded_replay_label: str | None = None
+        self._loaded_replay_paths: list[str] = []
+
+        # Playback state for animated replay.
+        self._replay_timer: QtCore.QTimer | None = None
+        self._replay_channels: dict[str, np.ndarray] | None = None
+        self._replay_source_label: str | None = None
+        self._replay_speed: float = 1.0
+        self._replay_running: bool = False
+        self._replay_paused_elapsed: float = 0.0
+        self._replay_start_wall: float = 0.0
+        self._replay_min_ts: float = 0.0
+        self._replay_max_ts: float = 0.0
+        self._replay_last_percent: int = -1
 
         self._build_ui()
 
@@ -196,6 +231,7 @@ class LiveTab(QtWidgets.QWidget):
         self.plot_curve = self.plot_widget.plot([], [])
         self.plot_widget.setLabel("left", "Detector", units="a.u.")
         self.plot_widget.setLabel("bottom", "Time / Coord", units="a.u.")
+        self.plot_widget.setLabel("right", "Temperature", units="raw")
         self.plot_widget.addLegend(offset=(10, 10))
         # Hide the legend initially; it is visually noisy when no curves exist.
         # We'll show it lazily once a named curve is added.
@@ -213,6 +249,41 @@ class LiveTab(QtWidgets.QWidget):
         try:
             self.plot_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
             self.plot_widget.customContextMenuRequested.connect(self._show_plot_context_menu)
+        except Exception:
+            pass
+        try:
+            self.plot_widget.viewport().installEventFilter(self)
+        except Exception:
+            pass
+
+        # Right-side Y axis for temperature traces.
+        self._temp_viewbox = pg.ViewBox(enableMouse=False)
+        self._res_viewbox = pg.ViewBox(enableMouse=False)
+        try:
+            self.plot_widget.scene().addItem(self._temp_viewbox)
+            self.plot_widget.scene().addItem(self._res_viewbox)
+            plot_item = self.plot_widget.getPlotItem()
+            plot_item.showAxis("right")
+            plot_item.getAxis("right").setLabel("Temperature", units="raw")
+            plot_item.getAxis("right").linkToView(self._temp_viewbox)
+            self._temp_viewbox.setXLink(plot_item.vb)
+            self._temp_viewbox.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+
+            self._res_axis = pg.AxisItem("right")
+            self._res_axis.setLabel("Resistance", units="Ohm")
+            try:
+                plot_item.layout.addItem(self._res_axis, 2, 3)
+            except Exception:
+                pass
+            self._res_axis.linkToView(self._res_viewbox)
+            self._res_viewbox.setXLink(plot_item.vb)
+            self._res_viewbox.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+
+            plot_item.vb.sigResized.connect(self._sync_temperature_viewbox)
+            self._sync_temperature_viewbox()
+            self._ensure_temperature_legend()
+            self._set_temperature_axis_visible(True)
+            self._set_resistance_axis_visible(True)
         except Exception:
             pass
         # Color palette for detector curves (cycles for >8 detectors)
@@ -359,6 +430,16 @@ class LiveTab(QtWidgets.QWidget):
                     plot_item.clear()
             except Exception:
                 pass
+
+        # Right-axis temperature items are not owned by PlotWidget.clear().
+        try:
+            self._temp_viewbox.clear()
+        except Exception:
+            pass
+        try:
+            self._res_viewbox.clear()
+        except Exception:
+            pass
 
         # Robust legend reset: pyqtgraph legends can accumulate if a previous one
         # isn't fully removed (they are GraphicsItems attached to the ViewBox).
@@ -857,6 +938,309 @@ class LiveTab(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _sync_temperature_viewbox(self) -> None:
+        """Keep auxiliary right-side ViewBoxes aligned with the main plot area."""
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+            self._temp_viewbox.setGeometry(plot_item.vb.sceneBoundingRect())
+            self._temp_viewbox.linkedViewChanged(plot_item.vb, self._temp_viewbox.XAxis)
+            self._res_viewbox.setGeometry(plot_item.vb.sceneBoundingRect())
+            self._res_viewbox.linkedViewChanged(plot_item.vb, self._res_viewbox.XAxis)
+        except Exception:
+            pass
+
+    def _axis_rect_in_viewport(self, axis_name: str | None = None, axis_item=None):
+        """Return an axis scene rect mapped into plot viewport coordinates."""
+        try:
+            if axis_item is None:
+                plot_item = self.plot_widget.getPlotItem()
+                axis = plot_item.getAxis(axis_name)
+            else:
+                axis = axis_item
+            poly = self.plot_widget.mapFromScene(axis.sceneBoundingRect())
+            return poly.boundingRect()
+        except Exception:
+            return None
+
+    def _zoom_temperature_axis_at(self, scene_pos, wheel_delta: int) -> bool:
+        """Zoom the right-side temperature axis around the mouse position."""
+        try:
+            if wheel_delta == 0:
+                return False
+            self._temp_viewbox.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+            temp_range = self._temp_viewbox.viewRange()[1]
+            y0 = float(temp_range[0])
+            y1 = float(temp_range[1])
+            span = y1 - y0
+            if span == 0:
+                return False
+            mouse_point = self._temp_viewbox.mapSceneToView(scene_pos)
+            mouse_y = float(mouse_point.y())
+            frac = (mouse_y - y0) / span
+            frac = min(max(frac, 0.0), 1.0)
+            zoom_factor = 0.9 if wheel_delta > 0 else (1.0 / 0.9)
+            new_span = span * zoom_factor
+            new_y0 = mouse_y - frac * new_span
+            new_y1 = new_y0 + new_span
+            self._syncing_temp_range = True
+            self._temp_viewbox.setYRange(new_y0, new_y1, padding=0.0)
+            return True
+        except Exception:
+            return False
+        finally:
+            self._syncing_temp_range = False
+
+    def _zoom_resistance_axis_at(self, scene_pos, wheel_delta: int) -> bool:
+        """Zoom the resistance axis around the mouse position."""
+        try:
+            if wheel_delta == 0:
+                return False
+            self._res_viewbox.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+            res_range = self._res_viewbox.viewRange()[1]
+            y0 = float(res_range[0])
+            y1 = float(res_range[1])
+            span = y1 - y0
+            if span == 0:
+                return False
+            mouse_point = self._res_viewbox.mapSceneToView(scene_pos)
+            mouse_y = float(mouse_point.y())
+            frac = (mouse_y - y0) / span
+            frac = min(max(frac, 0.0), 1.0)
+            zoom_factor = 0.9 if wheel_delta > 0 else (1.0 / 0.9)
+            new_span = span * zoom_factor
+            new_y0 = mouse_y - frac * new_span
+            new_y1 = new_y0 + new_span
+            self._syncing_res_range = True
+            self._res_viewbox.setYRange(new_y0, new_y1, padding=0.0)
+            return True
+        except Exception:
+            return False
+        finally:
+            self._syncing_res_range = False
+
+    def eventFilter(self, watched, event):
+        try:
+            viewport = self.plot_widget.viewport()
+        except Exception:
+            viewport = None
+
+        if watched is viewport and event.type() == QtCore.QEvent.Type.Wheel:
+            try:
+                pos = event.position().toPoint()
+            except Exception:
+                try:
+                    pos = event.pos()
+                except Exception:
+                    pos = None
+
+            if pos is not None:
+                res_rect = self._axis_rect_in_viewport(axis_item=self._res_axis)
+                if res_rect is not None and res_rect.contains(pos):
+                    try:
+                        scene_pos = self.plot_widget.mapToScene(pos)
+                    except Exception:
+                        scene_pos = None
+                    if scene_pos is not None:
+                        try:
+                            delta = int(event.angleDelta().y())
+                        except Exception:
+                            delta = 0
+                        if self._zoom_resistance_axis_at(scene_pos, delta):
+                            event.accept()
+                            return True
+                right_rect = self._axis_rect_in_viewport("right")
+                if right_rect is not None and right_rect.contains(pos):
+                    try:
+                        scene_pos = self.plot_widget.mapToScene(pos)
+                    except Exception:
+                        scene_pos = None
+                    if scene_pos is not None:
+                        try:
+                            delta = int(event.angleDelta().y())
+                        except Exception:
+                            delta = 0
+                        if self._zoom_temperature_axis_at(scene_pos, delta):
+                            event.accept()
+                            return True
+
+        if watched is viewport and event.type() == QtCore.QEvent.Type.MouseButtonPress:
+            try:
+                button = event.button()
+            except Exception:
+                button = None
+            if button == QtCore.Qt.MouseButton.RightButton:
+                try:
+                    pos = event.position().toPoint()
+                except Exception:
+                    try:
+                        pos = event.pos()
+                    except Exception:
+                        pos = None
+
+                if pos is not None:
+                    try:
+                        global_pos = viewport.mapToGlobal(pos)
+                    except Exception:
+                        global_pos = None
+                    if global_pos is not None:
+                        res_rect = self._axis_rect_in_viewport(axis_item=self._res_axis)
+                        if res_rect is not None and res_rect.contains(pos):
+                            self._show_axis_context_menu("resistance", global_pos)
+                            event.accept()
+                            return True
+                        right_rect = self._axis_rect_in_viewport("right")
+                        if right_rect is not None and right_rect.contains(pos):
+                            self._show_axis_context_menu("temperature", global_pos)
+                            event.accept()
+                            return True
+
+        return super().eventFilter(watched, event)
+
+    def _fit_temperature_y_range(self) -> None:
+        """Auto-range right Y axis based on visible temperature traces."""
+        if not getattr(self, "_temp_axis_visible", True):
+            return
+        vals: list[float] = []
+        for det_id, buf in self._temperature_buffers.items():
+            try:
+                if not self._is_detector_visible(det_id):
+                    continue
+            except Exception:
+                pass
+            try:
+                vals.extend([float(v) for v in buf if np.isfinite(v)])
+            except Exception:
+                continue
+
+        if not vals:
+            return
+
+        y0 = min(vals)
+        y1 = max(vals)
+        if y0 == y1:
+            y0 -= 1.0
+            y1 += 1.0
+
+        try:
+            self._syncing_temp_range = True
+            self._temp_viewbox.setYRange(y0, y1, padding=0.05)
+        except Exception:
+            pass
+        finally:
+            self._syncing_temp_range = False
+
+    def _fit_resistance_y_range(self) -> None:
+        """Auto-range resistance Y axis based on visible resistance traces."""
+        if not getattr(self, "_res_axis_visible", True):
+            return
+        vals: list[float] = []
+        if getattr(self, "_plot_mode", "strip") == "multiaxis" and self.multi_coords:
+            for det_id, det_list in self.multi_coords.items():
+                try:
+                    if not self._is_detector_visible(det_id):
+                        continue
+                except Exception:
+                    pass
+                for state, value in det_list:
+                    try:
+                        kind = str(state.get("measurement_kind", "voltage")).strip().lower()
+                        if kind != "resistance":
+                            continue
+                        if np.isfinite(float(value)):
+                            vals.append(float(value))
+                    except Exception:
+                        continue
+        else:
+            for det_id, buf in self._resistance_buffers.items():
+                try:
+                    if not self._is_detector_visible(det_id):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    vals.extend([float(v) for v in buf if np.isfinite(v)])
+                except Exception:
+                    continue
+
+        if not vals:
+            return
+
+        y0 = min(vals)
+        y1 = max(vals)
+        if y0 == y1:
+            y0 -= 1.0
+            y1 += 1.0
+
+        try:
+            self._syncing_res_range = True
+            self._res_viewbox.setYRange(y0, y1, padding=0.05)
+        except Exception:
+            pass
+        finally:
+            self._syncing_res_range = False
+
+    def _ensure_temperature_legend(self) -> None:
+        """Create the in-plot temperature legend anchored near the right Y axis."""
+        try:
+            if self._temp_legend is not None:
+                return
+            plot_item = self.plot_widget.getPlotItem()
+            vb = getattr(plot_item, "vb", None)
+            if vb is None:
+                return
+            self._temp_legend = pg.LegendItem(offset=(-10, 10))
+            self._temp_legend.setParentItem(vb)
+            self._temp_legend.hide()
+        except Exception:
+            self._temp_legend = None
+
+    def _rebuild_temperature_legend(self) -> None:
+        """Rebuild the in-plot temperature legend from visible temperature curves."""
+        try:
+            old = self._temp_legend
+            self._temp_legend = None
+            if old is not None:
+                try:
+                    scene = old.scene()
+                    if scene is not None:
+                        scene.removeItem(old)
+                except Exception:
+                    pass
+                try:
+                    old.setParentItem(None)
+                except Exception:
+                    pass
+            self._ensure_temperature_legend()
+            if self._temp_legend is None:
+                return
+            if not getattr(self, "_temp_axis_visible", True):
+                self._temp_legend.hide()
+                return
+
+            show = False
+            for det_id, curve in self._temperature_curves.items():
+                try:
+                    if not self._is_detector_visible(det_id):
+                        continue
+                    x_data, y_data = curve.getData()
+                    if x_data is None or y_data is None or len(x_data) == 0:
+                        continue
+                    self._temp_legend.addItem(curve, str(det_id))
+                    show = True
+                except Exception:
+                    continue
+
+            if show:
+                self._temp_legend.show()
+            else:
+                self._temp_legend.hide()
+        except Exception:
+            pass
+
+    def _update_temperature_legend_visibility(self) -> None:
+        """Refresh the in-plot temperature legend visibility and contents."""
+        self._rebuild_temperature_legend()
+
     def _reset_plot_x_axis(self) -> None:
         self._follow_strip_x_window = True
         try:
@@ -948,6 +1332,13 @@ class LiveTab(QtWidgets.QWidget):
             reset_y_action = menu.addAction("Reset Y Axis")
             reset_all_action = menu.addAction("Reset X/Y Axes")
             menu.addSeparator()
+            temp_axis_action = menu.addAction("Show Temperature Axis")
+            temp_axis_action.setCheckable(True)
+            temp_axis_action.setChecked(bool(getattr(self, "_temp_axis_visible", True)))
+            res_axis_action = menu.addAction("Show Resistance Axis")
+            res_axis_action.setCheckable(True)
+            res_axis_action.setChecked(bool(getattr(self, "_res_axis_visible", True)))
+            menu.addSeparator()
             export_action = menu.addAction("Export Plot Data...")
             chosen = menu.exec(self.plot_widget.mapToGlobal(pos))
             if chosen == follow_x_action:
@@ -958,10 +1349,77 @@ class LiveTab(QtWidgets.QWidget):
                 self._reset_plot_y_axis()
             elif chosen == reset_all_action:
                 self._reset_plot_axes()
+            elif chosen == temp_axis_action:
+                self._set_temperature_axis_visible(bool(temp_axis_action.isChecked()))
+            elif chosen == res_axis_action:
+                self._set_resistance_axis_visible(bool(res_axis_action.isChecked()))
             elif chosen == export_action:
                 self._on_export_plot_data()
         except Exception:
             pass
+
+    def _show_axis_context_menu(self, axis_kind: str, global_pos) -> None:
+        """Show a context menu for a specific Y axis."""
+        try:
+            menu = QtWidgets.QMenu(self)
+            if axis_kind == "temperature":
+                is_visible = bool(getattr(self, "_temp_axis_visible", True))
+                toggle_action = menu.addAction(
+                    "Hide Temperature Axis" if is_visible else "Show Temperature Axis"
+                )
+                chosen = menu.exec(global_pos)
+                if chosen == toggle_action:
+                    self._set_temperature_axis_visible(not is_visible)
+                return
+            if axis_kind == "resistance":
+                is_visible = bool(getattr(self, "_res_axis_visible", True))
+                toggle_action = menu.addAction(
+                    "Hide Resistance Axis" if is_visible else "Show Resistance Axis"
+                )
+                chosen = menu.exec(global_pos)
+                if chosen == toggle_action:
+                    self._set_resistance_axis_visible(not is_visible)
+                return
+        except Exception:
+            pass
+
+    def _set_temperature_axis_visible(self, visible: bool) -> None:
+        """Show/hide temperature axis and temperature curves together."""
+        self._temp_axis_visible = bool(visible)
+        try:
+            plot_item = self.plot_widget.getPlotItem()
+            if self._temp_axis_visible:
+                plot_item.showAxis("right")
+            else:
+                plot_item.hideAxis("right")
+        except Exception:
+            pass
+
+        for det_id, curve in list(self._temperature_curves.items()):
+            try:
+                curve.setVisible(self._temp_axis_visible and self._is_detector_visible(det_id))
+            except Exception:
+                pass
+
+        try:
+            self._update_temperature_legend_visibility()
+        except Exception:
+            pass
+
+    def _set_resistance_axis_visible(self, visible: bool) -> None:
+        """Show/hide resistance axis and resistance curves together."""
+        self._res_axis_visible = bool(visible)
+        try:
+            if self._res_axis is not None:
+                self._res_axis.setVisible(self._res_axis_visible)
+        except Exception:
+            pass
+
+        for det_id, curve in list(self._resistance_curves.items()):
+            try:
+                curve.setVisible(self._res_axis_visible and self._is_detector_visible(det_id))
+            except Exception:
+                pass
 
     # -----------------------------
     # view mode
@@ -1024,6 +1482,131 @@ class LiveTab(QtWidgets.QWidget):
         for k in list(self._detector_times.keys()):
             self._detector_times[k].clear()
             self._detector_buffers[k].clear()
+        for k in list(self._temperature_times.keys()):
+            self._temperature_times[k].clear()
+            self._temperature_buffers[k].clear()
+        for k in list(self._resistance_times.keys()):
+            self._resistance_times[k].clear()
+            self._resistance_buffers[k].clear()
+        for k in list(self._detector_display_recent.keys()):
+            self._detector_display_recent[k].clear()
+        try:
+            self._update_temperature_legend_visibility()
+        except Exception:
+            pass
+
+    def _effective_display_offset(self, detector_id: str) -> float:
+        """Return active display-only offset for a detector (0 when disabled)."""
+        try:
+            cb = self._detector_offset_cbs.get(detector_id)
+            if cb is None or (not cb.isChecked()):
+                return 0.0
+            return float(self._detector_display_offsets.get(detector_id, 0.0))
+        except Exception:
+            return 0.0
+
+    def _update_offset_value_label(self, detector_id: str, value: float | None = None) -> None:
+        if value is None:
+            try:
+                value = float(self._detector_display_offsets.get(detector_id, 0.0))
+            except Exception:
+                value = 0.0
+        try:
+            lbl = self._detector_offset_value_labels.get(detector_id)
+            if lbl is not None:
+                lbl.setText(f"{float(value):.4g}")
+        except Exception:
+            pass
+
+    def _set_manual_display_offset(self, detector_id: str, value: float) -> None:
+        """Set display-only offset and sync all row widgets for a detector."""
+        try:
+            v = float(value)
+        except Exception:
+            v = 0.0
+        self._detector_display_offsets[detector_id] = v
+        try:
+            spin = self._detector_offset_spins.get(detector_id)
+            if spin is not None:
+                spin.blockSignals(True)
+                spin.setValue(v)
+                spin.blockSignals(False)
+        except Exception:
+            pass
+        self._update_offset_value_label(detector_id, v)
+
+    def set_detector_display_offset_state(self, detector_id: str, enabled: bool | None = None, value: float | None = None) -> float:
+        """Apply per-detector display-offset state from external UI controls."""
+        det_id = str(detector_id)
+        if det_id not in self._detector_buffers:
+            try:
+                self.register_detector(det_id)
+            except Exception:
+                pass
+        if value is not None:
+            self._set_manual_display_offset(det_id, float(value))
+        if enabled is not None:
+            cb = self._detector_offset_cbs.get(det_id)
+            if cb is not None:
+                if bool(enabled):
+                    if value is None:
+                        captured = self._capture_display_offset_from_recent(det_id)
+                        if captured is not None:
+                            self._set_manual_display_offset(det_id, captured)
+                    try:
+                        cb.blockSignals(True)
+                        cb.setChecked(True)
+                        cb.blockSignals(False)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+                    except Exception:
+                        pass
+        try:
+            self._multi_dirty = True
+        except Exception:
+            pass
+        return float(self._detector_display_offsets.get(det_id, 0.0))
+
+    def _capture_display_offset_from_recent(self, detector_id: str) -> float | None:
+        """Capture mean from the larger window between last 10 s and last 10 points."""
+        rec = []
+        try:
+            rec = list(self._detector_display_recent.get(detector_id, []))
+        except Exception:
+            rec = []
+        if not rec:
+            return None
+
+        points_window = []
+        try:
+            points_window = [float(v) for _t, v in rec[-10:] if np.isfinite(float(v))]
+        except Exception:
+            points_window = []
+
+        sec_window = []
+        try:
+            t_end = float(rec[-1][0])
+            t_start = t_end - 10.0
+            sec_window = [
+                float(v)
+                for t, v in rec
+                if np.isfinite(float(t)) and np.isfinite(float(v)) and float(t) >= t_start
+            ]
+        except Exception:
+            sec_window = []
+
+        chosen = sec_window if len(sec_window) >= len(points_window) else points_window
+        if not chosen:
+            return None
+        try:
+            return float(np.mean(np.asarray(chosen, dtype=float)))
+        except Exception:
+            return None
 
     def register_detector(self, detector_id: str):
         """Ensure UI and buffers exist for a detector id."""
@@ -1042,8 +1625,15 @@ class LiveTab(QtWidgets.QWidget):
 
         # Create a small control row: label (colored), visibility checkbox, stream checkbox
         row = QtWidgets.QWidget()
-        row_layout = QtWidgets.QHBoxLayout(row)
+        row_layout = QtWidgets.QVBoxLayout(row)
         row_layout.setContentsMargins(2, 2, 2, 2)
+        row_layout.setSpacing(1)
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(6)
         lbl = QtWidgets.QLabel(detector_id)
         r, g, b = color
         lbl.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold;")
@@ -1051,19 +1641,80 @@ class LiveTab(QtWidgets.QWidget):
         vis_cb.setChecked(True)
         stream_cb = QtWidgets.QCheckBox("Stream")
         stream_cb.setChecked(False)
-        row_layout.addWidget(lbl)
-        row_layout.addWidget(vis_cb)
-        row_layout.addWidget(stream_cb)
-        row_layout.addStretch(1)
+        offset_cb = QtWidgets.QCheckBox("Offset")
+        offset_cb.setChecked(False)
+        offset_lbl = QtWidgets.QLabel("Off=")
+        offset_val_lbl = QtWidgets.QLabel("0")
+        offset_val_lbl.setMinimumWidth(52)
+        offset_spin = QtWidgets.QDoubleSpinBox()
+        offset_spin.setDecimals(6)
+        offset_spin.setRange(-1e12, 1e12)
+        offset_spin.setSingleStep(0.1)
+        offset_spin.setValue(0.0)
+        offset_spin.setMaximumWidth(110)
+        top_row.addWidget(lbl)
+        top_row.addWidget(vis_cb)
+        top_row.addWidget(stream_cb)
+        top_row.addStretch(1)
+        bottom_row.addWidget(offset_cb)
+        bottom_row.addWidget(offset_lbl)
+        bottom_row.addWidget(offset_val_lbl)
+        bottom_row.addWidget(offset_spin)
+        bottom_row.addStretch(1)
+        row_layout.addLayout(top_row)
+        row_layout.addLayout(bottom_row)
         self.detector_controls_layout.addWidget(row)
+        self._detector_labels[detector_id] = lbl
         
         self._detector_show_cbs[detector_id] = vis_cb
         self._detector_stream_cbs[detector_id] = stream_cb
+        self._detector_offset_cbs[detector_id] = offset_cb
+        self._detector_offset_spins[detector_id] = offset_spin
+        self._detector_offset_value_labels[detector_id] = offset_val_lbl
+        self._detector_display_offsets[detector_id] = 0.0
+        self._detector_display_recent[detector_id] = deque(maxlen=5000)
         self._detector_control_rows[detector_id] = row
+
+        # Temperature curve uses the same color and is rendered on right axis.
+        temp_pen = pg.mkPen(color=color, width=1, style=QtCore.Qt.PenStyle.DashLine)
+        try:
+            tcurve = pg.PlotDataItem([], [], pen=temp_pen, name=f"{detector_id} (temp)")
+            self._temp_viewbox.addItem(tcurve)
+            self._temperature_curves[detector_id] = tcurve
+            tcurve.setVisible(bool(getattr(self, "_temp_axis_visible", True) and self._is_detector_visible(detector_id)))
+        except Exception:
+            pass
+        self._temperature_buffers[detector_id] = deque(maxlen=self._window_size)
+        self._temperature_times[detector_id] = deque(maxlen=self._window_size)
+        try:
+            rcurve = pg.PlotDataItem([], [], pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.PenStyle.DotLine), name=f"{detector_id} (res)")
+            self._res_viewbox.addItem(rcurve)
+            self._resistance_curves[detector_id] = rcurve
+            rcurve.setVisible(bool(getattr(self, "_res_axis_visible", True) and self._is_detector_visible(detector_id)))
+        except Exception:
+            pass
+        self._resistance_buffers[detector_id] = deque(maxlen=self._window_size)
+        self._resistance_times[detector_id] = deque(maxlen=self._window_size)
+        try:
+            self._update_temperature_legend_visibility()
+        except Exception:
+            pass
 
         def _on_vis(chk):
             try:
                 self._detector_curves[detector_id].setVisible(bool(chk))
+            except Exception:
+                pass
+            try:
+                self._temperature_curves[detector_id].setVisible(
+                    bool(chk) and bool(getattr(self, "_temp_axis_visible", True))
+                )
+            except Exception:
+                pass
+            try:
+                self._resistance_curves[detector_id].setVisible(
+                    bool(chk) and bool(getattr(self, "_res_axis_visible", True))
+                )
             except Exception:
                 pass
             try:
@@ -1080,12 +1731,29 @@ class LiveTab(QtWidgets.QWidget):
                     self._update_false_color_overlay()
             except Exception:
                 pass
+            try:
+                self._update_temperature_legend_visibility()
+            except Exception:
+                pass
 
         def _on_stream(chk):
             self.stream_toggled.emit(detector_id, bool(chk))
 
+        def _on_offset_toggled(chk):
+            if bool(chk):
+                captured = self._capture_display_offset_from_recent(detector_id)
+                if captured is not None:
+                    self._set_manual_display_offset(detector_id, captured)
+            self._multi_dirty = True
+
+        def _on_offset_manual_changed(v):
+            self._set_manual_display_offset(detector_id, float(v))
+            self._multi_dirty = True
+
         vis_cb.toggled.connect(_on_vis)
         stream_cb.toggled.connect(_on_stream)
+        offset_cb.toggled.connect(_on_offset_toggled)
+        offset_spin.valueChanged.connect(_on_offset_manual_changed)
 
         # create a small image view for this detector (for multi-axis heatmaps)
         img_view = pg.ImageView()
@@ -1188,6 +1856,24 @@ class LiveTab(QtWidgets.QWidget):
                 old_curve = self._detector_curves.get(det_id)
                 pen = old_curve.opts.get("pen") if old_curve is not None else pg.mkPen(color=(255, 255, 255), width=2)
                 self._detector_curves[det_id] = self.plot_widget.plot([], [], pen=pen, name=det_id)
+            except Exception:
+                pass
+            try:
+                old_tcurve = self._temperature_curves.get(det_id)
+                tpen = old_tcurve.opts.get("pen") if old_tcurve is not None else pg.mkPen(color=(255, 255, 255), width=1, style=QtCore.Qt.PenStyle.DashLine)
+                tcurve = pg.PlotDataItem([], [], pen=tpen, name=f"{det_id} (temp)")
+                self._temp_viewbox.addItem(tcurve)
+                self._temperature_curves[det_id] = tcurve
+                tcurve.setVisible(bool(getattr(self, "_temp_axis_visible", True) and self._is_detector_visible(det_id)))
+            except Exception:
+                pass
+            try:
+                old_rcurve = self._resistance_curves.get(det_id)
+                rpen = old_rcurve.opts.get("pen") if old_rcurve is not None else pg.mkPen(color=(255, 255, 255), width=2, style=QtCore.Qt.PenStyle.DotLine)
+                rcurve = pg.PlotDataItem([], [], pen=rpen, name=f"{det_id} (res)")
+                self._res_viewbox.addItem(rcurve)
+                self._resistance_curves[det_id] = rcurve
+                rcurve.setVisible(bool(getattr(self, "_res_axis_visible", True) and self._is_detector_visible(det_id)))
             except Exception:
                 pass
 
@@ -1526,6 +2212,19 @@ class LiveTab(QtWidgets.QWidget):
         total_pts = sum(len(a) for a in merged.values())
         uuid_count = len(groups)
         label = "same measurement" if uuid_count == 1 else f"{uuid_count} different measurements"
+        try:
+            self._loaded_replay_channels = {
+                str(k): np.asarray(v, dtype=float).copy() for k, v in merged.items()
+            }
+            self._loaded_replay_paths = [str(p) for p in paths]
+            if len(paths) == 1:
+                self._loaded_replay_label = Path(paths[0]).name
+            else:
+                self._loaded_replay_label = f"{len(paths)} loaded files ({Path(paths[0]).name})"
+        except Exception:
+            self._loaded_replay_channels = None
+            self._loaded_replay_label = None
+            self._loaded_replay_paths = []
         self.status_message.emit(
             f"Loaded {len(merged)} channel(s), {total_pts} points  ({label})", 8000
         )
@@ -1832,6 +2531,7 @@ class LiveTab(QtWidgets.QWidget):
             xs = arr[:, 2] if arr.shape[1] > 2 else None
             ys = arr[:, 3] if arr.shape[1] > 3 else None
             zs = arr[:, 4] if arr.shape[1] > 4 else None
+            temps = arr[:, 5] if arr.shape[1] > 5 else None
 
             finite_vals = np.isfinite(vals)
             has_xy = (xs is not None and ys is not None and
@@ -1853,6 +2553,8 @@ class LiveTab(QtWidgets.QWidget):
                             zf = float(zs[i])
                             st["Z"] = zf
                             zvals.add(zf)
+                        if temps is not None and np.isfinite(temps[i]):
+                            st["temperature"] = float(temps[i])
                     except Exception:
                         continue
                     coords.append((st, float(vals[i])))
@@ -1998,9 +2700,10 @@ class LiveTab(QtWidgets.QWidget):
 
         Returns
         -------
-        (measurement_id | None, {det_id: ndarray(N,5)}, layout_dict | None)
+        (measurement_id | None, {det_id: ndarray(N,6)}, layout_dict | None)
 
-        Output arrays always have exactly 5 columns: [timestamp, value, x, y, z].
+        Output arrays always have exactly 6 columns:
+        [timestamp, value, x, y, z, temperature].
         Missing columns are filled with NaN.
 
         Supported formats:
@@ -2068,6 +2771,7 @@ class LiveTab(QtWidgets.QWidget):
             x_list: list[float] = []
             y_list: list[float] = []
             z_list: list[float] = []
+            temp_list: list[float] = []
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 header = fh.readline()
                 if header and "timestamp" not in header.lower():
@@ -2076,7 +2780,9 @@ class LiveTab(QtWidgets.QWidget):
                     ln = ln.strip()
                     if not ln or ln.startswith("#"):
                         continue
-                    parts = ln.split(",", 5)
+                    # Keep optional meta payload grouped in the final field.
+                    # Format can be: timestamp,value,x,y,z,temperature,meta
+                    parts = ln.split(",", 6)
                     if len(parts) < 2:
                         continue
                     t_list.append(_f(parts[0]))
@@ -2084,6 +2790,7 @@ class LiveTab(QtWidgets.QWidget):
                     x_list.append(_f(parts[2]) if len(parts) > 2 else float("nan"))
                     y_list.append(_f(parts[3]) if len(parts) > 3 else float("nan"))
                     z_list.append(_f(parts[4]) if len(parts) > 4 else float("nan"))
+                    temp_list.append(_f(parts[5]) if len(parts) > 5 else float("nan"))
             if not t_list:
                 raise ValueError("No numeric rows found")
             arr = np.column_stack([
@@ -2092,6 +2799,7 @@ class LiveTab(QtWidgets.QWidget):
                 np.asarray(x_list, float),
                 np.asarray(y_list, float),
                 np.asarray(z_list, float),
+                np.asarray(temp_list, float),
             ])
             # infer det_id from filename pattern  YYYYMMDD__<id>__stream
             name_parts = p.stem.split("__")
@@ -2107,12 +2815,12 @@ class LiveTab(QtWidgets.QWidget):
         else:
             raise ValueError(f"Unsupported file format: {p.suffix!r}")
 
-        # Normalise every array to exactly (N, 5)
+        # Normalise every array to exactly (N, 6)
         for k, a in list(channels.items()):
             if a.ndim == 1:
                 a = a.reshape(1, -1)
-            if a.shape[1] < 5:
-                pad = np.full((a.shape[0], 5 - a.shape[1]), float("nan"))
+            if a.shape[1] < 6:
+                pad = np.full((a.shape[0], 6 - a.shape[1]), float("nan"))
                 a = np.hstack([a, pad])
             channels[k] = a
 
@@ -2122,7 +2830,7 @@ class LiveTab(QtWidgets.QWidget):
         return mid, channels, layout
 
     def _load_channels_into_view(self, merged: dict) -> None:
-        """Display merged {det_id: ndarray(N,5)} in the live tab.
+        """Display merged {det_id: ndarray(N,6)} in the live tab.
 
         Channels that have finite X+Y coordinates are treated as scan data
         (multi_coords).  Channels with only timestamp+value become strip-chart
@@ -2155,6 +2863,7 @@ class LiveTab(QtWidgets.QWidget):
             xs   = arr[:, 2] if arr.shape[1] > 2 else None
             ys   = arr[:, 3] if arr.shape[1] > 3 else None
             zs   = arr[:, 4] if arr.shape[1] > 4 else None
+            temps = arr[:, 5] if arr.shape[1] > 5 else None
 
             finite_vals = np.isfinite(vals)
             has_xy = (
@@ -2179,6 +2888,8 @@ class LiveTab(QtWidgets.QWidget):
                             zf = float(zs[i])
                             st["Z"] = zf
                             zvals.add(zf)
+                        if temps is not None and np.isfinite(temps[i]):
+                            st["temperature"] = float(temps[i])
                     except Exception:
                         continue
                     coords.append((st, float(vals[i])))
@@ -2197,6 +2908,19 @@ class LiveTab(QtWidgets.QWidget):
                 self._detector_buffers[det_id] = deque(
                     vals[mask].tolist(), maxlen=self._window_size
                 )
+
+                # Restore loaded temperature samples for strip-chart files.
+                try:
+                    if temps is not None:
+                        tmask = mask & np.isfinite(temps)
+                        self._temperature_times[det_id] = deque(
+                            t_rel[tmask].tolist(), maxlen=self._window_size
+                        )
+                        self._temperature_buffers[det_id] = deque(
+                            np.asarray(temps)[tmask].tolist(), maxlen=self._window_size
+                        )
+                except Exception:
+                    pass
 
         if has_scan:
             self._z_values = sorted(self._z_values_set)
@@ -2255,6 +2979,221 @@ class LiveTab(QtWidgets.QWidget):
             self.status_message.emit(f"Export failed: {e}", 8000)
             QtWidgets.QMessageBox.warning(self, "Export", f"Failed to export:\n{e}")
 
+    def get_loaded_replay_source(self):
+        """Return loaded replay source as (channels, label, paths), or None."""
+        try:
+            ch = getattr(self, "_loaded_replay_channels", None)
+            if not isinstance(ch, dict) or not ch:
+                return None
+            label = str(getattr(self, "_loaded_replay_label", None) or "Loaded data")
+            paths = list(getattr(self, "_loaded_replay_paths", []) or [])
+            channels = {str(k): np.asarray(v, dtype=float).copy() for k, v in ch.items()}
+            return channels, label, paths
+        except Exception:
+            return None
+
+    def set_playback_speed(self, speed: float) -> None:
+        """Set playback speed multiplier used by replay."""
+        try:
+            s = float(speed)
+            if s <= 0:
+                s = 1.0
+        except Exception:
+            s = 1.0
+        self._replay_speed = s
+
+    def _replay_percent(self) -> int:
+        try:
+            total = float(self._replay_max_ts - self._replay_min_ts)
+            if total <= 0:
+                return 100
+            elapsed = float(self._replay_paused_elapsed)
+            if bool(self._replay_running):
+                elapsed += max(0.0, time.time() - float(self._replay_start_wall)) * float(self._replay_speed)
+            pct = int(max(0.0, min(100.0, (elapsed / total) * 100.0)))
+            return pct
+        except Exception:
+            return 0
+
+    def _emit_replay_status(self, mode: str) -> None:
+        try:
+            label = str(getattr(self, "_replay_source_label", None) or "source")
+            pct = self._replay_percent()
+            if mode == "playing":
+                self.status_message.emit(f"Playing {label} - {pct}% at {self._replay_speed:g}x", 0)
+            elif mode == "stopped":
+                self.status_message.emit(f"Stopped {label} at {pct}%", 8000)
+            elif mode == "finished":
+                self.status_message.emit(f"Finished {label} - 100%", 8000)
+        except Exception:
+            pass
+
+    def start_playback(self, channels: dict[str, np.ndarray], source_label: str, speed: float | None = None) -> bool:
+        """Start animated playback of merged channels.
+
+        Channels must be arrays with at least [timestamp, value] columns.
+        """
+        try:
+            if speed is not None:
+                self.set_playback_speed(float(speed))
+
+            if self._replay_timer is None:
+                self._replay_timer = QtCore.QTimer(self)
+                self._replay_timer.setInterval(120)
+                self._replay_timer.timeout.connect(self._on_replay_tick)
+
+            prepared: dict[str, np.ndarray] = {}
+            min_ts = None
+            max_ts = None
+            for det_id, arr in (channels or {}).items():
+                try:
+                    a = np.asarray(arr, dtype=float)
+                except Exception:
+                    continue
+                if a.ndim != 2 or a.shape[0] == 0 or a.shape[1] < 2:
+                    continue
+                if a.shape[1] < 6:
+                    pad = np.full((a.shape[0], 6 - a.shape[1]), float("nan"))
+                    a = np.hstack([a, pad])
+                ts = np.asarray(a[:, 0], dtype=float)
+                finite = np.isfinite(ts)
+                if np.any(finite):
+                    base = float(np.nanmin(ts[finite]))
+                    ts = np.where(finite, ts, base)
+                else:
+                    ts = np.arange(a.shape[0], dtype=float) * 0.05
+                a[:, 0] = ts
+                order = np.argsort(a[:, 0], kind="mergesort")
+                a = a[order]
+                t0 = float(a[0, 0])
+                t1 = float(a[-1, 0])
+                min_ts = t0 if min_ts is None else min(min_ts, t0)
+                max_ts = t1 if max_ts is None else max(max_ts, t1)
+                prepared[str(det_id)] = a
+
+            if not prepared:
+                self.status_message.emit("No source data to play.", 6000)
+                return False
+
+            if min_ts is None:
+                min_ts = 0.0
+            if max_ts is None:
+                max_ts = 0.0
+
+            # Normalize all timestamps to start at zero.
+            for det_id in list(prepared.keys()):
+                prepared[det_id][:, 0] = prepared[det_id][:, 0] - float(min_ts)
+
+            # Reset plot state and prepare detectors.
+            try:
+                self.reset_multiaxis()
+            except Exception:
+                pass
+            try:
+                self.prepare_strip_chart_plot()
+            except Exception:
+                pass
+            try:
+                self.reset_1d_detector()
+            except Exception:
+                pass
+
+            try:
+                self.set_selected_detectors(list(prepared.keys()))
+            except Exception:
+                pass
+
+            for det_id in prepared.keys():
+                try:
+                    self.register_detector(det_id)
+                except Exception:
+                    pass
+
+            self._replay_channels = prepared
+            self._replay_source_label = str(source_label or "source")
+            self._replay_min_ts = 0.0
+            self._replay_max_ts = float(max(0.001, float(max_ts - min_ts)))
+            self._replay_paused_elapsed = 0.0
+            self._replay_start_wall = time.time()
+            self._replay_running = True
+            self._replay_last_percent = -1
+            self._t0 = time.time()
+
+            self._replay_idx = {det_id: 0 for det_id in prepared.keys()}
+            self._replay_timer.start()
+            self._emit_replay_status("playing")
+            return True
+        except Exception:
+            return False
+
+    def stop_playback(self) -> None:
+        """Pause active playback and show paused percentage."""
+        try:
+            if not bool(self._replay_running):
+                self._emit_replay_status("stopped")
+                return
+            self._replay_paused_elapsed = float(self._replay_paused_elapsed) + (
+                max(0.0, time.time() - float(self._replay_start_wall)) * float(self._replay_speed)
+            )
+            self._replay_running = False
+            if self._replay_timer is not None:
+                self._replay_timer.stop()
+            self._emit_replay_status("stopped")
+        except Exception:
+            pass
+
+    def _on_replay_tick(self) -> None:
+        """Playback timer callback; feeds due samples into existing plot buffers."""
+        if not bool(self._replay_running):
+            return
+        try:
+            elapsed = float(self._replay_paused_elapsed) + (
+                max(0.0, time.time() - float(self._replay_start_wall)) * float(self._replay_speed)
+            )
+            cur_t = min(float(self._replay_max_ts), elapsed)
+
+            all_done = True
+            ch = self._replay_channels or {}
+            for det_id, arr in ch.items():
+                idx = int(self._replay_idx.get(det_id, 0))
+                n = int(arr.shape[0])
+                while idx < n and float(arr[idx, 0]) <= cur_t:
+                    row = arr[idx]
+                    try:
+                        val = float(row[1])
+                    except Exception:
+                        idx += 1
+                        continue
+                    if np.isfinite(val):
+                        ts = float(self._t0) + float(row[0])
+                        temp = None
+                        try:
+                            if row.shape[0] > 5 and np.isfinite(float(row[5])):
+                                temp = float(row[5])
+                        except Exception:
+                            temp = None
+                        self.add_detector_sample(det_id, val, timestamp=ts, temperature=temp)
+                    idx += 1
+                self._replay_idx[det_id] = idx
+                if idx < n:
+                    all_done = False
+
+            pct = self._replay_percent()
+            if pct != self._replay_last_percent:
+                self._replay_last_percent = pct
+                self._emit_replay_status("playing")
+
+            if all_done or cur_t >= float(self._replay_max_ts):
+                self._replay_paused_elapsed = float(self._replay_max_ts)
+                self._replay_running = False
+                if self._replay_timer is not None:
+                    self._replay_timer.stop()
+                self._emit_replay_status("finished")
+        except Exception:
+            self._replay_running = False
+            if self._replay_timer is not None:
+                self._replay_timer.stop()
+
     def _on_draw_lines_toggled(self, checked: bool) -> None:
         """Toggle connecting lines between data points in the multi-axis plot."""
         self._draw_lines = bool(checked)
@@ -2304,7 +3243,34 @@ class LiveTab(QtWidgets.QWidget):
         """
         self.add_detector_sample(detector_id, value, timestamp)
 
-    def add_detector_sample(self, detector_id: str, value: float, timestamp: float | None = None):
+    @QtCore.pyqtSlot(str, float, float, float)
+    def add_detector_sample_qt_temp(self, detector_id: str, value: float, timestamp: float, temperature: float):
+        """Qt-invokable wrapper around add_detector_sample including temperature."""
+        self.add_detector_sample(detector_id, value, timestamp, temperature)
+
+    @QtCore.pyqtSlot(str, float, float, object)
+    def add_detector_sample_qt_meta(self, detector_id: str, value: float, timestamp: float, meta):
+        """Qt-invokable wrapper that carries detector sample metadata."""
+        temperature = None
+        measurement_kind = None
+        try:
+            if isinstance(meta, dict) and meta.get("temperature", None) is not None:
+                temperature = float(meta.get("temperature"))
+            if isinstance(meta, dict) and meta.get("measurement_kind", None) is not None:
+                measurement_kind = str(meta.get("measurement_kind")).strip().lower()
+        except Exception:
+            temperature = None
+            measurement_kind = None
+        self.add_detector_sample(detector_id, value, timestamp, temperature, measurement_kind)
+
+    def add_detector_sample(
+        self,
+        detector_id: str,
+        value: float,
+        timestamp: float | None = None,
+        temperature: float | None = None,
+        measurement_kind: str | None = None,
+    ):
         """Add a sample for a named detector. timestamp in seconds. Thread-safe caller should use queued calls."""
         det_id = self._map_and_filter_detector_id(detector_id)
         if det_id is None:
@@ -2316,8 +3282,30 @@ class LiveTab(QtWidgets.QWidget):
         if det_id not in self._detector_buffers:
             self.register_detector(det_id)
 
-        self._detector_times[det_id].append(t_rel)
-        self._detector_buffers[det_id].append(value)
+        kind = str(measurement_kind or "voltage").strip().lower()
+        if kind == "resistance":
+            self._resistance_times[det_id].append(t_rel)
+            self._resistance_buffers[det_id].append(value)
+        else:
+            self._detector_times[det_id].append(t_rel)
+            self._detector_buffers[det_id].append(value)
+        try:
+            if np.isfinite(float(value)):
+                self._detector_display_recent.setdefault(det_id, deque(maxlen=5000)).append((float(t_rel), float(value)))
+        except Exception:
+            pass
+        if temperature is not None:
+            try:
+                t = float(temperature)
+                if np.isfinite(t):
+                    self._temperature_times[det_id].append(t_rel)
+                    self._temperature_buffers[det_id].append(t)
+                    lbl = self._detector_labels.get(det_id)
+                    if lbl is not None:
+                        lbl.setText(f"{det_id}  T={t:.2f}")
+                    self._update_temperature_legend_visibility()
+            except Exception:
+                pass
 
     # -----------------------------
     # multi-axis detector callback
@@ -2364,11 +3352,15 @@ class LiveTab(QtWidgets.QWidget):
         # 1D detector plot (strip-chart)
         # When a multi-axis run is active, the shared plot is repurposed for
         # numeric scan plotting; do not update or recreate strip-chart curves.
-        if self._detector_times and not self.multi_coords:
+        if (self._detector_times or self._resistance_times) and not self.multi_coords:
             any_1d_data = False
+            any_temp_data = False
+            any_res_data = False
             # update each detector curve
-            for det_id, times in self._detector_times.items():
+            for det_id in sorted(set(self._detector_times.keys()) | set(self._resistance_times.keys())):
+                times = self._detector_times.get(det_id, [])
                 vals = self._detector_buffers.get(det_id, [])
+                display_offset = self._effective_display_offset(det_id)
                 curve = self._detector_curves.get(det_id)
                 try:
                     # If the shared plot was cleared/repurposed, a curve object may
@@ -2385,12 +3377,65 @@ class LiveTab(QtWidgets.QWidget):
                         curve = self.plot_widget.plot([], [], pen=pen, name=det_id)
                         self._detector_curves[det_id] = curve
 
-                    curve.setData(list(times), list(vals))
+                    disp_vals = list(vals)
+                    if display_offset != 0.0:
+                        try:
+                            disp_vals = [float(v) - display_offset for v in vals]
+                        except Exception:
+                            disp_vals = list(vals)
+                    curve.setData(list(times), disp_vals)
                     try:
                         if len(times) > 0:
                             any_1d_data = True
                     except Exception:
                         pass
+                except Exception:
+                    pass
+
+                try:
+                    r_times = self._resistance_times.get(det_id, [])
+                    r_vals = self._resistance_buffers.get(det_id, [])
+                    r_curve = self._resistance_curves.get(det_id)
+                    if r_curve is None or r_curve.scene() is None:
+                        r_pen = pg.mkPen(color=(255, 255, 255), width=2, style=QtCore.Qt.PenStyle.DotLine)
+                        r_curve = pg.PlotDataItem([], [], pen=r_pen, name=f"{det_id} (res)")
+                        self._res_viewbox.addItem(r_curve)
+                        self._resistance_curves[det_id] = r_curve
+                    disp_r_vals = list(r_vals)
+                    if display_offset != 0.0:
+                        try:
+                            disp_r_vals = [float(v) - display_offset for v in r_vals]
+                        except Exception:
+                            disp_r_vals = list(r_vals)
+                    r_curve.setData(list(r_times), disp_r_vals)
+                    r_curve.setVisible(bool(self._is_detector_visible(det_id) and getattr(self, "_res_axis_visible", True)))
+                    if len(r_times) > 0:
+                        any_res_data = True
+                except Exception:
+                    pass
+
+                # update temperature traces on right axis
+                try:
+                    t_times = self._temperature_times.get(det_id, [])
+                    t_vals = self._temperature_buffers.get(det_id, [])
+                    t_curve = self._temperature_curves.get(det_id)
+                    if t_curve is None or t_curve.scene() is None:
+                        t_pen = None
+                        try:
+                            if t_curve is not None:
+                                t_pen = t_curve.opts.get("pen")
+                        except Exception:
+                            t_pen = None
+                        if t_pen is None:
+                            t_pen = pg.mkPen(color=(255, 255, 255), width=1, style=QtCore.Qt.PenStyle.DashLine)
+                        t_curve = pg.PlotDataItem([], [], pen=t_pen, name=f"{det_id} (temp)")
+                        self._temp_viewbox.addItem(t_curve)
+                        self._temperature_curves[det_id] = t_curve
+
+                    t_curve.setData(list(t_times), list(t_vals))
+                    t_curve.setVisible(bool(self._is_detector_visible(det_id) and getattr(self, "_temp_axis_visible", True)))
+                    if len(t_times) > 0:
+                        any_temp_data = True
                 except Exception:
                     pass
 
@@ -2402,6 +3447,22 @@ class LiveTab(QtWidgets.QWidget):
 
             try:
                 self._follow_strip_chart_window()
+            except Exception:
+                pass
+
+            if any_temp_data and getattr(self, "_follow_strip_x_window", True):
+                try:
+                    self._fit_temperature_y_range()
+                except Exception:
+                    pass
+            if any_res_data and getattr(self, "_follow_strip_x_window", True):
+                try:
+                    self._fit_resistance_y_range()
+                except Exception:
+                    pass
+
+            try:
+                self._update_temperature_legend_visibility()
             except Exception:
                 pass
 
@@ -2431,33 +3492,55 @@ class LiveTab(QtWidgets.QWidget):
                     pass
 
                 any_curve = False
+                any_temp_curve = False
+                any_res_curve = False
                 updated: set[str] = set()
+                temp_updated: set[str] = set()
+                res_updated: set[str] = set()
                 plotted_xs: list[list[float]] = []
                 for det_id, det_list in self.multi_coords.items():
                     if not self._is_detector_visible(det_id):
                         continue
                     if not det_list:
                         continue
+                    display_offset = self._effective_display_offset(det_id)
+                    try:
+                        sample_kind = str(det_list[0][0].get("measurement_kind", "voltage")).strip().lower()
+                    except Exception:
+                        sample_kind = "voltage"
                     xs = []
                     ys = []
+                    t_xs = []
+                    t_ys = []
                     for idx, (s, v) in enumerate(det_list):
                         if not np.isfinite(v):
                             continue
                         if xaxis == 'Index':
-                            xs.append(idx)
+                            x_val = idx
                         else:
                             val = None
                             try:
                                 val = s.get(xaxis)
                             except Exception:
                                 val = None
-                            xs.append(float(val) if val is not None else idx)
+                            x_val = float(val) if val is not None else idx
+                        xs.append(x_val)
                         ys.append(v)
+                        try:
+                            temp = s.get("temperature", None)
+                            if temp is not None and np.isfinite(float(temp)):
+                                t_xs.append(x_val)
+                                t_ys.append(float(temp))
+                        except Exception:
+                            pass
                     if xs:
                         plotted_xs.append(list(xs))
                         # Reuse the existing per-detector curve objects. If the
                         # plot was cleared, recreate them once.
-                        curve = self._detector_curves.get(det_id)
+                        curve_dict = self._resistance_curves if sample_kind == "resistance" else self._detector_curves
+                        parent_vb = self._res_viewbox if sample_kind == "resistance" else None
+                        default_pen = pg.mkPen(color=(255, 255, 255), width=2, style=QtCore.Qt.PenStyle.DotLine) if sample_kind == "resistance" else pg.mkPen(color=(255, 255, 255), width=2)
+                        curve = curve_dict.get(det_id)
                         if curve is None or curve.scene() is None:
                             reg_pen = None
                             try:
@@ -2466,9 +3549,13 @@ class LiveTab(QtWidgets.QWidget):
                             except Exception:
                                 reg_pen = None
                             if reg_pen is None:
-                                reg_pen = pg.mkPen(color=(255, 255, 255), width=2)
-                            curve = self.plot_widget.plot([], [], pen=pg.mkPen(reg_pen, width=2), name=det_id)
-                            self._detector_curves[det_id] = curve
+                                reg_pen = default_pen
+                            if parent_vb is None:
+                                curve = self.plot_widget.plot([], [], pen=pg.mkPen(reg_pen, width=2), name=det_id)
+                            else:
+                                curve = pg.PlotDataItem([], [], pen=reg_pen, name=f"{det_id} (res)")
+                                parent_vb.addItem(curve)
+                            curve_dict[det_id] = curve
 
                         # Apply line/dot style based on toggle
                         draw_lines = getattr(self, '_draw_lines', True)
@@ -2488,19 +3575,78 @@ class LiveTab(QtWidgets.QWidget):
                             pass
 
                         try:
-                            curve.setVisible(True)
+                            can_show = bool(self._is_detector_visible(det_id))
+                            if sample_kind == "resistance":
+                                can_show = can_show and bool(getattr(self, "_res_axis_visible", True))
+                            curve.setVisible(can_show)
                         except Exception:
                             pass
                         try:
-                            curve.setData(xs, ys)
+                            disp_ys = list(ys)
+                            if display_offset != 0.0:
+                                try:
+                                    disp_ys = [float(v) - display_offset for v in ys]
+                                except Exception:
+                                    disp_ys = list(ys)
+                            curve.setData(xs, disp_ys)
                         except Exception:
                             pass
 
-                        any_curve = True
-                        updated.add(det_id)
+                        if sample_kind == "resistance":
+                            any_res_curve = True
+                            res_updated.add(det_id)
+                        else:
+                            any_curve = True
+                            updated.add(det_id)
+
+                        try:
+                            dlbl = self._detector_labels.get(det_id)
+                            if dlbl is not None and t_ys:
+                                dlbl.setText(f"{det_id}  T={float(t_ys[-1]):.2f}")
+                        except Exception:
+                            pass
+
+                    if t_xs:
+                        try:
+                            t_curve = self._temperature_curves.get(det_id)
+                            if t_curve is None or t_curve.scene() is None:
+                                t_pen = None
+                                try:
+                                    if t_curve is not None:
+                                        t_pen = t_curve.opts.get('pen')
+                                except Exception:
+                                    t_pen = None
+                                if t_pen is None:
+                                    t_pen = pg.mkPen(color=(255, 255, 255), width=1, style=QtCore.Qt.PenStyle.DashLine)
+                                t_curve = pg.PlotDataItem([], [], pen=t_pen, name=f"{det_id} (temp)")
+                                self._temp_viewbox.addItem(t_curve)
+                                self._temperature_curves[det_id] = t_curve
+
+                            draw_lines = getattr(self, '_draw_lines', True)
+                            try:
+                                existing_pen = t_curve.opts.get('pen')
+                                if draw_lines:
+                                    t_curve.setPen(existing_pen)
+                                    t_curve.setSymbol(None)
+                                else:
+                                    t_curve.setPen(None)
+                                    t_curve.setSymbol('o')
+                                    t_curve.setSymbolSize(5)
+                                    sp = pg.mkPen(existing_pen) if existing_pen else pg.mkPen(color=(255, 255, 255))
+                                    t_curve.setSymbolPen(sp)
+                                    t_curve.setSymbolBrush(sp.color())
+                            except Exception:
+                                pass
+
+                            t_curve.setVisible(bool(self._is_detector_visible(det_id) and getattr(self, "_temp_axis_visible", True)))
+                            t_curve.setData(t_xs, t_ys)
+                            any_temp_curve = True
+                            temp_updated.add(det_id)
+                        except Exception:
+                            pass
 
                 try:
-                    if any_curve:
+                    if any_curve or any_res_curve:
                         self._fit_multiaxis_x_range(plotted_xs)
                 except Exception:
                     pass
@@ -2516,11 +3662,45 @@ class LiveTab(QtWidgets.QWidget):
                             pass
                 except Exception:
                     pass
+                try:
+                    for det_id, curve in list(self._resistance_curves.items()):
+                        if det_id in res_updated:
+                            continue
+                        try:
+                            curve.setVisible(False)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    for det_id, curve in list(self._temperature_curves.items()):
+                        if det_id in temp_updated:
+                            continue
+                        try:
+                            curve.setVisible(False)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 if any_curve:
                     try:
                         self._set_legend_visible(True)
                     except Exception:
                         pass
+                if any_temp_curve and getattr(self, "_follow_multiaxis_x_window", True):
+                    try:
+                        self._fit_temperature_y_range()
+                    except Exception:
+                        pass
+                if any_res_curve and getattr(self, "_follow_multiaxis_x_window", True):
+                    try:
+                        self._fit_resistance_y_range()
+                    except Exception:
+                        pass
+                try:
+                    self._update_temperature_legend_visibility()
+                except Exception:
+                    pass
                 try:
                     self.plot_widget.setLabel('bottom', xaxis)
                 except Exception:
@@ -2635,6 +3815,16 @@ class LiveTab(QtWidgets.QWidget):
             old_times = list(self._detector_times[k])
             self._detector_buffers[k] = deque(old_vals[-self._window_size :], maxlen=self._window_size)
             self._detector_times[k] = deque(old_times[-self._window_size :], maxlen=self._window_size)
+        for k in list(self._temperature_buffers.keys()):
+            old_vals = list(self._temperature_buffers[k])
+            old_times = list(self._temperature_times.get(k, []))
+            self._temperature_buffers[k] = deque(old_vals[-self._window_size :], maxlen=self._window_size)
+            self._temperature_times[k] = deque(old_times[-self._window_size :], maxlen=self._window_size)
+        for k in list(self._resistance_buffers.keys()):
+            old_vals = list(self._resistance_buffers[k])
+            old_times = list(self._resistance_times.get(k, []))
+            self._resistance_buffers[k] = deque(old_vals[-self._window_size :], maxlen=self._window_size)
+            self._resistance_times[k] = deque(old_times[-self._window_size :], maxlen=self._window_size)
 
     # -----------------------------
     # image hover and levels
@@ -2680,7 +3870,7 @@ class LiveTab(QtWidgets.QWidget):
                 except Exception:
                     z_info = ""
 
-            self.hover_info.emit(f"x={x} y={y}{z_info} value={val:.3g}")
+            self.hover_info.emit(f"x={x} y={y}{z_info} value={val:.6g}")
         except Exception:
             return
 
@@ -2722,7 +3912,7 @@ class LiveTab(QtWidgets.QWidget):
                 except Exception:
                     z_info = ""
 
-            self.hover_info.emit(f"{detector_id}: x={x} y={y}{z_info} value={val:.3g}")
+            self.hover_info.emit(f"{detector_id}: x={x} y={y}{z_info} value={val:.8g}")
         except Exception:
             return
 

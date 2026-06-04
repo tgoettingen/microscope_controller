@@ -35,7 +35,18 @@
       "port": "COM6",
       "baudrate": 115200,
       "format": "int24",
-      "mode": 2,
+      "mode": 1,
+      "read_timeout": 0.1,
+      "scale": 1.0,
+      "offset": 0.0
+    },
+    {
+      "type": "ComPort",
+      "name": "vm3",
+      "port": "COM7",
+      "baudrate": 115200,
+      "format": "int24",
+      "mode": 1,
       "read_timeout": 0.1,
       "scale": 1.0,
       "offset": 0.0

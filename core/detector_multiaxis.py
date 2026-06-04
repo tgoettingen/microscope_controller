@@ -59,7 +59,16 @@ def build_camera_multiaxis_runner(
             dets = detector if isinstance(detector, list) else [detector]
             for det in dets:
                 try:
-                    val = det.read_value()
+                    sample = det.read_value()
+                    temp = None
+                    if isinstance(sample, tuple):
+                        val = float(sample[0])
+                        try:
+                            temp = float(sample[1])
+                        except Exception:
+                            temp = None
+                    else:
+                        val = float(sample)
                     det_id = getattr(det, "name", getattr(det, "port", "detector"))
                     dmeta = {
                         "experiment": "multiaxis_camera",
@@ -69,6 +78,8 @@ def build_camera_multiaxis_runner(
                         "channel": ch.name,
                         "timestamp": time.time(),
                     }
+                    if temp is not None:
+                        dmeta["temperature"] = temp
                     try:
                         on_detector_sample(det_id, val, dmeta)
                     except TypeError:
@@ -102,7 +113,16 @@ def build_detector_multiaxis_runner(
         dets = detector if isinstance(detector, list) else [detector]
         for det in dets:
             try:
-                val = det.read_value()
+                sample = det.read_value()
+                temp = None
+                if isinstance(sample, tuple):
+                    val = float(sample[0])
+                    try:
+                        temp = float(sample[1])
+                    except Exception:
+                        temp = None
+                else:
+                    val = float(sample)
                 det_id = getattr(det, "name", getattr(det, "port", "detector"))
                 meta = {
                     "experiment": "multiaxis_detector",
@@ -112,6 +132,8 @@ def build_detector_multiaxis_runner(
                     "scale": state["Detector"],
                     "timestamp": time.time(),
                 }
+                if temp is not None:
+                    meta["temperature"] = temp
                 try:
                     on_detector_sample(det_id, val, meta)
                 except TypeError:

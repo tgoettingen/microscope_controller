@@ -8,8 +8,8 @@ File structure
     version  = "1"
   detectors/
     <detector_id>/
-      data:  float64  (N, 5)   [timestamp, value, x, y, z]
-        attrs: columns = ["timestamp","value","x","y","z"]
+            data:  float64  (N, 6)   [timestamp, value, x, y, z, temperature]
+                attrs: columns = ["timestamp","value","x","y","z","temperature"]
                detector = <detector_id>
 """
 
@@ -22,7 +22,7 @@ import numpy as np
 import h5py
 
 FORMAT_ATTR = "multichannel_stream"
-COLUMNS = ["timestamp", "value", "x", "y", "z"]
+COLUMNS = ["timestamp", "value", "x", "y", "z", "temperature"]
 
 
 def save(
@@ -68,14 +68,15 @@ def save(
                 x = float(state.get("X", state.get("x", float("nan"))))
                 y = float(state.get("Y", state.get("y", float("nan"))))
                 z = float(state.get("Z", state.get("z", float("nan"))))
-                rows.append([ts, float(value), x, y, z])
+                temp = float(state.get("temperature", float("nan")))
+                rows.append([ts, float(value), x, y, z, temp])
 
             arr = np.array(rows, dtype="float64")
             grp = dets_grp.require_group(det_id)
             ds = grp.create_dataset(
                 "data",
                 data=arr,
-                chunks=(min(256, max(1, len(arr))), 5),
+                chunks=(min(256, max(1, len(arr))), 6),
             )
             ds.attrs["columns"] = COLUMNS
             ds.attrs["detector"] = det_id
@@ -97,8 +98,8 @@ def load(path: str | Path) -> dict[str, np.ndarray]:
 
     Returns
     -------
-    dict mapping detector_id → float64 array of shape (N, 5)
-    with columns [timestamp, value, x, y, z].
+    dict mapping detector_id → float64 array of shape (N, 6)
+    with columns [timestamp, value, x, y, z, temperature].
     """
     result: dict[str, np.ndarray] = {}
     with h5py.File(path, "r") as f:

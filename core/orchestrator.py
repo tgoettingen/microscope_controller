@@ -197,7 +197,16 @@ class Orchestrator:
             for det in self.detectors:
                 try:
                     if hasattr(det, "read_value"):
-                        val = det.read_value()
+                        sample = det.read_value()
+                        temp = None
+                        if isinstance(sample, tuple):
+                            val = float(sample[0])
+                            try:
+                                temp = float(sample[1])
+                            except Exception:
+                                temp = None
+                        else:
+                            val = float(sample)
                         det_id = getattr(det, "name", getattr(det, "port", "detector"))
                         dmeta = {
                             "experiment": exp.name,
@@ -210,6 +219,8 @@ class Orchestrator:
                             "channel": ch.name,
                             "timestamp": time.time(),
                         }
+                        if temp is not None:
+                            dmeta["temperature"] = temp
                         # prefer (det_id, value, meta)
                         try:
                             self.on_detector_sample(det_id, val, dmeta)

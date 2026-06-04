@@ -200,15 +200,23 @@ class ComPort(Detector):
 
     def _reader_loop(self) -> None:
         while self._running and self._serial is not None:
-            val = self.read_value()
+            sample = self.read_value()
             if self._serial is None:
                 break
             ts = time.time()
+            if isinstance(sample, tuple):
+                val = float(sample[0])
+                try:
+                    self._last_temperature = float(sample[1])
+                except Exception:
+                    pass
+            else:
+                val = float(sample)
             self._last_value = float(val)
             self._last_timestamp = ts
             self.sample_received.emit(self.port, ts, float(val))
 
-    def read_value(self) -> float:
+    def read_value(self) -> float | tuple[float, float]:
         if self._serial is None:
             return self._report_error('Serial port is not open for ComPort detector')
 
@@ -229,9 +237,10 @@ class ComPort(Detector):
                     self._last_value = float(voltage)
                     self._last_timestamp = time.time()
                     try:
-                        return float(self._scale) * float(voltage) + float(self._offset)
+                        scaled_voltage = float(self._scale) * float(voltage) + float(self._offset)
                     except Exception:
-                        return float(voltage)
+                        scaled_voltage = float(voltage)
+                    return scaled_voltage, float(self._last_temperature)
                 except Exception as e:
                     return self._report_error(f'Failed to decode mode 1 frame on {self.port}: {e}')
 

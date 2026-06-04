@@ -71,8 +71,8 @@ class Detector(Device):
     """Generic single-point detector (photodiode, PMT, etc.)."""
 
     @abstractmethod
-    def read_value(self) -> float:
-        """Return current value (e.g. voltage, counts)."""
+    def read_value(self) -> float | tuple[float, float]:
+        """Return current value, optionally with secondary telemetry."""
         ...
 
     @abstractmethod

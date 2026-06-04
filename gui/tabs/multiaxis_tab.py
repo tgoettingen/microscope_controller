@@ -14,12 +14,20 @@ class MultiAxisTab(QtWidgets.QWidget):
     stop_requested = QtCore.pyqtSignal()
     # emitted whenever the user changes which detectors are checked
     detectors_changed = QtCore.pyqtSignal(list)
+    # emitted when per-detector display-offset toggle/value changes
+    detector_offset_toggled = QtCore.pyqtSignal(str, bool)
+    detector_offset_value_changed = QtCore.pyqtSignal(str, float)
     # emitted when the Default X Axis combo changes
     xaxis_changed = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
         self._config_path = config_path
+        self._detector_select_cbs: dict[str, QtWidgets.QCheckBox] = {}
+        self._detector_offset_cbs: dict[str, QtWidgets.QCheckBox] = {}
+        self._detector_offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._detector_offset_labels: dict[str, QtWidgets.QLabel] = {}
+        self._detector_offset_values: dict[str, float] = {}
         self._build_ui()
 
     def _build_ui(self):
@@ -30,12 +38,6 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.detector_list = QtWidgets.QListWidget()
         self.detector_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
         layout.addWidget(self.detector_list)
-
-        # Any checkbox toggle should propagate to whoever consumes "selected detectors".
-        try:
-            self.detector_list.itemChanged.connect(self._emit_detectors_changed)
-        except Exception:
-            pass
 
         self.axis_list = QtWidgets.QListWidget()
         self.axis_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
@@ -95,20 +97,64 @@ class MultiAxisTab(QtWidgets.QWidget):
             previously_checked = set(self.get_selected_detectors())
         except Exception:
             previously_checked = set()
+        previous_offsets = dict(self._detector_offset_values)
+        previous_offset_enabled = {
+            det_id: bool(cb.isChecked())
+            for det_id, cb in self._detector_offset_cbs.items()
+        }
 
         try:
             self.detector_list.blockSignals(True)
             self.detector_list.clear()
+            self._detector_select_cbs.clear()
+            self._detector_offset_cbs.clear()
+            self._detector_offset_spins.clear()
+            self._detector_offset_labels.clear()
+            self._detector_offset_values.clear()
             for d in detectors:
-                item = QtWidgets.QListWidgetItem(d)
-                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(
-                    QtCore.Qt.CheckState.Checked
-                    if d in previously_checked
-                    else QtCore.Qt.CheckState.Unchecked
-                )
+                item = QtWidgets.QListWidgetItem()
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
+                row = QtWidgets.QWidget()
+                row_layout = QtWidgets.QHBoxLayout(row)
+                row_layout.setContentsMargins(4, 2, 4, 2)
+                row_layout.setSpacing(6)
+
+                sel_cb = QtWidgets.QCheckBox(str(d))
+                sel_cb.setChecked(d in previously_checked)
+                offset_cb = QtWidgets.QCheckBox("Offset")
+                offset_cb.setChecked(bool(previous_offset_enabled.get(d, False)))
+                offset_label = QtWidgets.QLabel("Off=")
+                offset_value_label = QtWidgets.QLabel("0")
+                offset_value_label.setMinimumWidth(52)
+                offset_spin = QtWidgets.QDoubleSpinBox()
+                offset_spin.setDecimals(6)
+                offset_spin.setRange(-1e12, 1e12)
+                offset_spin.setSingleStep(0.1)
+                offset_spin.setMaximumWidth(110)
+                offset_val = float(previous_offsets.get(d, 0.0))
+                offset_spin.setValue(offset_val)
+                offset_value_label.setText(f"{offset_val:.4g}")
+
+                row_layout.addWidget(sel_cb)
+                row_layout.addWidget(offset_cb)
+                row_layout.addWidget(offset_label)
+                row_layout.addWidget(offset_value_label)
+                row_layout.addWidget(offset_spin)
+                row_layout.addStretch(1)
+
+                self._detector_select_cbs[d] = sel_cb
+                self._detector_offset_cbs[d] = offset_cb
+                self._detector_offset_spins[d] = offset_spin
+                self._detector_offset_labels[d] = offset_value_label
+                self._detector_offset_values[d] = offset_val
+
+                sel_cb.toggled.connect(lambda _chk, _d=d: self._emit_detectors_changed())
+                offset_cb.toggled.connect(lambda chk, _d=d: self.detector_offset_toggled.emit(_d, bool(chk)))
+                offset_spin.valueChanged.connect(lambda v, _d=d: self._on_offset_spin_changed(_d, float(v)))
+
+                item.setSizeHint(row.sizeHint())
                 self.detector_list.addItem(item)
+                self.detector_list.setItemWidget(item, row)
         finally:
             try:
                 self.detector_list.blockSignals(False)
@@ -123,10 +169,12 @@ class MultiAxisTab(QtWidgets.QWidget):
 
     def get_selected_detectors(self) -> list[str]:
         selected = []
-        for i in range(self.detector_list.count()):
-            item = self.detector_list.item(i)
-            if item.checkState() == QtCore.Qt.CheckState.Checked:
-                selected.append(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        for det_id, cb in self._detector_select_cbs.items():
+            try:
+                if cb.isChecked():
+                    selected.append(det_id)
+            except Exception:
+                continue
         return selected
 
     def set_selected_detectors(self, detector_ids: list[str]):
@@ -134,13 +182,11 @@ class MultiAxisTab(QtWidgets.QWidget):
         wanted = set(detector_ids or [])
         try:
             self.detector_list.blockSignals(True)
-            for i in range(self.detector_list.count()):
-                item = self.detector_list.item(i)
-                det_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
-                if det_id in wanted:
-                    item.setCheckState(QtCore.Qt.CheckState.Checked)
-                else:
-                    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            for det_id, cb in self._detector_select_cbs.items():
+                try:
+                    cb.setChecked(det_id in wanted)
+                except Exception:
+                    pass
         finally:
             try:
                 self.detector_list.blockSignals(False)
@@ -157,6 +203,53 @@ class MultiAxisTab(QtWidgets.QWidget):
             self.detectors_changed.emit(self.get_selected_detectors())
         except Exception:
             pass
+
+    def _on_offset_spin_changed(self, detector_id: str, value: float) -> None:
+        try:
+            self._detector_offset_values[detector_id] = float(value)
+        except Exception:
+            self._detector_offset_values[detector_id] = 0.0
+        try:
+            lbl = self._detector_offset_labels.get(detector_id)
+            if lbl is not None:
+                lbl.setText(f"{float(self._detector_offset_values.get(detector_id, 0.0)):.4g}")
+        except Exception:
+            pass
+        try:
+            self.detector_offset_value_changed.emit(detector_id, float(self._detector_offset_values.get(detector_id, 0.0)))
+        except Exception:
+            pass
+
+    def set_detector_offset_state(self, detector_id: str, enabled: bool | None = None, value: float | None = None) -> None:
+        """Update detector offset controls without emitting user signals."""
+        if value is not None:
+            try:
+                self._detector_offset_values[detector_id] = float(value)
+            except Exception:
+                self._detector_offset_values[detector_id] = 0.0
+            try:
+                spin = self._detector_offset_spins.get(detector_id)
+                if spin is not None:
+                    spin.blockSignals(True)
+                    spin.setValue(float(self._detector_offset_values.get(detector_id, 0.0)))
+                    spin.blockSignals(False)
+            except Exception:
+                pass
+            try:
+                lbl = self._detector_offset_labels.get(detector_id)
+                if lbl is not None:
+                    lbl.setText(f"{float(self._detector_offset_values.get(detector_id, 0.0)):.4g}")
+            except Exception:
+                pass
+        if enabled is not None:
+            try:
+                cb = self._detector_offset_cbs.get(detector_id)
+                if cb is not None:
+                    cb.blockSignals(True)
+                    cb.setChecked(bool(enabled))
+                    cb.blockSignals(False)
+            except Exception:
+                pass
 
     def _add_axis_dialog(self):
         dlg = QtWidgets.QInputDialog(self)
