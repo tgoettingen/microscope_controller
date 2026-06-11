@@ -1,0 +1,75 @@
+{
+  "demo": {
+    "mode": "sim",
+    "n_timepoints": 3,
+    "interval_s": 0.05,
+    "z_start": 90.0,
+    "z_end": 110.0,
+    "z_step": 10.0,
+    "output_dir": "C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
+    "det_scale": 1.0,
+    "det_offset": 0.0
+  },
+  "multiaxis": {
+    "axes": [
+      {
+        "axis_type": "X",
+        "params": {
+          "start": 0.0,
+          "end": 300.0,
+          "step": 100.0,
+          "wait": 0.05,
+          "motors": [
+            "stage"
+          ],
+          "motor_mode": "sequential",
+          "motor_modes": {
+            "stage": "sequential"
+          },
+          "sync_timeout": 5.0,
+          "sync_poll": 0.01,
+          "sync_tol": 0.001,
+          "pre_pos": null,
+          "post_pos": null,
+          "collapse_one_step": true,
+          "group_mode": "sequential",
+          "group_length": "longer"
+        }
+      },
+      {
+        "axis_type": "X",
+        "params": {
+          "start": 30.0,
+          "end": 0.0,
+          "step": 10.0,
+          "wait": 0.05,
+          "motors": [
+            "stage"
+          ],
+          "motor_mode": "sequential",
+          "motor_modes": {
+            "stage": "sequential"
+          },
+          "sync_timeout": 5.0,
+          "sync_poll": 0.01,
+          "sync_tol": 0.001,
+          "pre_pos": null,
+          "post_pos": null,
+          "collapse_one_step": true,
+          "group_mode": "sequential",
+          "group_length": "longer",
+          "group_with_prev": true
+        }
+      }
+    ],
+    "detectors": [
+      "vm2",
+      "vm3"
+    ]
+  },
+  "output_dir": "C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
+  "devices": {
+    "detector_scale": 1.0,
+    "detector_offset": 0.0
+  }
+}

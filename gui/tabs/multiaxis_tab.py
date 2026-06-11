@@ -7,6 +7,7 @@ from gui.dialogs.motor_axis_dialog import MotorAxisDialog
 from gui.dialogs.channel_axis_dialog import ChannelAxisDialog
 from gui.dialogs.detector_axis_dialog import DetectorAxisDialog
 from gui.dialogs.round_axis_dialog import RoundAxisDialog
+from gui.dialogs.group_axis_dialog import GroupAxisDialog
 
 
 class MultiAxisTab(QtWidgets.QWidget):
@@ -56,13 +57,14 @@ class MultiAxisTab(QtWidgets.QWidget):
         xsel_layout.addWidget(self.default_xaxis_combo)
         layout.addLayout(xsel_layout)
 
-        # Buttons for axis management: add/remove/edit
+        # Buttons for axis management: add/group/remove.
+        # (Editing is available by double-clicking an axis in the list.)
         btns = QtWidgets.QHBoxLayout()
         self.add_axis_btn = QtWidgets.QPushButton("Add Axis")
-        self.edit_axis_btn = QtWidgets.QPushButton("Edit Selected")
+        self.group_axis_btn = QtWidgets.QPushButton("Group")
         self.remove_axis_btn = QtWidgets.QPushButton("Remove Selected")
         btns.addWidget(self.add_axis_btn)
-        btns.addWidget(self.edit_axis_btn)
+        btns.addWidget(self.group_axis_btn)
         btns.addWidget(self.remove_axis_btn)
         layout.addLayout(btns)
 
@@ -76,7 +78,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         layout.addStretch(1)
 
         self.add_axis_btn.clicked.connect(self._add_axis_dialog)
-        self.edit_axis_btn.clicked.connect(self._edit_selected)
+        self.group_axis_btn.clicked.connect(self._group_axis)
         self.remove_axis_btn.clicked.connect(self._remove_selected)
         self.start_btn.clicked.connect(self.start_requested.emit)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
@@ -120,7 +122,11 @@ class MultiAxisTab(QtWidgets.QWidget):
                 row_layout.setSpacing(6)
 
                 sel_cb = QtWidgets.QCheckBox(str(d))
-                sel_cb.setChecked(d in previously_checked)
+                # Default to selected when there was no prior selection so a
+                # fresh run records every detector (matches the historical
+                # "no selection means all" behaviour). Preserve an explicit
+                # prior selection otherwise.
+                sel_cb.setChecked(d in previously_checked if previously_checked else True)
                 offset_cb = QtWidgets.QCheckBox("Offset")
                 offset_cb.setChecked(bool(previous_offset_enabled.get(d, False)))
                 offset_label = QtWidgets.QLabel("Off=")
@@ -176,6 +182,10 @@ class MultiAxisTab(QtWidgets.QWidget):
             except Exception:
                 continue
         return selected
+
+    def get_available_detectors(self) -> list[str]:
+        """Return all detector ids currently shown in the available list."""
+        return list(self._detector_select_cbs.keys())
 
     def set_selected_detectors(self, detector_ids: list[str]):
         """Check the given detector ids in the available detector list."""
@@ -252,8 +262,19 @@ class MultiAxisTab(QtWidgets.QWidget):
                 pass
 
     def _add_axis_dialog(self):
+        # List each detector individually (e.g. vm2, vm3) so the user can add a
+        # detector-specific axis. Fall back to a generic "Detector" entry when
+        # no detectors are known yet.
+        det_names = self.get_available_detectors()
+        items = ["X", "Y", "Z", "Channel"]
+        if det_names:
+            items += list(det_names)
+        else:
+            items.append("Detector")
+        items.append("Round")
+
         dlg = QtWidgets.QInputDialog(self)
-        dlg.setComboBoxItems(["X", "Y", "Z", "Channel", "Detector", "Round"])
+        dlg.setComboBoxItems(items)
         dlg.setLabelText("Select axis type:")
         dlg.setWindowTitle("Add Axis")
 
@@ -268,6 +289,8 @@ class MultiAxisTab(QtWidgets.QWidget):
             d = ChannelAxisDialog(self)
         elif axis_type == "Detector":
             d = DetectorAxisDialog(self)
+        elif axis_type in det_names:
+            d = DetectorAxisDialog(self, detector_name=axis_type)
         elif axis_type == "Round":
             d = RoundAxisDialog(self)
         else:
@@ -303,30 +326,21 @@ class MultiAxisTab(QtWidgets.QWidget):
         elif cfg.axis_type == "Channel":
             dlg = ChannelAxisDialog(self)
         elif cfg.axis_type == "Detector":
-            dlg = DetectorAxisDialog(self)
+            dlg = DetectorAxisDialog(self, detector_name=cfg.params.get("detector"))
         elif cfg.axis_type == "Round":
             dlg = RoundAxisDialog(self)
         else:
             return
 
-        # populate motor dialog fields if present
+        # MotorAxisDialog already restores all its fields (including the
+        # hardware table) from the config passed to its constructor; only the
+        # other dialog types need manual population here.
         try:
-            if hasattr(dlg, 'start_spin') and cfg.params:
+            if hasattr(dlg, 'start_spin') and not isinstance(dlg, MotorAxisDialog) and cfg.params:
                 dlg.start_spin.setValue(cfg.params.get('start', dlg.start_spin.value()))
                 dlg.end_spin.setValue(cfg.params.get('end', dlg.end_spin.value()))
                 dlg.step_spin.setValue(cfg.params.get('step', dlg.step_spin.value()))
                 dlg.wait_spin.setValue(cfg.params.get('wait', dlg.wait_spin.value()))
-                motors = cfg.params.get('motors', [])
-                dlg.motors_edit.setText(','.join(motors))
-                mode = cfg.params.get('motor_mode', dlg.mode_combo.currentText())
-                idx = dlg.mode_combo.findText(mode)
-                if idx >= 0:
-                    dlg.mode_combo.setCurrentIndex(idx)
-                # pre/post positions
-                if 'pre_pos' in cfg.params and cfg.params['pre_pos'] is not None:
-                    dlg.pre_pos_spin.setValue(cfg.params['pre_pos'])
-                if 'post_pos' in cfg.params and cfg.params['post_pos'] is not None:
-                    dlg.post_pos_spin.setValue(cfg.params['post_pos'])
         except Exception:
             pass
 
@@ -346,6 +360,92 @@ class MultiAxisTab(QtWidgets.QWidget):
     def _remove_selected(self):
         for item in self.axis_list.selectedItems():
             self.axis_list.takeItem(self.axis_list.row(item))
+        try:
+            self.refresh_default_xaxis_options()
+        except Exception:
+            pass
+
+    def _group_axis(self):
+        """Configure how the selected axis is grouped within the scan."""
+        items = self.axis_list.selectedItems()
+        if not items:
+            QtWidgets.QMessageBox.information(
+                self, "Group Axis",
+                "Select an axis to configure its grouping."
+            )
+            return
+        item = items[0]
+        row = self.axis_list.row(item)
+        cfg = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(cfg, AxisConfig):
+            return
+
+        # All other axes are valid grouping targets (referenced by current row).
+        other_axes: list[tuple[int, str]] = []
+        for i in range(self.axis_list.count()):
+            if i == row:
+                continue
+            other = self.axis_list.item(i)
+            ocfg = other.data(QtCore.Qt.ItemDataRole.UserRole)
+            label = ocfg._label_base() if isinstance(ocfg, AxisConfig) else other.text()
+            other_axes.append((i, label))
+
+        # Determine the current selection to preselect in the dialog. Collapse
+        # and grouping are independent and may both be active.
+        collapsed_now = bool(cfg.params.get("collapse_one_step"))
+        if cfg.params.get("group_with_prev") and row > 0:
+            current = ("axis", row - 1)
+        else:
+            current = ("none",)
+
+        dlg = GroupAxisDialog(
+            cfg._label_base(),
+            other_axes,
+            parent=self,
+            mode=cfg.params.get("group_mode", "sync"),
+            length=cfg.params.get("group_length", "longer"),
+            current=current,
+            collapsed=collapsed_now,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        choice = dlg.get_choice()
+        collapsed = dlg.is_collapsed()
+        mode, length = dlg.get_values()
+
+        # Clear any existing grouping/collapse flags first.
+        for key in ("group_with_prev", "group_mode", "group_length", "collapse_one_step"):
+            cfg.params.pop(key, None)
+
+        if collapsed:
+            cfg.params["collapse_one_step"] = True
+            cfg.params["group_mode"] = mode
+            cfg.params["group_length"] = length
+
+        if choice[0] == "axis":
+            target_idx = choice[1]
+            target_item = self.axis_list.item(target_idx)
+            cfg.params["group_with_prev"] = True
+            cfg.params["group_mode"] = mode
+            cfg.params["group_length"] = length
+            # Move the selected axis to sit directly below its group target so
+            # the consecutive-axis grouping logic picks it up.
+            taken = self.axis_list.takeItem(row)
+            new_target_row = self.axis_list.row(target_item)
+            self.axis_list.insertItem(new_target_row + 1, taken)
+            taken.setText(cfg.label())
+            taken.setData(QtCore.Qt.ItemDataRole.UserRole, cfg)
+            self.axis_list.setCurrentItem(taken)
+            try:
+                self.refresh_default_xaxis_options()
+            except Exception:
+                pass
+            return
+        # "none" (and/or collapse-only) → update the item in place.
+
+        item.setText(cfg.label())
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, cfg)
         try:
             self.refresh_default_xaxis_options()
         except Exception:

@@ -107,6 +107,29 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_motors(device_map: dict, params: dict):
+    """Resolve an axis's motor names into parallel device + mode lists.
+
+    Returns ``(motor_devices, motor_modes)`` where ``motor_modes[i]`` is the
+    per-device run mode ("synchronized"/"sequential") for ``motor_devices[i]``.
+    Names that do not resolve to a device are skipped so both lists stay
+    aligned.
+    """
+    names = params.get("motors", []) or []
+    modes_map = params.get("motor_modes", {}) or {}
+    default_mode = params.get("motor_mode", "sequential")
+    if default_mode not in ("synchronized", "sequential"):
+        default_mode = "sequential"
+    motor_devices = []
+    motor_modes = []
+    for n in names:
+        dev = device_map.get(n)
+        if dev is not None:
+            motor_devices.append(dev)
+            motor_modes.append(modes_map.get(n, default_mode))
+    return motor_devices, motor_modes
+
+
 class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
@@ -133,6 +156,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.multi_runner: MultiAxisRunner | None = None
       self.multi_thread: threading.Thread | None = None
+
+      # Hardware currently reserved by an active run. Each entry is a tuple of
+      # (detector-id set, motor-name set). None => that run is not active.
+      # Used to let strip-chart and multi-axis run concurrently only when their
+      # hardware does not overlap.
+      self._strip_reserved: tuple[set[str], set[str]] | None = None
+      self._multi_reserved: tuple[set[str], set[str]] | None = None
+      # True while the active multi-axis run owns the stream/multichannel savers
+      # (i.e. it actually records detector data). A detector-less multi-axis scan
+      # that coexists with a running strip chart must not tear down the strip
+      # chart's savers.
+      self._multi_owns_stream_savers: bool = False
 
       # Multi-view (camera) scan runner
       self.multiview_runner: MultiAxisRunner | None = None
@@ -220,6 +255,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self._measurement_state = normalized
       self._measurement_kind = kind_text
+
+      # Release hardware reservations when a run finishes so the other mode's
+      # start button can be re-enabled. Done before any early return below.
+      if normalized == "Finished":
+         if kind_text == "Strip Chart":
+            self._strip_reserved = None
+         elif kind_text == "Multi-Axis":
+            self._multi_reserved = None
+      self._refresh_run_button_states()
+
       lbl = getattr(self, "_measurement_status_label", None)
       if lbl is None:
          return
@@ -235,7 +280,141 @@ class MainWindow(QtWidgets.QMainWindow):
          pass
 
 
+   # ----------------- hardware reservation / run gating -----------------
+
+   def _all_detector_ids(self) -> list[str]:
+      """Return every detector id known to the application.
+
+      Strip-chart acquisition reads *all* detectors, so this is the set of
+      detectors the strip chart will use.
+      """
+      ids: list[str] = []
+      try:
+         det = getattr(self, "det", None)
+         if isinstance(det, list):
+            ids = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+         elif det is not None:
+            ids = [getattr(det, "name", getattr(det, "port", "detector"))]
+      except Exception:
+         ids = []
+      if ids:
+         return ids
+      # Devices not built yet: fall back to the tab's available-detector list.
+      try:
+         if hasattr(self.multi_tab, "get_available_detectors"):
+            return list(self.multi_tab.get_available_detectors())
+      except Exception:
+         pass
+      return []
+
+   def _strip_chart_hardware(self) -> tuple[set[str], set[str]]:
+      """(detectors, motors) the strip chart will use.
+
+      The strip chart polls every detector and never moves motors.
+      """
+      return set(self._all_detector_ids()), set()
+
+   def _multiaxis_hardware(self) -> tuple[set[str], set[str]]:
+      """(detectors, motors) the multi-axis run will use, from the current UI.
+
+      A multi-axis scan only reads detectors when it defines a ``Detector``
+      axis; a pure motor/camera scan uses no detectors and can therefore run
+      alongside the strip chart. Motors are the motor names referenced by
+      X/Y/Z axes (Z maps to the focus device).
+      """
+      dets: set[str] = set()
+      motors: set[str] = set()
+      try:
+         cfgs = self.multi_tab.get_axis_configs()
+      except Exception:
+         cfgs = []
+      has_detector_axis = any(getattr(c, "axis_type", None) == "Detector" for c in cfgs)
+      if has_detector_axis:
+         try:
+            dets = set(self.multi_tab.get_selected_detectors() or [])
+         except Exception:
+            dets = set()
+      try:
+         for cfg in cfgs:
+            t = getattr(cfg, "axis_type", None)
+            params = getattr(cfg, "params", None) or {}
+            if t in ("X", "Y", "Z"):
+               for m in params.get("motors", []) or []:
+                  motors.add(str(m))
+               if t == "Z":
+                  motors.add("focus")
+      except Exception:
+         pass
+      return dets, motors
+
+   @staticmethod
+   def _hardware_conflict(
+      usage: tuple[set[str], set[str]],
+      reserved: tuple[set[str], set[str]] | None,
+   ) -> str:
+      """Return a human-readable description of overlapping hardware, or "".
+
+      ``usage`` is the (detectors, motors) a run wants; ``reserved`` is what an
+      already-running run holds. Empty result means there is no conflict.
+      """
+      if not reserved:
+         return ""
+      use_dets, use_motors = usage
+      res_dets, res_motors = reserved
+      det_overlap = sorted(set(use_dets) & set(res_dets))
+      motor_overlap = sorted(set(use_motors) & set(res_motors))
+      parts: list[str] = []
+      if det_overlap:
+         parts.append("detector(s): " + ", ".join(det_overlap))
+      if motor_overlap:
+         parts.append("motor(s): " + ", ".join(motor_overlap))
+      return "; ".join(parts)
+
+   def _refresh_run_button_states(self) -> None:
+      """Enable/disable the Strip Chart and Multi-Axis start buttons.
+
+      A start button is disabled while its own run is active, and also greyed
+      out when starting it would conflict with the hardware reserved by the
+      other running mode.
+      """
+      strip_running = getattr(self, "orch_thread", None) is not None
+      multi_running = getattr(self, "multi_thread", None) is not None
+
+      strip_btn = getattr(getattr(self, "demo_tab", None), "start_btn", None)
+      if strip_btn is not None:
+         try:
+            if strip_running:
+               strip_btn.setEnabled(False)
+               strip_btn.setToolTip("Strip Chart is already running.")
+            else:
+               conflict = self._hardware_conflict(
+                  self._strip_chart_hardware(), self._multi_reserved)
+               strip_btn.setEnabled(not conflict)
+               strip_btn.setToolTip(
+                  "In use by the running Multi‑Axis scan — " + conflict
+                  if conflict else "")
+         except Exception:
+            pass
+
+      multi_btn = getattr(getattr(self, "multi_tab", None), "start_btn", None)
+      if multi_btn is not None:
+         try:
+            if multi_running:
+               multi_btn.setEnabled(False)
+               multi_btn.setToolTip("Multi‑Axis is already running.")
+            else:
+               conflict = self._hardware_conflict(
+                  self._multiaxis_hardware(), self._strip_reserved)
+               multi_btn.setEnabled(not conflict)
+               multi_btn.setToolTip(
+                  "In use by the running Strip Chart — " + conflict
+                  if conflict else "")
+         except Exception:
+            pass
+
+
    def _close_all_stream_savers(self):
+
       """Close and remove all active StreamSaver instances and any MultiChannelSaver."""
       # Keep last completed measurement output path(s) for replay.
       try:
@@ -1896,6 +2075,20 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.orch_thread is not None:
             return
 
+      # Refuse to start if a running multi-axis scan is already using any of
+      # the detectors the strip chart would poll.
+      conflict = self._hardware_conflict(self._strip_chart_hardware(), self._multi_reserved)
+      if conflict:
+         QtWidgets.QMessageBox.warning(
+            self,
+            "Strip Chart",
+            "Cannot start the Strip Chart while the Multi‑Axis scan is using "
+            f"the same hardware ({conflict}).\n\n"
+            "Stop the Multi‑Axis run, or de-select those detectors from the "
+            "Multi‑Axis scan, then try again.",
+         )
+         return
+
       try:
          logger.info("Starting strip-chart experiment (config=%s)", cfg)
       except Exception:
@@ -2128,16 +2321,23 @@ class MainWindow(QtWidgets.QMainWindow):
                   self.orch.shutdown(disconnect_devices=False)
                except Exception:
                   pass
-               # When the measurement finishes, stop stream saving.
+               # When the measurement finishes, stop stream saving. The strip
+               # chart owns the stream savers whenever it runs, so always close
+               # them here. The image saver, however, may belong to a multi-axis
+               # scan running concurrently; only close it when no multi-axis run
+               # is active.
                self._close_all_stream_savers()
-               self._close_image_saver()
+               if self.multi_thread is None:
+                  self._close_image_saver()
                self.orch = None
                self.orch_thread = None
                self._set_measurement_state("Finished", kind="Strip Chart")
 
       self.orch_thread = threading.Thread(target=worker, daemon=True)
       self.orch_thread.start()
+      self._strip_reserved = self._strip_chart_hardware()
       self._set_measurement_state("Running", kind="Strip Chart")
+      self._refresh_run_button_states()
 
    def _on_stream_toggled(self, det_id: str, enabled: bool):
       """Create or close stream saver when user toggles streaming from the LiveTab."""
@@ -2207,9 +2407,11 @@ class MainWindow(QtWidgets.QMainWindow):
                   return
                timer.stop()
                # Ensure stream savers are closed/cleared even if the worker
-               # exited abnormally.
+               # exited abnormally. Leave a concurrently running multi-axis
+               # scan's image saver untouched.
                self._close_all_stream_savers()
-               self._close_image_saver()
+               if self.multi_thread is None:
+                  self._close_image_saver()
                try:
                   self.statusBar().showMessage("Experiment finished. Stream saved closed.", 5000)
                except Exception:
@@ -2247,6 +2449,20 @@ class MainWindow(QtWidgets.QMainWindow):
       if not cfgs:
             QtWidgets.QMessageBox.warning(self, "Multi‑Axis", "No axes defined.")
             return
+
+      # Refuse to start if a running strip chart is already using any of the
+      # detectors (or motors) this multi-axis scan needs.
+      conflict = self._hardware_conflict(self._multiaxis_hardware(), self._strip_reserved)
+      if conflict:
+         QtWidgets.QMessageBox.warning(
+            self,
+            "Multi‑Axis",
+            "Cannot start the Multi‑Axis scan while the Strip Chart is using "
+            f"the same hardware ({conflict}).\n\n"
+            "Stop the Strip Chart, or de-select those detectors from this scan, "
+            "then try again.",
+         )
+         return
 
       try:
          axis_types = [getattr(c, "axis_type", "?") for c in cfgs]
@@ -2305,6 +2521,28 @@ class MainWindow(QtWidgets.QMainWindow):
       else:
          device_map[getattr(det, 'name', getattr(det, 'port', 'detector'))] = det
 
+      # Only stream/measure detector signal when a Detector axis is defined.
+      # Without a Detector axis the run is a pure motor/camera scan.
+      has_detector_axis = any(getattr(c, "axis_type", None) == "Detector" for c in cfgs)
+
+      # Determine which detectors the Detector axes actually target. When every
+      # Detector axis names a specific detector (e.g. "vm2"), the run should use
+      # only those detectors. A Detector axis without a specific name means
+      # "all detectors" (legacy behaviour).
+      axis_detector_names: set[str] | None = set()
+      for c in cfgs:
+         if getattr(c, "axis_type", None) == "Detector":
+            nm = (getattr(c, "params", None) or {}).get("detector")
+            if nm:
+               axis_detector_names.add(str(nm))
+            else:
+               # Generic Detector axis → use all detectors.
+               axis_detector_names = None
+               break
+      if axis_detector_names is not None and not axis_detector_names:
+         # No specific names collected (and no generic axis) → fall back to all.
+         axis_detector_names = None
+
       axes = []
       for cfg in cfgs:
             t = cfg.axis_type
@@ -2325,7 +2563,7 @@ class MainWindow(QtWidgets.QMainWindow):
                device_map[getattr(det, "name", getattr(det, "port", "detector"))] = det
 
             if t == "X":
-               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               motor_devices, motor_modes = _resolve_motors(device_map, p)
                axes.append(
                   XAxis(
                      stage,
@@ -2334,6 +2572,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      p["step"],
                      motor_devices=motor_devices or None,
                      motor_mode=p.get("motor_mode", "sequential"),
+                     motor_modes=motor_modes or None,
                      wait_s=p.get("wait", 0.0),
                      sync_timeout=p.get("sync_timeout", 5.0),
                      sync_poll=p.get("sync_poll", 0.01),
@@ -2341,7 +2580,7 @@ class MainWindow(QtWidgets.QMainWindow):
                   )
                )
             elif t == "Y":
-               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               motor_devices, motor_modes = _resolve_motors(device_map, p)
                axes.append(
                   YAxis(
                      stage,
@@ -2350,6 +2589,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      p["step"],
                      motor_devices=motor_devices or None,
                      motor_mode=p.get("motor_mode", "sequential"),
+                     motor_modes=motor_modes or None,
                      wait_s=p.get("wait", 0.0),
                      sync_timeout=p.get("sync_timeout", 5.0),
                      sync_poll=p.get("sync_poll", 0.01),
@@ -2357,7 +2597,7 @@ class MainWindow(QtWidgets.QMainWindow):
                   )
                )
             elif t == "Z":
-               motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
+               motor_devices, motor_modes = _resolve_motors(device_map, p)
                axes.append(
                   ZAxis(
                      focus,
@@ -2366,6 +2606,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      p["step"],
                      motor_devices=motor_devices or None,
                      motor_mode=p.get("motor_mode", "sequential"),
+                     motor_modes=motor_modes or None,
                      wait_s=p.get("wait", 0.0),
                      sync_timeout=p.get("sync_timeout", 5.0),
                      sync_poll=p.get("sync_poll", 0.01),
@@ -2376,17 +2617,57 @@ class MainWindow(QtWidgets.QMainWindow):
                axes.append(ChannelAxis(cam, light, fw, p["channels"], p.get("wait", 0.0)))
             elif t == "Detector":
                # Detector scaling is read from device config; do not override it via an axis.
-               axes.append(DetectorAxis(det, scales=None, wait_s=p.get("wait", 0.0)))
+               # When a specific detector is named (e.g. "vm2"), use only that one;
+               # otherwise fall back to all configured detector(s).
+               det_name = p.get("detector")
+               det_target = device_map.get(det_name) if det_name else det
+               if det_target is None:
+                  det_target = det
+               axes.append(DetectorAxis(det_target, scales=None, wait_s=p.get("wait", 0.0)))
             elif t == "Round":
                axes.append(RoundAxis(p["n_rounds"]))
+
+      # Merge consecutive axes the user grouped together into composite
+      # GroupedAxis dimensions (sync/sequential scan with shorter/longer steps).
+      try:
+         axes = self._apply_axis_grouping(axes, cfgs)
+      except Exception:
+         logger.exception("Failed to apply axis grouping; running ungrouped")
+
+      # Log the final scan dimensions in execution order (axis 0 = outermost
+      # loop, last axis = innermost loop) so the run structure is traceable.
+      try:
+         logger.info("Multi-axis run: %d scan dimension(s) (outer→inner):", len(axes))
+         for i, ax in enumerate(axes):
+            scope = "outermost" if i == 0 else ("innermost" if i == len(axes) - 1 else "inner")
+            logger.info("  dim %d [%s]: %s = %s", i, scope, type(ax).__name__, ax.name())
+      except Exception:
+         logger.exception("Failed to log multi-axis scan dimensions")
 
       self.live_tab.reset_multiaxis()
 
       # Apply the Multi-Axis tab's default x-axis preference to the Live plot.
       # The Live plot will apply this as soon as the first multi-axis samples
       # arrive and x-axis options are refreshed.
+      #
+      # Skip this while the Strip Chart is running: the two modes share the Live
+      # plot, and changing the x-axis to a scan axis (X/Z/…) would disrupt the
+      # running strip chart's time-based x label.
       try:
-         if hasattr(self.multi_tab, "get_default_xaxis") and hasattr(self.live_tab, "set_preferred_plot_xaxis"):
+         strip_running = getattr(self, "orch_thread", None) is not None
+         # Tell the Live plot whether the Strip Chart owns it; while it does, the
+         # multi-axis scan must not switch plot mode or change the x-axis label.
+         try:
+            if hasattr(self.live_tab, "set_strip_owns_plot"):
+               self.live_tab.set_strip_owns_plot(strip_running)
+         except Exception:
+            pass
+         if strip_running:
+            logger.info(
+               "Strip Chart is running; not overriding the Live plot x-axis "
+               "for the multi-axis scan."
+            )
+         elif hasattr(self.multi_tab, "get_default_xaxis") and hasattr(self.live_tab, "set_preferred_plot_xaxis"):
             self.live_tab.set_preferred_plot_xaxis(self.multi_tab.get_default_xaxis())
       except Exception:
          pass
@@ -2453,6 +2734,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # register detector views in LiveTab and start stream saver(s) for detector(s) selected in UI
       # (if any); otherwise default to all
+      # Whether this run records detector data (and therefore owns the stream /
+      # multichannel savers). A detector-less scan owns nothing, so it must not
+      # tear down a concurrently running strip chart's savers.
+      self._multi_owns_stream_savers = False
       try:
          out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
          # Generate a new universal measurement ID for this run
@@ -2470,7 +2755,18 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
 
-         if use_multichannel and _SAVING_ENABLED:
+         # Restrict to detectors named by the Detector axes (e.g. only "vm2"
+         # when a single vm2 detector axis is defined).
+         if axis_detector_names is not None:
+            det_list = [d for d in det_list if str(d) in axis_detector_names]
+
+         if not has_detector_axis:
+            # No Detector axis defined: this is a pure motor/camera scan, so do
+            # not register detectors or create (empty) stream savers.
+            det_list = []
+            self.statusBar().showMessage(
+               "No Detector axis defined → detector signal not streamed", 6000)
+         elif use_multichannel and _SAVING_ENABLED:
             # One shared file for all detectors
             self._close_mc_saver()
             self._mc_saver = MultiChannelSaver(
@@ -2515,6 +2811,23 @@ class MainWindow(QtWidgets.QMainWindow):
                self.statusBar().showMessage("Saving disabled (debug mode)", 4000)
          except Exception:
             pass
+         # Record whether this run owns savers, so a concurrent strip chart's
+         # savers are never torn down by this run.
+         self._multi_owns_stream_savers = bool(det_list)
+
+         # When the Detector axes name specific detectors, restrict the display
+         # (plot curves, detector image panel) to exactly those active detectors
+         # so the UI reflects the number of detectors actually in use.
+         if has_detector_axis and axis_detector_names is not None:
+            try:
+               self._selected_detectors_for_display = set(det_list) if det_list else None
+            except Exception:
+               self._selected_detectors_for_display = None
+            try:
+               if hasattr(self.live_tab, "set_selected_detectors"):
+                  self.live_tab.set_selected_detectors(list(det_list))
+            except Exception:
+               pass
          # apply default X-axis selection from MultiAxisTab via the preference
          # mechanism (handled by set_preferred_plot_xaxis called earlier above).
       except Exception:
@@ -2542,8 +2855,15 @@ class MainWindow(QtWidgets.QMainWindow):
                   pass
 
             # detector value(s)
-            if det is not None:
+            if has_detector_axis and det is not None:
                dets = det if isinstance(det, list) else [det]
+               # Only read the detectors named by the Detector axes (e.g. just
+               # "vm2" when a single vm2 detector axis is defined).
+               if axis_detector_names is not None:
+                  dets = [
+                     d for d in dets
+                     if str(getattr(d, "name", getattr(d, "port", "detector"))) in axis_detector_names
+                  ]
                for d in dets:
                   try:
                      sample = d.read_value()
@@ -2623,15 +2943,29 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
             finally:
-               # When the measurement finishes, stop stream saving.
-               self._close_all_stream_savers()
+               # When the measurement finishes, stop stream saving — but only
+               # if this run actually owns the savers. A detector-less scan that
+               # ran alongside the strip chart must leave the strip chart's
+               # savers intact.
+               if self._multi_owns_stream_savers:
+                  self._close_all_stream_savers()
+               self._multi_owns_stream_savers = False
+               # Release the strip-chart-owns-plot guard set at start (safe to
+               # toggle this plain bool from the worker thread).
+               try:
+                  if hasattr(self.live_tab, "set_strip_owns_plot"):
+                     self.live_tab.set_strip_owns_plot(False)
+               except Exception:
+                  pass
                self.multi_runner = None
                self.multi_thread = None
                self._set_measurement_state("Finished", kind="Multi-Axis")
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
       self.multi_thread.start()
+      self._multi_reserved = self._multiaxis_hardware()
       self._set_measurement_state("Running", kind="Multi-Axis")
+      self._refresh_run_button_states()
 
    def _stop_multiaxis(self):
       try:
@@ -2653,9 +2987,13 @@ class MainWindow(QtWidgets.QMainWindow):
          logger.info("Multi-axis stopped (devices_released=%s)", getattr(self, "devices_released", None))
       except Exception:
          pass
-      # close any stream savers
-      self._close_all_stream_savers()
-      self._close_image_saver()
+      # close any stream savers this run owns. If it ran detector-less alongside
+      # the strip chart, leave the strip chart's savers and image saver alone.
+      if self._multi_owns_stream_savers:
+         self._close_all_stream_savers()
+         self._multi_owns_stream_savers = False
+      if self.orch_thread is None:
+         self._close_image_saver()
 
    # ----------------- multi-view camera scan -----------------
 
@@ -2948,6 +3286,56 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+   def _apply_axis_grouping(self, axes, cfgs):
+      """Apply per-axis grouping / collapse flags to the built axis list.
+
+      ``axes[i]`` corresponds 1:1 to ``cfgs[i]``.
+      - An axis flagged ``collapse_one_step`` is wrapped in a ``OneStepAxis`` so
+        its whole sweep counts as a single scan step.
+      - An axis flagged ``group_with_prev`` joins the group started by the axis
+        immediately above it; the group's scan mode / step policy comes from the
+        most recent joining axis. Multi-member groups become a ``GroupedAxis``.
+      """
+      from core.multiaxis import GroupedAxis, OneStepAxis
+
+      if not axes or len(axes) != len(cfgs):
+         return axes
+
+      # First, collapse any axis flagged "one step" into a single scan step.
+      prepped = []
+      for ax, cfg in zip(axes, cfgs):
+         params = getattr(cfg, "params", None) or {}
+         if params.get("collapse_one_step"):
+            prepped.append(OneStepAxis(ax))
+         else:
+            prepped.append(ax)
+
+      groups: list[list] = []
+      group_meta: list[tuple[str, str]] = []
+      for ax, cfg in zip(prepped, cfgs):
+         params = getattr(cfg, "params", None) or {}
+         join = bool(params.get("group_with_prev")) and bool(groups)
+         if join:
+            groups[-1].append(ax)
+            group_meta[-1] = (
+               params.get("group_mode", "sync"),
+               params.get("group_length", "longer"),
+            )
+         else:
+            groups.append([ax])
+            group_meta.append((
+               params.get("group_mode", "sync"),
+               params.get("group_length", "longer"),
+            ))
+
+      result = []
+      for members, (mode, length) in zip(groups, group_meta):
+         if len(members) == 1:
+            result.append(members[0])
+         else:
+            result.append(GroupedAxis(members, mode=mode, length=length))
+      return result
+
    def _on_axis_move(self, axis_name: str, pos: object, state: dict):
       """Called when an axis apply completes during a multi-axis run.
 
@@ -3219,6 +3607,13 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+      # Detector selection affects which hardware the multi-axis scan claims,
+      # so re-evaluate the start-button gating (e.g. while a strip chart runs).
+      try:
+         self._refresh_run_button_states()
+      except Exception:
+         pass
+
    def _on_detector_offset_toggled(self, detector_id: str, enabled: bool):
       """Apply per-detector display-offset toggle from MultiAxisTab UI."""
       try:
@@ -3293,6 +3688,73 @@ class MainWindow(QtWidgets.QMainWindow):
       with open(path, "w") as f:
          json.dump(data, f, indent=2)
 
+   def _release_current_devices(self) -> None:
+      """Stop any running acquisitions and disconnect currently-open devices."""
+      # Stop running experiments / scans so devices are no longer in use.
+      try:
+         if self.orch_thread is not None:
+            self._stop_experiment()
+      except Exception:
+         pass
+      try:
+         if self.multi_thread is not None:
+            self._stop_multiaxis()
+      except Exception:
+         pass
+      try:
+         if self.multiview_thread is not None:
+            self._stop_multiview_scan()
+      except Exception:
+         pass
+
+      if not self.devices_built or self.devices_released:
+         return
+
+      detectors = self.det if isinstance(self.det, list) else [self.det]
+      for dev in [self.cam, self.stage, self.focus, self.light, self.fw, *detectors]:
+         if dev is None:
+            continue
+         try:
+            dev.disconnect()
+         except Exception:
+            pass
+
+      self.cam = None
+      self.stage = None
+      self.focus = None
+      self.light = None
+      self.fw = None
+      self.det = None
+      self.devices_built = False
+      self.devices_released = True
+
+   def _build_devices_now(self) -> bool:
+      """Open/initialize all hardware from the active config up front.
+
+      Building devices eagerly (e.g. right after loading a hardware config)
+      means a subsequent measurement can start immediately instead of paying
+      the connection/initialization cost at run time. Safe to call when devices
+      are already built (it is a no-op in that case).
+
+      Returns True if devices are built and ready, False on failure.
+      """
+      if self.devices_built and not self.devices_released:
+         return True
+      try:
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         # Ensure ComPort detectors are in their intended stream mode and
+         # surface connection errors to the user.
+         self._set_comport_mode_for_all(self.det)
+         self._connect_detector_errors(self.det)
+         self.devices_built = True
+         self.devices_released = False
+         return True
+      except Exception:
+         logger.exception("Failed to build devices from config %s", self._config_path)
+         self.devices_built = False
+         self.devices_released = True
+         return False
+
    def load_hardware_config(self):
       """Load a hardware/device config JSON and make it the active config."""
       try:
@@ -3312,6 +3774,9 @@ class MainWindow(QtWidgets.QMainWindow):
          QtWidgets.QMessageBox.warning(self, "Load Hardware Config", f"Could not read {path}:\n{exc}")
          return
 
+      # Close/disconnect any currently-open hardware before switching configs.
+      self._release_current_devices()
+
       self._config_path = path
 
       # Keep child tabs in sync so new axis dialogs use the selected config.
@@ -3321,6 +3786,13 @@ class MainWindow(QtWidgets.QMainWindow):
          pass
       try:
          self.multiviewctl_tab._config_path = path
+      except Exception:
+         pass
+
+      # Reset the plot legend / registered detectors so stale curves from the
+      # previous hardware config do not linger before re-registering below.
+      try:
+         self.live_tab.clear_detectors()
       except Exception:
          pass
 
@@ -3344,10 +3816,19 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+      # Open/initialize all hardware now so a subsequent measurement starts
+      # immediately instead of building devices at run time.
       try:
-         self.statusBar().showMessage(f"Hardware config loaded: {path}", 5000)
+         if self._build_devices_now():
+            self.statusBar().showMessage(f"Hardware config loaded and devices opened: {path}", 5000)
+         else:
+            QtWidgets.QMessageBox.warning(
+               self, "Load Hardware Config",
+               f"Config loaded, but some hardware could not be opened.\nCheck connections, then retry.\n\n{path}",
+            )
+            self.statusBar().showMessage(f"Hardware config loaded (devices NOT opened): {path}", 6000)
       except Exception:
-         pass
+         logger.exception("Eager device build failed after loading config %s", path)
 
    def load_full_experiment(self):
       try:

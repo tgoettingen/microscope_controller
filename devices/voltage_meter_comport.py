@@ -164,7 +164,13 @@ class ComPort(Detector):
             # to avoid blocking shutdown.
             self._serial = serial.Serial(self.port, self.baudrate, timeout=self.read_timeout)
             time.sleep(0.1)  # wait for port to stabilize
-            self.set_mode(self.mode)
+            # Reset the voltage meter on connect: mode 3 restarts the ADC on the
+            # MCU side. Issue the reset command directly (without overwriting the
+            # intended stream mode), then apply the configured mode.
+            intended_mode = self.mode
+            self._send_mode_command(3)
+            time.sleep(2.0)  # MCU resets and restarts the ADC after about 2 seconds
+            self.set_mode(intended_mode)
 
         except Exception as e:
             self.error.emit(f'Failed to open serial port {self.port}: {e}')

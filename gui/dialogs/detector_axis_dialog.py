@@ -4,11 +4,18 @@ from core.multiaxis import AxisConfig
 
 
 class DetectorAxisDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, detector_name: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Detector Axis Settings")
+        self.detector_name = detector_name
+        if detector_name:
+            self.setWindowTitle(f"Detector Axis Settings — {detector_name}")
+        else:
+            self.setWindowTitle("Detector Axis Settings")
 
         layout = QtWidgets.QFormLayout(self)
+
+        if detector_name:
+            layout.addRow("Detector", QtWidgets.QLabel(str(detector_name)))
 
         self.wait_spin = QtWidgets.QDoubleSpinBox()
         self.wait_spin.setRange(0.0, 10.0)
@@ -27,9 +34,12 @@ class DetectorAxisDialog(QtWidgets.QDialog):
         layout.addRow(btns)
 
     def get_config(self) -> AxisConfig:
+        params = {
+            "wait": self.wait_spin.value(),
+        }
+        if self.detector_name:
+            params["detector"] = self.detector_name
         return AxisConfig(
             axis_type="Detector",
-            params={
-                "wait": self.wait_spin.value(),
-            },
+            params=params,
         )

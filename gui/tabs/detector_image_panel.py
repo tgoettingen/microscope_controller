@@ -318,6 +318,29 @@ class DetectorImagePanel(QtWidgets.QWidget):
         # apply current overlay state
         self._apply_overlay_visibility(bool(self.overlay_cb.isChecked()))
 
+    def clear_detectors(self) -> None:
+        """Remove all per-detector image views and reset tracking state."""
+        for detector_id in list(self._detector_widgets.keys()):
+            container = self._detector_widgets.get(detector_id)
+            if container is not None:
+                try:
+                    self.layout.removeWidget(container)
+                except Exception:
+                    pass
+                try:
+                    container.setParent(None)
+                    container.deleteLater()
+                except Exception:
+                    pass
+        self._detectors.clear()
+        self._detector_views.clear()
+        self._detector_widgets.clear()
+        self._detector_cmap_combos.clear()
+        try:
+            self._refresh_overlay_detector_lists()
+        except Exception:
+            pass
+
     def overlay_enabled(self) -> bool:
         return bool(self.overlay_cb.isChecked())
 

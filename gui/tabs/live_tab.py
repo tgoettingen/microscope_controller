@@ -319,6 +319,11 @@ class LiveTab(QtWidgets.QWidget):
         # Live plot when a run starts.
         self._preferred_plot_xaxis: str | None = None
 
+        # When True, the Strip Chart owns the Live plot (it is actively running)
+        # and a concurrently-started multi-axis scan must NOT take over the plot
+        # mode / x-axis label. The heatmap + detector images still update.
+        self._strip_owns_plot: bool = False
+
         layout.addWidget(self.plot_panel, 1)
 
         # Per-detector controls (visibility + streaming)
@@ -1608,6 +1613,84 @@ class LiveTab(QtWidgets.QWidget):
         except Exception:
             return None
 
+    def clear_detectors(self) -> None:
+        """Remove all registered detectors and reset the plot legend.
+
+        Used when switching hardware configs so stale detector curves, control
+        rows and legend entries do not linger from the previous configuration.
+        """
+        # Remove main strip-chart curves from the plot.
+        for curve in list(self._detector_curves.values()):
+            try:
+                self.plot_widget.removeItem(curve)
+            except Exception:
+                pass
+        # Remove right-axis temperature/resistance curves from their viewboxes.
+        for curve in list(self._temperature_curves.values()):
+            try:
+                self._temp_viewbox.removeItem(curve)
+            except Exception:
+                pass
+        for curve in list(self._resistance_curves.values()):
+            try:
+                self._res_viewbox.removeItem(curve)
+            except Exception:
+                pass
+
+        # Delete per-detector control rows.
+        for row in list(self._detector_control_rows.values()):
+            try:
+                self.detector_controls_layout.removeWidget(row)
+            except Exception:
+                pass
+            try:
+                row.setParent(None)
+                row.deleteLater()
+            except Exception:
+                pass
+
+        # Reset all per-detector tracking state.
+        self._detector_buffers.clear()
+        self._detector_times.clear()
+        self._detector_curves.clear()
+        self._temperature_buffers.clear()
+        self._temperature_times.clear()
+        self._temperature_curves.clear()
+        self._resistance_buffers.clear()
+        self._resistance_times.clear()
+        self._resistance_curves.clear()
+        self._detector_show_cbs.clear()
+        self._detector_stream_cbs.clear()
+        self._detector_offset_cbs.clear()
+        self._detector_offset_spins.clear()
+        self._detector_offset_value_labels.clear()
+        self._detector_display_offsets.clear()
+        self._detector_display_recent.clear()
+        self._detector_control_rows.clear()
+        self._detector_labels.clear()
+        self._detector_image_views.clear()
+        try:
+            self._detector_last_images.clear()
+        except Exception:
+            pass
+        try:
+            self.multi_coords.clear()
+        except Exception:
+            pass
+        self._det_color_idx = 0
+
+        # Reset the heatmap image panel.
+        try:
+            self.detector_image_panel.clear_detectors()
+        except Exception:
+            pass
+
+        # Finally clear and rebuild the (now empty) plot legend.
+        try:
+            self._clear_plot_and_legend()
+        except Exception:
+            pass
+
     def register_detector(self, detector_id: str):
         """Ensure UI and buffers exist for a detector id."""
         if detector_id in self._detector_buffers:
@@ -2051,6 +2134,16 @@ class LiveTab(QtWidgets.QWidget):
                     pass
 
         QtCore.QTimer.singleShot(0, _do)
+
+    def set_strip_owns_plot(self, owns: bool) -> None:
+        """Mark whether the Strip Chart currently owns the Live plot.
+
+        When True, a concurrently-running multi-axis scan must not switch the
+        plot into multi-axis numeric mode or change the x-axis label; the strip
+        chart's time-based plot stays in control. The multi-axis heatmap and
+        detector images still update.
+        """
+        self._strip_owns_plot = bool(owns)
 
     def set_preferred_plot_xaxis(self, axis_name: str | None) -> None:
         """Request selecting a specific x-axis after the next x-axis refresh.
@@ -3475,6 +3568,12 @@ class LiveTab(QtWidgets.QWidget):
                 self._last_multi_render = now
                 self._multi_dirty = False
                 self._update_multiaxis_visualization()
+                # When the Strip Chart owns the Live plot, only the heatmap /
+                # detector images update for the multi-axis scan. Do not switch
+                # the plot into multi-axis numeric mode or change the x-axis
+                # label — the running strip chart's time plot stays in control.
+                if getattr(self, "_strip_owns_plot", False):
+                    return
                 # numeric plot: detector value vs. selected axis
                 xaxis = self.xaxis_combo.currentText() if hasattr(self, 'xaxis_combo') else 'Index'
 

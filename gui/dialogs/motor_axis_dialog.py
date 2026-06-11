@@ -39,6 +39,51 @@ def _stage_unit(config_path: str | Path | None) -> str:
     return "steps"
 
 
+def _discover_hardware(config_path: str | Path | None) -> list[str]:
+    """Return the list of selectable hardware names from the device config.
+
+    Names match the device-map keys used by the multi-axis runner so they
+    resolve to real devices: ``stage``, ``focus``, ``camera``, ``light``,
+    ``fw`` (filter wheel), plus each detector by its individual ``name``
+    (falling back to ``port``). A detector list is expanded so that every
+    detector appears as its own selectable hardware entry.
+    """
+    names: list[str] = []
+    cfg: dict = {}
+    try:
+        if config_path:
+            loaded = load_config(config_path)
+            if isinstance(loaded, dict):
+                cfg = loaded
+    except Exception:
+        cfg = {}
+
+    if cfg.get("stage"):
+        names.append("stage")
+    if cfg.get("focus"):
+        names.append("focus")
+    if cfg.get("camera"):
+        names.append("camera")
+    if cfg.get("light"):
+        names.append("light")
+    if cfg.get("filter_wheel"):
+        names.append("fw")
+
+    det = cfg.get("detector")
+    if isinstance(det, list):
+        for i, dc in enumerate(det):
+            if isinstance(dc, dict):
+                names.append(dc.get("name") or dc.get("port") or f"detector{i + 1}")
+    elif isinstance(det, dict):
+        names.append(det.get("name") or det.get("port") or "detector")
+
+    # Always offer at least the basic motors so the dialog is usable even when
+    # the config could not be read.
+    if not names:
+        names = ["stage", "focus"]
+    return names
+
+
 # ── Scientific-notation-aware QDoubleSpinBox ──────────────────────────────────
 
 class ScientificSpinBox(QtWidgets.QDoubleSpinBox):
@@ -179,20 +224,44 @@ class MotorAxisDialog(QtWidgets.QDialog):
         self.wait_spin.setValue(0.05)
         self.wait_spin.setSuffix(" s")
 
-        # ── Motor selection & mode ───────────────────────────────────────────
-        self.motors_edit = QtWidgets.QLineEdit()
-        self.motors_edit.setPlaceholderText(
-            "Comma-separated device names (e.g. stage,focus)"
+        # ── Motor / hardware selection & per-device mode ─────────────────────
+        # A table lets the user pick one or more hardware devices for this axis
+        # and choose, per device, whether it moves synchronized with the others
+        # or sequentially (one after another).
+        self.hardware_table = QtWidgets.QTableWidget(0, 2)
+        self.hardware_table.setHorizontalHeaderLabels(["Hardware", "Mode"])
+        self.hardware_table.verticalHeader().setVisible(False)
+        self.hardware_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
         )
-        self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["sequential", "synchronized"])
+        self.hardware_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        try:
+            header = self.hardware_table.horizontalHeader()
+            header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        except Exception:
+            pass
+
+        # name -> checkable QTableWidgetItem; name -> mode QComboBox
+        self._hardware_items: dict[str, QtWidgets.QTableWidgetItem] = {}
+        self._hardware_mode_combos: dict[str, QtWidgets.QComboBox] = {}
+
+        for name in _discover_hardware(config_path):
+            self._add_hardware_row(name)
+
+        # Pre-select the natural motor for this axis on a fresh dialog.
+        default_motor = "focus" if axis_type == "Z" else "stage"
+        item = self._hardware_items.get(default_motor)
+        if item is not None:
+            item.setCheckState(QtCore.Qt.CheckState.Checked)
 
         layout.addRow("Start", self.start_spin)
         layout.addRow("End", self.end_spin)
         layout.addRow("Step", self.step_spin)
         layout.addRow("Wait", self.wait_spin)
-        layout.addRow("Motors", self.motors_edit)
-        layout.addRow("Motor mode", self.mode_combo)
+        layout.addRow("Hardware", self.hardware_table)
 
         # ── Live motor position (read-only, updates every second) ──────────
         self.current_pos_edit = QtWidgets.QLineEdit()
@@ -257,6 +326,27 @@ class MotorAxisDialog(QtWidgets.QDialog):
         self._pos_timer.timeout.connect(self._update_current_position)
         self._pos_timer.start()
         self._update_current_position()
+
+    def _add_hardware_row(self, name: str) -> None:
+        """Append one selectable hardware row with a per-device mode combo."""
+        if name in self._hardware_items:
+            return
+        row = self.hardware_table.rowCount()
+        self.hardware_table.insertRow(row)
+
+        item = QtWidgets.QTableWidgetItem(str(name))
+        item.setFlags(
+            QtCore.Qt.ItemFlag.ItemIsUserCheckable | QtCore.Qt.ItemFlag.ItemIsEnabled
+        )
+        item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+        self.hardware_table.setItem(row, 0, item)
+
+        combo = QtWidgets.QComboBox()
+        combo.addItems(["sequential", "synchronized"])
+        self.hardware_table.setCellWidget(row, 1, combo)
+
+        self._hardware_items[name] = item
+        self._hardware_mode_combos[name] = combo
 
     def _root_main_window(self):
         """Return top-level window to access live stage/focus devices if available."""
@@ -381,12 +471,27 @@ class MotorAxisDialog(QtWidgets.QDialog):
         except Exception: pass
         try:
             motors = p.get("motors") or []
-            self.motors_edit.setText(", ".join(motors))
-        except Exception: pass
-        try:
-            idx = self.mode_combo.findText(p.get("motor_mode", "sequential"))
-            if idx >= 0:
-                self.mode_combo.setCurrentIndex(idx)
+            motor_modes = p.get("motor_modes") or {}
+            legacy_mode = p.get("motor_mode", "sequential")
+            if legacy_mode not in ("sequential", "synchronized"):
+                legacy_mode = "sequential"
+            # Make sure every saved motor has a row, even if it is not part of
+            # the currently discovered hardware list.
+            for name in motors:
+                if name not in self._hardware_items:
+                    self._add_hardware_row(name)
+            for name, item in self._hardware_items.items():
+                checked = name in motors
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked if checked
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                combo = self._hardware_mode_combos.get(name)
+                if combo is not None:
+                    mode = motor_modes.get(name, legacy_mode)
+                    idx = combo.findText(mode)
+                    if idx >= 0:
+                        combo.setCurrentIndex(idx)
         except Exception: pass
         try: self.sync_timeout_spin.setValue(p.get("sync_timeout", 5.0))
         except Exception: pass
@@ -406,8 +511,25 @@ class MotorAxisDialog(QtWidgets.QDialog):
     # ── Extract config ────────────────────────────────────────────────────────
 
     def get_config(self) -> AxisConfig:
-        motors_raw = self.motors_edit.text().strip()
-        motors = [m.strip() for m in motors_raw.split(",") if m.strip()]
+        motors: list[str] = []
+        motor_modes: dict[str, str] = {}
+        for name, item in self._hardware_items.items():
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                motors.append(name)
+                combo = self._hardware_mode_combos.get(name)
+                motor_modes[name] = combo.currentText() if combo is not None else "sequential"
+
+        # Representative single mode kept for the list label and legacy fallback.
+        mode_values = set(motor_modes.values())
+        if not mode_values:
+            motor_mode = "sequential"
+        elif mode_values == {"synchronized"}:
+            motor_mode = "synchronized"
+        elif mode_values == {"sequential"}:
+            motor_mode = "sequential"
+        else:
+            motor_mode = "mixed"
+
         pre_v  = self.pre_pos_spin.value()
         post_v = self.post_pos_spin.value()
         return AxisConfig(
@@ -418,7 +540,8 @@ class MotorAxisDialog(QtWidgets.QDialog):
                 "step":         self.step_spin.value(),
                 "wait":         self.wait_spin.value(),
                 "motors":       motors,
-                "motor_mode":   self.mode_combo.currentText(),
+                "motor_mode":   motor_mode,
+                "motor_modes":  motor_modes,
                 "sync_timeout": self.sync_timeout_spin.value(),
                 "sync_poll":    self.sync_poll_spin.value(),
                 "sync_tol":     self.sync_tol_spin.value(),

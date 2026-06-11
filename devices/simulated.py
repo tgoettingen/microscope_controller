@@ -33,6 +33,7 @@ class SimulatedStageXY:
     def move_to(self, x: float, y: float):
         try:
             logger.info("Stage move_to (simulated) x=%s y=%s", x, y)
+            print(f"Stage move_to (simulated) x={x} y={y}")
         except Exception:
             pass
         self.x = float(x)
