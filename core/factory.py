@@ -231,6 +231,12 @@ def build_devices(config_path="config/default_devices.json"):
                     sample_format=fmt,
                     mode=dc.get("mode"),
                     name=dc.get("name"),
+                    reader_hz=float(dc.get("reader_hz", 40.0)),
+                    ring_buffer_size=int(dc.get("ring_buffer_size", 8192)),
+                    frame_length=int(dc.get("frame_length", 9)),
+                    frame_header=dc.get("frame_header", "0A01"),
+                    frame_trailer=dc.get("frame_trailer", "010A"),
+                    overflow_policy=dc.get("overflow_policy", "overwrite"),
                 )
                 # set optional scale/offset
                 d.set_scale(dc.get("scale", 1000.0), dc.get("offset", 0.0))
@@ -273,6 +279,12 @@ def build_devices(config_path="config/default_devices.json"):
                 sample_format=detector_cfg.get("format", detector_cfg.get("sample_format", "int24")),
                 mode=detector_cfg.get("mode"),
                 name=detector_cfg.get("name"),
+                reader_hz=float(detector_cfg.get("reader_hz", 40.0)),
+                ring_buffer_size=int(detector_cfg.get("ring_buffer_size", 8192)),
+                frame_length=int(detector_cfg.get("frame_length", 9)),
+                frame_header=detector_cfg.get("frame_header", "0A01"),
+                frame_trailer=detector_cfg.get("frame_trailer", "010A"),
+                overflow_policy=detector_cfg.get("overflow_policy", "overwrite"),
             )
             detector.set_scale(detector_cfg.get("scale", 1.0), detector_cfg.get("offset", 0.0))
         elif detector_cfg.get("type") == "Multimeter":

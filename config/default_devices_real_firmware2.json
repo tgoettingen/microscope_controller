@@ -1,0 +1,67 @@
+{
+  "stage": {
+    "type": "simulated",
+    "scaling": {
+      "x_scale": 1.0,
+      "x_offset": 0.0,
+      "y_scale": 1.0,
+      "y_offset": 0.0
+    }
+  },
+  "focus": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  },
+  "camera": {
+    "type": "simulated"
+  },
+  "light": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  },
+  "filter_wheel": {
+    "type": "simulated"
+  },
+  "detector": [
+    {
+      "type": "ComPort",
+      "name": "vm6",
+      "port": "COM6",
+      "baudrate": 115200,
+      "format": "int24",
+      "mode": 1,
+      "read_timeout": 0.1,
+      "reader_hz": 40.0,
+      "ring_buffer_size": 8192,
+      "frame_length": 10,
+      "frame_header": "0A01",
+      "frame_trailer": "010A",
+      "overflow_policy": "overwrite",
+      "scale": 1.0,
+      "offset": 0.0
+    },
+    {
+      "type": "ComPort",
+      "name": "vm7",
+      "port": "COM7",
+      "baudrate": 115200,
+      "format": "int24",
+      "mode": 1,
+      "read_timeout": 0.1,
+      "reader_hz": 40.0,
+      "ring_buffer_size": 8192,
+      "frame_length": 10,
+      "frame_header": "0A01",
+      "frame_trailer": "010A",
+      "overflow_policy": "overwrite",
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  ]
+}
