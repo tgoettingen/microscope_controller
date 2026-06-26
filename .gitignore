@@ -21,3 +21,4 @@ build/
 *.egg-info/
 
 MicroscopeController.spec
+install.sh
