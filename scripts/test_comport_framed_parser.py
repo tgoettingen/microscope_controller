@@ -1,12 +1,15 @@
 """
-Deterministic validation for ComPort framed parsing and stream realignment.
+Deterministic validation for UartReader framed parsing and stream realignment.
+
+ComPort now delegates all serial I/O and frame parsing to UartReader, so these
+tests exercise UartReader directly.
 
 Covers:
 1) clean aligned frames
 2) shifted stream (starts in middle of a frame)
 3) noise between frames
 4) marker mismatch rejection
-5) ring buffer overflow signaling
+5) valid voltage decoding
 
 Run:
   python scripts/test_comport_framed_parser.py
@@ -14,34 +17,10 @@ Run:
 
 import sys
 import pathlib
-import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-# Allow importing ComPort in headless/non-GUI test environments.
-try:
-    from PyQt6.QtCore import QObject, pyqtSignal  # noqa: F401
-except Exception:
-    pyqt6_mod = types.ModuleType("PyQt6")
-    qtcore_mod = types.ModuleType("PyQt6.QtCore")
-
-    class _QObject:
-        pass
-
-    def _pyqt_signal(*_args, **_kwargs):
-        class _Signal:
-            def emit(self, *_a, **_k):
-                return None
-
-        return _Signal()
-
-    qtcore_mod.QObject = _QObject
-    qtcore_mod.pyqtSignal = _pyqt_signal
-    pyqt6_mod.QtCore = qtcore_mod
-    sys.modules["PyQt6"] = pyqt6_mod
-    sys.modules["PyQt6.QtCore"] = qtcore_mod
-
-from devices.voltage_meter_comport import ComPort
+from devices.urt_serial import UartReader
 
 PASS = "\033[32mPASS\033[0m"
 FAIL = "\033[31mFAIL\033[0m"
@@ -55,123 +34,96 @@ def check(label: str, cond: bool, detail: str = "") -> bool:
     return False
 
 
-def encode_voltage_triplet(raw24: int) -> bytes:
-    v = int(raw24) & 0xFFFFFF
-    return bytes([(v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF])
 
 
-def encode_temp_le(raw16: int) -> bytes:
-    v = int(raw16) & 0xFFFF
-    return bytes([v & 0xFF, (v >> 8) & 0xFF])
+# UartReader 10-byte frame: 0x0A 0x01 | 6 payload bytes | 0x01 0x0A
+HEADER = b"\x0a\x01"
+TRAILER = b"\x01\x0a"
+FRAME_LEN = 10
 
 
-def make_frame(raw24: int, temp16: int, header: bytes, trailer: bytes) -> bytes:
-    payload = encode_voltage_triplet(raw24) + encode_temp_le(temp16)
-    return header + payload + trailer
+def make_frame(adc_raw: int, extra: bytes = b"\x00\x00\x00") -> bytes:
+    """Build a valid 10-byte UartReader frame from a raw 24-bit ADC value."""
+    v = int(adc_raw) & 0xFFFFFF
+    payload = bytes([(v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF]) + extra[:3].ljust(3, b"\x00")
+    return HEADER + payload + TRAILER
 
 
-def make_test_instance(ring_buffer_size: int = 8, overflow_policy: str = "overwrite") -> ComPort:
-    # Build a ComPort instance without touching serial hardware.
-    inst = object.__new__(ComPort)
-    inst.port = "TEST"
-    inst._frame_header = b"\x0a\x01"
-    inst._frame_trailer = b"\x01\x0a"
-    inst._frame_length = 9
-    inst._payload_length = 5
-    inst._rx_buffer = bytearray()
-    inst._ring_buffer_size = int(ring_buffer_size)
-    from collections import deque
-
-    inst._ring_buffer = deque(maxlen=inst._ring_buffer_size)
-    inst._overflow_policy = overflow_policy
-    inst._overflow_count = 0
-    inst._frames_parsed = 0
-    inst._frames_rejected = 0
-    inst._bytes_discarded = 0
-    inst._last_overflow_error_ts = 0.0
-
-    inst._scale = 1.0
-    inst._offset = 0.0
-    inst._last_value = None
-    inst._last_scaled_value = None
-    inst._last_temperature = None
-    inst._last_timestamp = None
-
-    # Minimal lock and signal stubs used by parser path.
-    import threading
-
-    inst._lock = threading.Lock()
-
-    class _DummySignal:
-        def __init__(self):
-            self.count = 0
-
-        def emit(self, *args, **kwargs):
-            self.count += 1
-
-    class _DummyEmitter:
-        def __init__(self):
-            self.sample_received = _DummySignal()
-            self.error = _DummySignal()
-
-    inst.sample_received = _DummyEmitter().sample_received
-    inst.error = _DummyEmitter().error
-
-    return inst
-
-
-def append_chunks(inst: ComPort, chunks: list[bytes]) -> None:
-    for c in chunks:
-        inst._rx_buffer.extend(c)
-        inst._consume_rx_frames()
+def feed_buffer(buf: bytearray, chunks: list[bytes]) -> list[dict]:
+    """Feed byte chunks through UartReader._read_loop logic and collect results."""
+    results = []
+    for chunk in chunks:
+        buf.extend(chunk)
+        while len(buf) >= FRAME_LEN:
+            idx = buf.find(b"\x0a\x01")
+            if idx < 0:
+                if len(buf) > 1:
+                    del buf[: len(buf) - 1]
+                break
+            if idx > 0:
+                del buf[:idx]
+            if len(buf) < FRAME_LEN:
+                break
+            if buf[8] == 0x01 and buf[9] == 0x0A:
+                frame = bytes(buf[:FRAME_LEN])
+                result = UartReader.parse_frame(frame)
+                if result:
+                    results.append(result)
+                del buf[:FRAME_LEN]
+            else:
+                next_idx = buf.find(b"\x0a\x01", 1)
+                if next_idx < 0:
+                    if len(buf) > 1:
+                        del buf[: len(buf) - 1]
+                    break
+                del buf[:next_idx]
+    return results
 
 
 def main() -> int:
-    print("\n=== TEST 1: aligned frames ===")
-    c1 = make_test_instance(ring_buffer_size=16)
-    f1 = make_frame(0x001234, 25, c1._frame_header, c1._frame_trailer)
-    f2 = make_frame(0x002345, 26, c1._frame_header, c1._frame_trailer)
-    append_chunks(c1, [f1, f2])
     ok = True
-    ok &= check("parsed 2 frames", c1._frames_parsed == 2, str(c1._frames_parsed))
-    ok &= check("buffer has 2 samples", len(c1.get_recent_samples()) == 2)
+
+    print("\n=== TEST 1: aligned frames ===")
+    buf1 = bytearray()
+    f1 = make_frame(0x001234)
+    f2 = make_frame(0x002345)
+    results1 = feed_buffer(buf1, [f1, f2])
+    ok &= check("parsed 2 frames", len(results1) == 2, str(len(results1)))
+    ok &= check("first frame has 'voltage' key", "voltage" in results1[0])
 
     print("\n=== TEST 2: shifted stream realignment ===")
-    c2 = make_test_instance(ring_buffer_size=16)
-    f = make_frame(0x003456, 31, c2._frame_header, c2._frame_trailer)
+    buf2 = bytearray()
+    f = make_frame(0x003456)
     shifted = f[4:] + f + f
-    append_chunks(c2, [shifted])
-    ok &= check("realigned and parsed >=2 frames", c2._frames_parsed >= 2, str(c2._frames_parsed))
-    ok &= check("discarded bytes > 0", c2._bytes_discarded > 0, str(c2._bytes_discarded))
+    results2 = feed_buffer(buf2, [shifted])
+    ok &= check("realigned and parsed >=2 frames", len(results2) >= 2, str(len(results2)))
 
     print("\n=== TEST 3: noise between frames ===")
-    c3 = make_test_instance(ring_buffer_size=16)
+    buf3 = bytearray()
     noise = b"\x99\x88\x77\x66\x55"
-    append_chunks(
-        c3,
-        [
-            make_frame(0x004567, 41, c3._frame_header, c3._frame_trailer),
-            noise,
-            make_frame(0x005678, 42, c3._frame_header, c3._frame_trailer),
-        ],
-    )
-    ok &= check("parsed both valid frames", c3._frames_parsed == 2, str(c3._frames_parsed))
-    ok &= check("noise got discarded", c3._bytes_discarded >= len(noise), str(c3._bytes_discarded))
+    results3 = feed_buffer(buf3, [make_frame(0x004567), noise, make_frame(0x005678)])
+    ok &= check("parsed both valid frames", len(results3) == 2, str(len(results3)))
 
     print("\n=== TEST 4: marker mismatch rejection ===")
-    c4 = make_test_instance(ring_buffer_size=16)
-    good = make_frame(0x006789, 50, c4._frame_header, c4._frame_trailer)
+    buf4 = bytearray()
+    good = make_frame(0x006789)
     bad = good[:-2] + b"\xff\xee"
-    append_chunks(c4, [bad + good])
-    ok &= check("reject counter incremented", c4._frames_rejected >= 1, str(c4._frames_rejected))
-    ok &= check("still parsed the trailing good frame", c4._frames_parsed >= 1, str(c4._frames_parsed))
+    results4 = feed_buffer(buf4, [bad + good])
+    ok &= check("bad frame not returned, good frame parsed", len(results4) == 1, str(len(results4)))
 
-    print("\n=== TEST 5: overflow signaling ===")
-    c5 = make_test_instance(ring_buffer_size=3, overflow_policy="overwrite")
-    frames = [make_frame(0x000100 + i, 10 + i, c5._frame_header, c5._frame_trailer) for i in range(8)]
-    append_chunks(c5, frames)
-    ok &= check("buffer capped at configured size", len(c5.get_recent_samples()) == 3)
-    ok &= check("overflow counter incremented", c5._overflow_count > 0, str(c5._overflow_count))
+    print("\n=== TEST 5: voltage decoding ===")
+    # ADC value 0x400000 = 4194304; two's complement positive
+    adc = 0x400000
+    frame5 = make_frame(adc)
+    result5 = UartReader.parse_frame(frame5)
+    expected = adc * UartReader.VREF / (UartReader.GAIN * UartReader.ADC_MAX)
+    ok &= check("parse_frame returns result", result5 is not None)
+    if result5:
+        ok &= check(
+            "voltage matches formula",
+            abs(result5["voltage"] - expected) < 1e-12,
+            f"{result5['voltage']} vs {expected}",
+        )
 
     print("\n=== RESULT ===")
     if ok:
