@@ -6,6 +6,22 @@
       "x_offset": 0.0,
       "y_scale": 1.0,
       "y_offset": 0.0
+    },
+    "range": {
+      "x_min": null,
+      "x_max": null,
+      "y_min": null,
+      "y_max": null
+    },
+    "motors": {
+      "x": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      },
+      "y": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
     }
   },
   "focus": {
@@ -13,6 +29,12 @@
     "scaling": {
       "scale": 1.0,
       "offset": 0.0
+    },
+    "motors": {
+      "z": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
     }
   },
   "camera": {
@@ -31,11 +53,18 @@
   "detector": [
     {
       "type": "ComPort",
-      "name": "vm1",
-      "port": "/dev/tty.usbserial-230",
+      "name": "vm210",
+      "port": "/dev/tty.usbserial-210",
       "baudrate": 115200,
       "format": "int24",
+      "mode": 1,
       "read_timeout": 0.1,
+      "reader_hz": 1000.0,
+      "ring_buffer_size": 8192,
+      "frame_length": 10,
+      "frame_header": "0A01",
+      "frame_trailer": "010A",
+      "overflow_policy": "overwrite",
       "scale": 1.0,
       "offset": 0.0
     }

@@ -1,0 +1,148 @@
+{
+  "axes": [
+    {
+      "axis_role": "stage_x",
+      "checks": [
+        {
+          "configured_max": 1000.0,
+          "configured_min": 0.0,
+          "message": "Speed (rpm): OK",
+          "parameter": "speed_rpm",
+          "severity": "INFO",
+          "spec_max": 1000.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 1.0,
+          "configured_min": 0.0,
+          "message": "Torque (N\u00b7m): OK",
+          "parameter": "torque_nm",
+          "severity": "INFO",
+          "spec_max": 1.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 48.0,
+          "configured_min": 5.0,
+          "message": "Voltage (V DC): OK",
+          "parameter": "voltage_v",
+          "severity": "INFO",
+          "spec_max": 48.0,
+          "spec_min": 5.0
+        },
+        {
+          "configured_max": 100.0,
+          "configured_min": 0.0,
+          "message": "Power (W): OK",
+          "parameter": "power_w",
+          "severity": "INFO",
+          "spec_max": 100.0,
+          "spec_min": 0.0
+        }
+      ],
+      "device_section": "stage",
+      "device_type": "simulated",
+      "failed": false,
+      "motor_spec_id": "sim_stage_x",
+      "spec_resolution": "default",
+      "warnings": false
+    },
+    {
+      "axis_role": "stage_y",
+      "checks": [
+        {
+          "configured_max": 1000.0,
+          "configured_min": 0.0,
+          "message": "Speed (rpm): OK",
+          "parameter": "speed_rpm",
+          "severity": "INFO",
+          "spec_max": 1000.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 1.0,
+          "configured_min": 0.0,
+          "message": "Torque (N\u00b7m): OK",
+          "parameter": "torque_nm",
+          "severity": "INFO",
+          "spec_max": 1.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 48.0,
+          "configured_min": 5.0,
+          "message": "Voltage (V DC): OK",
+          "parameter": "voltage_v",
+          "severity": "INFO",
+          "spec_max": 48.0,
+          "spec_min": 5.0
+        },
+        {
+          "configured_max": 100.0,
+          "configured_min": 0.0,
+          "message": "Power (W): OK",
+          "parameter": "power_w",
+          "severity": "INFO",
+          "spec_max": 100.0,
+          "spec_min": 0.0
+        }
+      ],
+      "device_section": "stage",
+      "device_type": "simulated",
+      "failed": false,
+      "motor_spec_id": "sim_stage_y",
+      "spec_resolution": "default",
+      "warnings": false
+    },
+    {
+      "axis_role": "focus_z",
+      "checks": [
+        {
+          "configured_max": 1000.0,
+          "configured_min": 0.0,
+          "message": "Speed (rpm): OK",
+          "parameter": "speed_rpm",
+          "severity": "INFO",
+          "spec_max": 1000.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 1.0,
+          "configured_min": 0.0,
+          "message": "Torque (N\u00b7m): OK",
+          "parameter": "torque_nm",
+          "severity": "INFO",
+          "spec_max": 1.0,
+          "spec_min": 0.0
+        },
+        {
+          "configured_max": 48.0,
+          "configured_min": 5.0,
+          "message": "Voltage (V DC): OK",
+          "parameter": "voltage_v",
+          "severity": "INFO",
+          "spec_max": 48.0,
+          "spec_min": 5.0
+        },
+        {
+          "configured_max": 100.0,
+          "configured_min": 0.0,
+          "message": "Power (W): OK",
+          "parameter": "power_w",
+          "severity": "INFO",
+          "spec_max": 100.0,
+          "spec_min": 0.0
+        }
+      ],
+      "device_section": "focus",
+      "device_type": "simulated",
+      "failed": false,
+      "motor_spec_id": "sim_focus_z",
+      "spec_resolution": "default",
+      "warnings": false
+    }
+  ],
+  "config_path": "/Users/haisenta/_private/source/microscope_controller/microscope_controller/config/default_devices.json",
+  "failed": false,
+  "generated_at_utc": "2026-08-08 18:43:16"
+}
