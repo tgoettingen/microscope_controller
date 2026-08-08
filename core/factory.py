@@ -37,6 +37,12 @@ from devices.standa_stage import StandaStageXY
 from devices.simulated import SimulatedCamera, SimulatedDetector, SimulatedFilterWheel, SimulatedLight, SimulatedFocus, SimulatedStageXY
 from devices.voltage_meter_comport import ComPort
 from devices.scaled import ScaledStageXY, ScaledFocusZ, ScaledLightSource
+from devices.motor_specs import (
+    CATALOGUE as MOTOR_SPEC_CATALOGUE,
+    DEFAULT_DEVICE_TYPE_TO_SPEC,
+    get_spec as _get_motor_spec,
+    default_spec_for as _default_motor_spec_for,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -72,10 +78,18 @@ def _ensure_scaling_blocks(cfg: dict) -> tuple[dict, bool]:
     stage = cfg.get("stage")
     if isinstance(stage, dict):
         _ensure(stage, "scaling", {"x_scale": 1.0, "x_offset": 0.0, "y_scale": 1.0, "y_offset": 0.0})
+        _ensure(stage, "range", {"x_min": None, "x_max": None, "y_min": None, "y_max": None})
+        _ensure(stage, "motors", {
+            "x": {"motor_spec_id": None, "operating_limits": None},
+            "y": {"motor_spec_id": None, "operating_limits": None},
+        })
 
     focus = cfg.get("focus")
     if isinstance(focus, dict):
         _ensure(focus, "scaling", {"scale": 1.0, "offset": 0.0})
+        _ensure(focus, "motors", {
+            "z": {"motor_spec_id": None, "operating_limits": None},
+        })
 
     light = cfg.get("light")
     if isinstance(light, dict):
@@ -105,8 +119,22 @@ def load_config(path="config/default_devices.json"):
     if not os.path.exists(path):
         # Generate default config
         default_config = {
-            "stage": {"type": "simulated", "scaling": {"x_scale": 1.0, "x_offset": 0.0, "y_scale": 1.0, "y_offset": 0.0}},
-            "focus": {"type": "simulated", "scaling": {"scale": 1.0, "offset": 0.0}},
+            "stage": {
+                "type": "simulated",
+                "scaling": {"x_scale": 1.0, "x_offset": 0.0, "y_scale": 1.0, "y_offset": 0.0},
+                "range": {"x_min": None, "x_max": None, "y_min": None, "y_max": None},
+                "motors": {
+                    "x": {"motor_spec_id": "sim_stage_x", "operating_limits": None},
+                    "y": {"motor_spec_id": "sim_stage_y", "operating_limits": None},
+                },
+            },
+            "focus": {
+                "type": "simulated",
+                "scaling": {"scale": 1.0, "offset": 0.0},
+                "motors": {
+                    "z": {"motor_spec_id": "sim_focus_z", "operating_limits": None},
+                },
+            },
             "camera": {"type": "simulated"},
             "light": {"type": "simulated", "scaling": {"scale": 1.0, "offset": 0.0}},
             "filter_wheel": {"type": "simulated"},
@@ -129,6 +157,63 @@ def load_config(path="config/default_devices.json"):
 
     return cfg
 
+def _merged_motor_limits(
+    device_type: str,
+    axis_role: str,
+    motor_cfg: dict | None,
+) -> dict | None:
+    """Return a motor-limits dict (suitable for ScaledStageXY/ScaledFocusZ)
+    by merging the referenced spec's defaults with any config overrides.
+
+    Returns ``None`` when no limits were configured at all (all defaults +
+    no overrides resolve to None).
+    """
+    if not isinstance(motor_cfg, dict):
+        motor_cfg = {}
+
+    spec_id = motor_cfg.get("motor_spec_id")
+    spec = None
+    if spec_id:
+        spec = _get_motor_spec(str(spec_id))
+    if spec is None:
+        spec = _default_motor_spec_for(str(device_type or ""), str(axis_role or ""))
+
+    # 1. Build base limits from the spec (if any)
+    base: dict = {}
+    if spec is not None:
+        def _r(t):
+            return (t[0], t[1]) if t is not None else (None, None)
+        base["position"]  = _r(spec.travel_range_steps)
+        base["speed_rpm"] = _r(spec.speed_rpm_range)
+        base["torque_nm"] = _r(spec.torque_nm_range)
+        base["voltage_v"] = _r(spec.voltage_v_range)
+        base["power_w"]   = _r(spec.power_w_range)
+
+    # 2. Overlay operating_limits from config (user tightening)
+    override = motor_cfg.get("operating_limits") if isinstance(motor_cfg, dict) else None
+    merged = dict(base)
+    if isinstance(override, dict):
+        for k in ("position", "speed_rpm", "torque_nm", "voltage_v", "power_w"):
+            v = override.get(k)
+            if not isinstance(v, (tuple, list)) or len(v) != 2:
+                continue
+            def _f(x):
+                if x is None:
+                    return None
+                try:
+                    return float(x)
+                except Exception:
+                    return None
+            merged[k] = (_f(v[0]), _f(v[1]))
+
+    # 3. Drop keys that are fully unbounded so callers can easily skip wrapping
+    pruned = {
+        k: (lo, hi) for k, (lo, hi) in merged.items()
+        if (lo is not None or hi is not None)
+    }
+    return pruned or None
+
+
 def build_devices(config_path="config/default_devices.json"):
     try:
         logger.info("Building devices (config=%s)", os.path.abspath(config_path))
@@ -138,44 +223,82 @@ def build_devices(config_path="config/default_devices.json"):
 
     # Stage
     stage_cfg = cfg.get("stage", {"type": "simulated"})
+    stage_type = stage_cfg.get("type", "simulated") if isinstance(stage_cfg, dict) else "simulated"
     if stage_cfg.get("type") == "StandaStageXY":
         stage = StandaStageXY(
             com_x=stage_cfg["com_x"],
             com_y=stage_cfg["com_y"]
         )
+        stage_type_for_motor = "StandaStageXY"
     else:
         stage = SimulatedStageXY()
+        stage_type_for_motor = "simulated"
 
     # apply stage scaling if configured
     try:
         sc = stage_cfg.get("scaling") if isinstance(stage_cfg, dict) else None
+        motors_cfg = stage_cfg.get("motors") if isinstance(stage_cfg, dict) else None
+        mx = _merged_motor_limits(stage_type_for_motor, "stage_x", motors_cfg.get("x") if isinstance(motors_cfg, dict) else None) if isinstance(motors_cfg, dict) else _merged_motor_limits(stage_type_for_motor, "stage_x", None)
+        my = _merged_motor_limits(stage_type_for_motor, "stage_y", motors_cfg.get("y") if isinstance(motors_cfg, dict) else None) if isinstance(motors_cfg, dict) else _merged_motor_limits(stage_type_for_motor, "stage_y", None)
+
         if isinstance(sc, dict):
             xs = float(sc.get("x_scale", 1.0))
             xo = float(sc.get("x_offset", 0.0))
             ys = float(sc.get("y_scale", 1.0))
             yo = float(sc.get("y_offset", 0.0))
-            if xs != 1.0 or xo != 0.0 or ys != 1.0 or yo != 0.0:
-                stage = ScaledStageXY(stage, x_scale=xs, x_offset=xo, y_scale=ys, y_offset=yo)
+        else:
+            xs, xo, ys, yo = 1.0, 0.0, 1.0, 0.0
+        # read optional range block from config (soft user travel limits)
+        rc = stage_cfg.get("range") if isinstance(stage_cfg, dict) else None
+        x_min = x_max = y_min = y_max = None
+        if isinstance(rc, dict):
+            def _as_float_or_none(v):
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+            x_min = _as_float_or_none(rc.get("x_min"))
+            x_max = _as_float_or_none(rc.get("x_max"))
+            y_min = _as_float_or_none(rc.get("y_min"))
+            y_max = _as_float_or_none(rc.get("y_max"))
+        if (xs != 1.0 or xo != 0.0 or ys != 1.0 or yo != 0.0
+                or any(v is not None for v in (x_min, x_max, y_min, y_max))
+                or mx is not None or my is not None):
+            stage = ScaledStageXY(
+                stage,
+                x_scale=xs, x_offset=xo, y_scale=ys, y_offset=yo,
+                x_range=(x_min, x_max) if (x_min is not None or x_max is not None) else None,
+                y_range=(y_min, y_max) if (y_min is not None or y_max is not None) else None,
+                motor_limits_x=mx,
+                motor_limits_y=my,
+            )
     except Exception:
-        pass
+        logger.exception("Failed to wrap stage with scaling/motor limits")
 
     # Focus
     focus_cfg = cfg.get("focus", {"type": "simulated"})
+    focus_type = focus_cfg.get("type", "simulated") if isinstance(focus_cfg, dict) else "simulated"
     if focus_cfg.get("type") == "simulated":
         focus = SimulatedFocus()
     else:
         focus = SimulatedFocus()  # default
 
-    # apply focus scaling if configured
+    # apply focus scaling + motor limits if configured
     try:
         sc = focus_cfg.get("scaling") if isinstance(focus_cfg, dict) else None
-        if isinstance(sc, dict):
-            s = float(sc.get("scale", 1.0))
-            o = float(sc.get("offset", 0.0))
-            if s != 1.0 or o != 0.0:
-                focus = ScaledFocusZ(focus, scale=s, offset=o)
+        motors_cfg = focus_cfg.get("motors") if isinstance(focus_cfg, dict) else None
+        mz = _merged_motor_limits(str(focus_type or "simulated"), "focus_z",
+                                   motors_cfg.get("z") if isinstance(motors_cfg, dict) else None) \
+            if isinstance(motors_cfg, dict) \
+            else _merged_motor_limits(str(focus_type or "simulated"), "focus_z", None)
+        s = float(sc.get("scale", 1.0)) if isinstance(sc, dict) else 1.0
+        o = float(sc.get("offset", 0.0)) if isinstance(sc, dict) else 0.0
+        if s != 1.0 or o != 0.0 or mz is not None:
+            focus = ScaledFocusZ(focus, scale=s, offset=o, motor_limits=mz)
     except Exception:
-        pass
+        logger.exception("Failed to wrap focus with scaling/motor limits")
 
     # Camera
     camera_cfg = cfg.get("camera", {"type": "simulated"})

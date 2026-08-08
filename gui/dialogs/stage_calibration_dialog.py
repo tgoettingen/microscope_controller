@@ -26,6 +26,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 from PyQt6 import QtWidgets, QtCore
 
@@ -63,6 +64,8 @@ class StageCalibrationDialog(QtWidgets.QDialog):
 
         self._refresh_position()
         self._populate_current_scaling()   # show existing scale values on open
+        self._populate_current_range()     # show existing travel limits on open
+        self._update_range_unit_label()    # show which unit the range uses
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -189,6 +192,78 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         result_lay.addRow("New Y scale [steps/mm]:", self._result_y_label)
         root.addWidget(result_grp)
 
+        # ── Travel range (soft limits) ────────────────────────────────
+        self._range_grp = QtWidgets.QGroupBox("Travel Range (Soft Limits)")
+        range_vlay = QtWidgets.QVBoxLayout(self._range_grp)
+
+        self._range_enable_chk = QtWidgets.QCheckBox("Enable soft travel limits")
+        self._range_enable_chk.setToolTip(
+            "When enabled, any stage move that would exceed the configured\n"
+            "limits is aborted with a ValueError (scan / jog / pre-pos all affected)."
+        )
+        self._range_enable_chk.toggled.connect(self._on_range_enable_toggled)
+        range_vlay.addWidget(self._range_enable_chk)
+
+        unit_note = QtWidgets.QLabel()
+        unit_note.setWordWrap(True)
+        self._range_unit_label = unit_note
+        range_vlay.addWidget(unit_note)
+
+        range_grid = QtWidgets.QGridLayout()
+        # --- helper to build a row with spin + capture button ---
+        def _make_row(label_text: str) -> tuple[QtWidgets.QDoubleSpinBox, QtWidgets.QPushButton]:
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-1e12, 1e12)
+            spin.setDecimals(6)
+            spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+            btn = QtWidgets.QPushButton("Use Current")
+            btn.setToolTip("Capture the current stage position into this field.")
+            return spin, btn
+
+        # Row 0: X
+        range_grid.addWidget(QtWidgets.QLabel("<b>X</b>"), 0, 0)
+        self._x_min_spin, self._x_min_btn = _make_row("X Min")
+        self._x_max_spin, self._x_max_btn = _make_row("X Max")
+        range_grid.addWidget(QtWidgets.QLabel("Min"), 0, 1, QtCore.Qt.AlignmentFlag.AlignRight)
+        range_grid.addWidget(self._x_min_spin, 0, 2)
+        range_grid.addWidget(self._x_min_btn, 0, 3)
+        range_grid.addItem(QtWidgets.QSpacerItem(12, 0), 0, 4)
+        range_grid.addWidget(QtWidgets.QLabel("Max"), 0, 5, QtCore.Qt.AlignmentFlag.AlignRight)
+        range_grid.addWidget(self._x_max_spin, 0, 6)
+        range_grid.addWidget(self._x_max_btn, 0, 7)
+
+        # Row 1: Y
+        range_grid.addWidget(QtWidgets.QLabel("<b>Y</b>"), 1, 0)
+        self._y_min_spin, self._y_min_btn = _make_row("Y Min")
+        self._y_max_spin, self._y_max_btn = _make_row("Y Max")
+        range_grid.addWidget(QtWidgets.QLabel("Min"), 1, 1, QtCore.Qt.AlignmentFlag.AlignRight)
+        range_grid.addWidget(self._y_min_spin, 1, 2)
+        range_grid.addWidget(self._y_min_btn, 1, 3)
+        range_grid.addItem(QtWidgets.QSpacerItem(12, 0), 1, 4)
+        range_grid.addWidget(QtWidgets.QLabel("Max"), 1, 5, QtCore.Qt.AlignmentFlag.AlignRight)
+        range_grid.addWidget(self._y_max_spin, 1, 6)
+        range_grid.addWidget(self._y_max_btn, 1, 7)
+        range_grid.setColumnStretch(2, 1)
+        range_grid.setColumnStretch(6, 1)
+
+        range_vlay.addLayout(range_grid)
+
+        hint = QtWidgets.QLabel(
+            "<small><b>How to set limits:</b> physically jog the stage to each "
+            "extreme (e.g. lower-left corner → press both <i>Use Current</i> "
+            "buttons on the Min column), then move to the opposite corner and "
+            "capture the Max values. The new limits take effect on the next run.</small>"
+        )
+        hint.setWordWrap(True)
+        range_vlay.addWidget(hint)
+
+        self._x_min_btn.clicked.connect(lambda: self._capture_current(self._x_min_spin, "x"))
+        self._x_max_btn.clicked.connect(lambda: self._capture_current(self._x_max_spin, "x"))
+        self._y_min_btn.clicked.connect(lambda: self._capture_current(self._y_min_spin, "y"))
+        self._y_max_btn.clicked.connect(lambda: self._capture_current(self._y_max_spin, "y"))
+
+        root.addWidget(self._range_grp)
+
         # ── Buttons ───────────────────────────────────────────────────
         btn_lay = QtWidgets.QHBoxLayout()
 
@@ -312,8 +387,242 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         )
 
     def _on_save(self):
+        """Handle save button click with confirmation dialog."""
         if self._computed_x is None or self._computed_y is None:
             return
+        
+        # Show save options dialog
+        save_option = self._show_save_options_dialog()
+        if save_option is None:
+            return  # User cancelled
+        
+        if save_option == "overwrite":
+            # Overwrite current config with secondary confirmation
+            if not self._confirm_overwrite():
+                return
+            target_path = self._config_path
+        else:
+            # Save as new file with name validation
+            target_path = self._get_new_config_path()
+            if target_path is None:
+                return  # User cancelled or invalid filename
+        
+        # Perform the actual save
+        self._perform_save(target_path, save_option)
+
+    def _show_save_options_dialog(self) -> Optional[str]:
+        """Show modal dialog with save options (overwrite vs new file).
+        
+        Returns:
+            "overwrite" if user chose to overwrite current config
+            "new" if user chose to create new config file
+            None if user cancelled
+        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Save Calibration Data")
+        dialog.setMinimumWidth(500)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # Risk warning banner
+        warning_label = QtWidgets.QLabel(
+            "<span style='color:#c5221f; font-weight:bold;'>⚠️ WARNING: "
+            "Overwriting the current config file will replace all existing "
+            "calibration data and cannot be undone!</span>"
+        )
+        warning_label.setWordWrap(True)
+        warning_label.setStyleSheet(
+            "background:#fce8e6; border:1px solid #c5221f; "
+            "border-radius:4px; padding:8px;"
+        )
+        layout.addWidget(warning_label)
+        layout.addSpacing(12)
+        
+        # Instructions
+        info_label = QtWidgets.QLabel(
+            "<b>Choose how to save your calibration data:</b>"
+        )
+        layout.addWidget(info_label)
+        layout.addSpacing(8)
+        
+        # Radio button group for mutually exclusive options
+        button_group = QtWidgets.QButtonGroup(dialog)
+        
+        # Option 1: Overwrite current config
+        overwrite_radio = QtWidgets.QRadioButton(
+            f"Overwrite current config file:\n{self._config_path}"
+        )
+        overwrite_radio.setStyleSheet("font-weight:bold;")
+        button_group.addButton(overwrite_radio, 1)
+        layout.addWidget(overwrite_radio)
+        layout.addSpacing(4)
+        
+        overwrite_detail = QtWidgets.QLabel(
+            "<small>⚠️ This will replace the existing configuration file. "
+            "Original data will be lost and cannot be recovered.</small>"
+        )
+        overwrite_detail.setWordWrap(True)
+        overwrite_detail.setStyleSheet("color:#c5221f; padding-left:20px;")
+        layout.addWidget(overwrite_detail)
+        layout.addSpacing(12)
+        
+        # Option 2: Save as new file
+        new_file_radio = QtWidgets.QRadioButton(
+            "Save as a new configuration file"
+        )
+        new_file_radio.setStyleSheet("font-weight:bold;")
+        button_group.addButton(new_file_radio, 2)
+        layout.addWidget(new_file_radio)
+        layout.addSpacing(4)
+        
+        new_file_detail = QtWidgets.QLabel(
+            "<small>ℹ️ This will create a new config file. "
+            "You can specify a custom filename for the new configuration.</small>"
+        )
+        new_file_detail.setWordWrap(True)
+        new_file_detail.setStyleSheet("color:#1a73e8; padding-left:20px;")
+        layout.addWidget(new_file_detail)
+        layout.addSpacing(16)
+        
+        # Button box
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok |
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        # Disable OK button until selection is made
+        ok_button = button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        ok_button.setEnabled(False)
+        
+        def on_selection_changed():
+            ok_button.setEnabled(button_group.checkedButton() is not None)
+        
+        button_group.buttonClicked.connect(on_selection_changed)
+        
+        layout.addWidget(button_box)
+        
+        result = dialog.exec()
+        
+        if result == QtWidgets.QDialog.DialogCode.Accepted:
+            if button_group.checkedButton() == overwrite_radio:
+                return "overwrite"
+            else:
+                return "new"
+        else:
+            return None
+
+    def _confirm_overwrite(self) -> bool:
+        """Show secondary confirmation dialog for overwrite operation.
+        
+        Returns:
+            True if user confirms overwrite, False otherwise
+        """
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Overwrite",
+            f"<b>Are you sure you want to overwrite the current config file?</b><br><br>"
+            f"File: {self._config_path}<br><br>"
+            "<span style='color:#c5221f; font-weight:bold;'>"
+            "This action cannot be undone. All existing calibration data "
+            "in this file will be permanently replaced.</span>",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+        return reply == QtWidgets.QMessageBox.StandardButton.Yes
+
+    def _get_new_config_path(self) -> Optional[Path]:
+        """Prompt user for new config filename and validate it.
+        
+        Returns:
+            Path to new config file if valid, None if cancelled or invalid
+        """
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Save as New Configuration")
+        dialog.setMinimumWidth(400)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        
+        # Filename input
+        layout.addWidget(QtWidgets.QLabel("<b>Enter new configuration filename:</b>"))
+        layout.addSpacing(8)
+        
+        filename_input = QtWidgets.QLineEdit()
+        filename_input.setPlaceholderText("e.g., calibration_config_v2.json")
+        # Suggest a default name based on timestamp
+        default_name = f"calibration_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename_input.setText(default_name)
+        filename_input.selectAll()
+        layout.addWidget(filename_input)
+        layout.addSpacing(8)
+        
+        # Validation message label
+        validation_label = QtWidgets.QLabel()
+        validation_label.setWordWrap(True)
+        validation_label.setStyleSheet("color:#c5221f;")
+        layout.addWidget(validation_label)
+        layout.addSpacing(12)
+        
+        # Button box
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok |
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        # Validation function
+        def validate_filename():
+            filename = filename_input.text().strip()
+            if not filename:
+                validation_label.setText("❌ Filename cannot be empty")
+                return False
+            
+            # Check file extension
+            if not filename.endswith('.json'):
+                validation_label.setText("❌ Filename must end with .json")
+                return False
+            
+            # Check for invalid characters
+            invalid_chars = '<>:"/\\|?*'
+            if any(char in filename for char in invalid_chars):
+                validation_label.setText(f"❌ Filename contains invalid characters: {invalid_chars}")
+                return False
+            
+            # Check if file already exists
+            new_path = self._config_path.parent / filename
+            if new_path.exists():
+                validation_label.setText(f"❌ File already exists: {filename}")
+                return False
+            
+            validation_label.setText("✓ Filename is valid")
+            validation_label.setStyleSheet("color:#1a7f37;")
+            return True
+        
+        filename_input.textChanged.connect(validate_filename)
+        
+        # Initial validation
+        validate_filename()
+        
+        result = dialog.exec()
+        
+        if result == QtWidgets.QDialog.DialogCode.Accepted:
+            filename = filename_input.text().strip()
+            if validate_filename():
+                return self._config_path.parent / filename
+        return None
+
+    def _perform_save(self, target_path: Path, save_option: str):
+        """Perform the actual save operation with logging.
+        
+        Args:
+            target_path: Path where config will be saved
+            save_option: "overwrite" or "new"
+        """
+        start_time = datetime.now()
+        
         try:
             cfg = self._read_config()
             stage_cfg = cfg.setdefault("stage", {})
@@ -323,27 +632,71 @@ class StageCalibrationDialog(QtWidgets.QDialog):
             # Preserve existing offsets — calibration only touches scale
             scaling.setdefault("x_offset", 0.0)
             scaling.setdefault("y_offset", 0.0)
-            self._write_config(cfg)
+
+            # --- persist travel range from UI ---
+            rc = stage_cfg.setdefault("range", {})
+            if self._range_enable_chk.isChecked():
+                rc["x_min"] = self._nullable_float(self._x_min_spin.value())
+                rc["x_max"] = self._nullable_float(self._x_max_spin.value())
+                rc["y_min"] = self._nullable_float(self._y_min_spin.value())
+                rc["y_max"] = self._nullable_float(self._y_max_spin.value())
+            else:
+                rc["x_min"] = None
+                rc["x_max"] = None
+                rc["y_min"] = None
+                rc["y_max"] = None
+
+            # Write to target path
+            with open(target_path, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2)
+                
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self, "Save Error", f"Could not write config:\n{exc}"
             )
+            logger.error(
+                "Calibration save failed: option=%s target=%s error=%s",
+                save_option, target_path, exc
+            )
             return
 
+        # Log successful save operation
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        
+        logger.info(
+            "Calibration saved successfully: "
+            "save_option=%s target_path=%s x_scale=%s y_scale=%s "
+            "range=%s start_time=%s end_time=%s duration_seconds=%s",
+            save_option, target_path,
+            self._computed_x, self._computed_y,
+            self._range_summary_text(),
+            start_time.isoformat(), end_time.isoformat(), duration
+        )
+
+        # Emit signal and update UI
         self.calibration_saved.emit(self._computed_x, self._computed_y)
+        
+        # If we saved to a different file, update our config path reference
+        if target_path != self._config_path:
+            self._config_path = target_path
+        
         self._populate_current_scaling()   # refresh "current" row to show new value
+        self._populate_current_range()
+        self._update_range_unit_label()
+        
+        # Show success message
+        save_type_text = "Overwritten existing config" if save_option == "overwrite" else "Created new config file"
         QtWidgets.QMessageBox.information(
             self,
             "Saved",
-            f"Calibration saved to:\n{self._config_path}\n\n"
+            f"{save_type_text}:\n{target_path}\n\n"
             f"X scale: {self._computed_x:.4f} steps/mm\n"
-            f"Y scale: {self._computed_y:.4f} steps/mm\n\n"
-            "The new scaling will take effect the next time devices are built\n"
-            "(i.e. when you start the next run)."
-        )
-        logger.info(
-            "Calibration saved: x_scale=%s y_scale=%s -> %s",
-            self._computed_x, self._computed_y, self._config_path,
+            f"Y scale: {self._computed_y:.4f} steps/mm\n"
+            f"Limits: {self._range_summary_text()}\n\n"
+            f"Operation time: {duration:.3f}s\n"
+            "The new scaling and limits take effect on the next run "
+            "(i.e. when devices are rebuilt)."
         )
 
     # ------------------------------------------------------------------ #
@@ -396,6 +749,136 @@ class StageCalibrationDialog(QtWidgets.QDialog):
     def _write_config(self, cfg: dict) -> None:
         with open(self._config_path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
+
+    # ------------------------------------------------------------------ #
+    # Range (travel limits) UI + helpers
+    # ------------------------------------------------------------------ #
+
+    def _on_range_enable_toggled(self, checked: bool) -> None:
+        """Enable/disable all range input widgets based on the master checkbox."""
+        for w in (
+            self._x_min_spin, self._x_min_btn,
+            self._x_max_spin, self._x_max_btn,
+            self._y_min_spin, self._y_min_btn,
+            self._y_max_spin, self._y_max_btn,
+        ):
+            w.setEnabled(checked)
+
+    def _capture_current(self, spin: QtWidgets.QDoubleSpinBox, axis: str) -> None:
+        """Capture the current position of ``axis`` into ``spin``."""
+        try:
+            x, y = self._stage.get_position()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, "Error", f"Could not read stage position:\n{exc}"
+            )
+            return
+        val = float(x if axis.lower() == "x" else y)
+        spin.setValue(val)
+        logger.info("Range capture: %s = %s -> %s", axis.upper(), val, spin.objectName() or spin)
+
+    @staticmethod
+    def _nullable_float(v: float) -> float | None:
+        """Return None for sentinel values, else the float itself.
+
+        The input widgets only accept values in [-1e12, 1e12]; anything beyond
+        that magnitude (e.g. user cleared / didn't set a bound) is not
+        meaningful. We also treat the sentinel minimum / maximum of the
+        spinbox as "user didn't set this limit".
+        """
+        if v is None:
+            return None
+        f = float(v)
+        MAG = 1e12
+        if f <= -MAG + 1 or f >= MAG - 1:
+            return None
+        return f
+
+    def _load_existing_range(self) -> dict:
+        """Return the existing range dict from config with values as float|None."""
+        empty = {"x_min": None, "x_max": None, "y_min": None, "y_max": None}
+        try:
+            cfg = self._read_config()
+            rc = cfg.get("stage", {}).get("range")
+        except Exception:
+            rc = None
+        if not isinstance(rc, dict):
+            return empty
+        def _f(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except Exception:
+                return None
+        return {
+            "x_min": _f(rc.get("x_min")),
+            "x_max": _f(rc.get("x_max")),
+            "y_min": _f(rc.get("y_min")),
+            "y_max": _f(rc.get("y_max")),
+        }
+
+    def _populate_current_range(self) -> None:
+        """Fill the travel-range UI from the values on disk."""
+        r = self._load_existing_range()
+        any_set = any(v is not None for v in r.values())
+        self._range_enable_chk.blockSignals(True)
+        try:
+            self._range_enable_chk.setChecked(any_set)
+        finally:
+            self._range_enable_chk.blockSignals(False)
+        self._on_range_enable_toggled(any_set)
+
+        def _apply(spin, v):
+            if v is None:
+                # Put a sentinel that users will visually notice is "unset".
+                spin.setValue(0.0)
+            else:
+                spin.setValue(float(v))
+
+        _apply(self._x_min_spin, r["x_min"])
+        _apply(self._x_max_spin, r["x_max"])
+        _apply(self._y_min_spin, r["y_min"])
+        _apply(self._y_max_spin, r["y_max"])
+
+    def _update_range_unit_label(self) -> None:
+        """Show the user which unit the range fields are expressed in."""
+        xs, xo, ys, yo = self._load_existing_scales_full()
+        is_calibrated = (xs != 1.0 or xo != 0.0 or ys != 1.0 or yo != 0.0)
+        if is_calibrated:
+            text = (
+                "<span style=\"color:#1a7f37\"><b>Unit: mm</b></span><br>"
+                "<small>Range fields are interpreted in <b>millimetres</b> "
+                "(same as the axis editor after calibration).</small>"
+            )
+            suffix = " mm"
+        else:
+            text = (
+                "<span style=\"color:#9a6700\"><b>Unit: steps</b></span><br>"
+                "<small>Stage is not calibrated yet — range fields are "
+                "interpreted as raw motor <b>steps</b>.</small>"
+            )
+            suffix = " steps"
+        self._range_unit_label.setText(text)
+        for sp in (self._x_min_spin, self._x_max_spin, self._y_min_spin, self._y_max_spin):
+            sp.setSuffix(suffix)
+
+    def _range_summary_text(self) -> str:
+        """Human readable one-line summary of the current range settings."""
+        if not self._range_enable_chk.isChecked():
+            return "disabled (unlimited)"
+        def _fmt(spin, side):
+            v = self._nullable_float(spin.value())
+            if v is None:
+                return f"{side}=unset"
+            return f"{side}={v:.6g}"
+        xs, xo, ys, yo = self._load_existing_scales_full()
+        is_calibrated = (xs != 1.0 or xo != 0.0 or ys != 1.0 or yo != 0.0)
+        unit = "mm" if is_calibrated else "steps"
+        return (
+            f"X [{_fmt(self._x_min_spin, 'min')}, {_fmt(self._x_max_spin, 'max')}] ; "
+            f"Y [{_fmt(self._y_min_spin, 'min')}, {_fmt(self._y_max_spin, 'max')}] ({unit})"
+        )
 
     def closeEvent(self, event):
         self._timer.stop()

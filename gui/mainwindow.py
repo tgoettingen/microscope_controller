@@ -201,6 +201,10 @@ class MainWindow(QtWidgets.QMainWindow):
       self._webcam_live = False
       self._webcam_timer: QtCore.QTimer | None = None
 
+      # Stage position update timer for status bar (500ms when multiaxis not running)
+      self._stage_position_timer: QtCore.QTimer | None = None
+      self._stage_position_label: QtWidgets.QLabel | None = None
+
       # Thread-safe camera settings snapshot (used by worker threads)
       self._camera_exposure_ms: float = 20.0
 
@@ -218,6 +222,13 @@ class MainWindow(QtWidgets.QMainWindow):
       self._apply_full_layout()
       self._capture_original_layout()
       self._load_layout(kind="default")
+      
+      # Start stage position update timer (will only update when multiaxis not running)
+      try:
+         logger.info("Initializing stage position timer")
+      except Exception:
+         pass
+      self._start_stage_position_timer()
 
 
    def _set_measurement_state(self, state: str, kind: str | None = None) -> None:
@@ -278,6 +289,38 @@ class MainWindow(QtWidgets.QMainWindow):
                lbl.setText(f"Measurement: {normalized}")
       except Exception:
          pass
+      
+      # Control stage position timer based on multiaxis state
+      # When multiaxis is running, it updates position itself, so we stop the timer
+      # When multiaxis is not running, we use the 500ms timer to update position
+      try:
+         is_multiaxis_running = (normalized == "Running" and 
+                                (kind_text == "Multi-Axis" or kind_text == "Multi View"))
+         
+         try:
+            logger.debug("Measurement state changed: normalized=%s kind_text=%s is_multiaxis_running=%s", 
+                        normalized, kind_text, is_multiaxis_running)
+         except Exception:
+            pass
+         
+         if is_multiaxis_running:
+            try:
+               logger.info("Stopping stage position timer - multiaxis is running and will update position itself")
+            except Exception:
+               pass
+            self._stop_stage_position_timer()
+         else:
+            # When not running (including Finished state), ensure timer is running
+            try:
+               logger.info("Starting stage position timer - using 500ms timer for position updates")
+            except Exception:
+               pass
+            self._start_stage_position_timer()
+      except Exception as e:
+         try:
+            logger.warning("Error controlling stage position timer: %s", e)
+         except Exception:
+            pass
 
 
    # ----------------- hardware reservation / run gating -----------------
@@ -968,6 +1011,16 @@ class MainWindow(QtWidgets.QMainWindow):
          self.statusBar().addPermanentWidget(self._measurement_status_label)
       except Exception:
          self._measurement_status_label = None
+      
+      # Add stage position label to status bar
+      try:
+         self._stage_position_label = QtWidgets.QLabel(self)
+         self._stage_position_label.setMinimumWidth(150)
+         self._stage_position_label.setText("Stage: --")
+         self.statusBar().addPermanentWidget(self._stage_position_label)
+      except Exception:
+         self._stage_position_label = None
+      
       # connect stream toggle signals from live tab
       self.live_tab.stream_toggled.connect(self._on_stream_toggled)
       # NOTE: multi-axis samples are delivered via live_tab.queue_multiaxis_sample()
@@ -1321,20 +1374,105 @@ class MainWindow(QtWidgets.QMainWindow):
          self._webcam_timer = QtCore.QTimer(self)
          self._webcam_timer.timeout.connect(self._on_webcam_timer)
 
-      if fps is None:
+   def _start_stage_position_timer(self) -> None:
+      """Start the stage position update timer (500ms interval).
+      
+      Only updates when multiaxis is not running to avoid resource waste.
+      """
+      if self._stage_position_timer is None:
+         self._stage_position_timer = QtCore.QTimer(self)
+         self._stage_position_timer.setInterval(500)  # 500ms as required
+         self._stage_position_timer.timeout.connect(self._update_stage_position_display)
+         self._stage_position_timer.start()
          try:
-            fps = float(self.camctl_tab.fps_spin.value())
+            logger.info("Stage position timer started (500ms interval)")
          except Exception:
-            fps = 10.0
-      if fps <= 0:
-         fps = 10.0
+            pass
+      else:
+         # Timer already exists, just start it if not running
+         if not self._stage_position_timer.isActive():
+            self._stage_position_timer.start()
+            try:
+               logger.info("Stage position timer restarted (500ms interval)")
+            except Exception:
+               pass
 
-      interval_ms = int(max(1, round(1000.0 / float(fps))))
+   def _stop_stage_position_timer(self) -> None:
+      """Stop the stage position update timer."""
+      if self._stage_position_timer is not None:
+         try:
+            self._stage_position_timer.stop()
+            logger.info("Stage position timer stopped")
+         except Exception:
+            pass
+
+   def _update_stage_position_display(self) -> None:
+      """Update the stage position display in the status bar.
+      
+      Updates position regardless of multiaxis state, but uses different timing:
+      - When multiaxis is running: position is updated by the multiaxis system itself
+      - When multiaxis is not running: this timer updates position every 500ms
+      """
       try:
-         self._webcam_timer.stop()
+         stage = getattr(self, 'stage', None)
+         if stage is None:
+            try:
+               logger.debug("Stage object is None - skipping position update")
+            except Exception:
+               pass
+            self._set_stage_position_text("Stage: --")
+            return
+         
+         if not hasattr(stage, 'get_position'):
+            try:
+               logger.debug("Stage does not have get_position method - skipping position update")
+            except Exception:
+               pass
+            self._set_stage_position_text("Stage: --")
+            return
+         
+         # Get current position with exception handling
+         try:
+            position = stage.get_position()
+            try:
+               logger.debug("Stage position retrieved: %s", position)
+            except Exception:
+               pass
+               
+            if isinstance(position, (tuple, list)) and len(position) >= 2:
+               x, y = float(position[0]), float(position[1])
+               self._set_stage_position_text(f"Stage: X={x:.2f}, Y={y:.2f}")
+            else:
+               # Handle unexpected position format
+               try:
+                  logger.warning("Unexpected position format: %s (type: %s)", position, type(position))
+               except Exception:
+                  pass
+               self._set_stage_position_text("Stage: --")
+         except Exception as pos_error:
+            # Position retrieval failed - show error state without crashing
+            try:
+               logger.warning("Failed to get stage position: %s", pos_error)
+            except Exception:
+               pass
+            self._set_stage_position_text("Stage: error")
+            
+      except Exception as e:
+         # Any other error - don't crash the status bar
+         try:
+            logger.warning("Error updating stage position display: %s", e)
+         except Exception:
+            pass
+         self._set_stage_position_text("Stage: --")
+
+   def _set_stage_position_text(self, text: str) -> None:
+      """Set the stage position label text with thread-safe UI update."""
+      try:
+         label = getattr(self, '_stage_position_label', None)
+         if label is not None:
+            label.setText(text)
       except Exception:
          pass
-      self._webcam_timer.start(interval_ms)
 
    def _stop_webcam_timer(self) -> None:
       try:
@@ -1611,6 +1749,14 @@ class MainWindow(QtWidgets.QMainWindow):
       )
       calibrate_stage_action.triggered.connect(self._open_stage_calibration)
       action_menu.addAction(calibrate_stage_action)
+
+      move_motors_action = QAction("Move Motors…", self)
+      move_motors_action.setToolTip(
+          "Manual motor control: move stage and focus to specific positions\n"
+          "using sliders or editable fields."
+      )
+      move_motors_action.triggered.connect(self._open_move_motors_dialog)
+      action_menu.addAction(move_motors_action)
 
       # View menu for toggling docks
       view_menu = menubar.addMenu("&View")
@@ -1999,33 +2145,71 @@ class MainWindow(QtWidgets.QMainWindow):
       except ImportError:
          try:
             from dialogs.stage_calibration_dialog import StageCalibrationDialog
-         except ImportError as exc:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Could not load calibration dialog:\n{exc}")
+         except Exception:
+            QtWidgets.QMessageBox.critical(self, "Import Error", "Could not import stage calibration dialog.")
             return
 
-      # Try to get a live stage object — prefer the already-built one.
-      stage = getattr(self, "stage", None)
-      if stage is None:
-         # Try building devices just to get the stage
+      # Ensure devices are built
+      if not self.devices_built or self.devices_released:
          try:
-            from core.factory import build_devices
-            _, stage, *_ = build_devices(self._config_path)
+            self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+            self.devices_built = True
+            self.devices_released = False
          except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-               self,
-               "Stage Not Available",
-               f"Could not connect to stage:\n{exc}\n\n"
-               "Please ensure the stage is connected and the correct COM ports are configured."
-            )
+            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
             return
 
-      if stage is None:
-         QtWidgets.QMessageBox.warning(self, "Stage Not Available", "No stage device is configured.")
+      if self.stage is None:
+         QtWidgets.QMessageBox.warning(self, "No Stage", "No stage device available.")
          return
 
-      dlg = StageCalibrationDialog(stage, self._config_path, parent=self)
+      dlg = StageCalibrationDialog(self.stage, self._config_path, parent=self)
       dlg.calibration_saved.connect(self._on_calibration_saved)
       dlg.exec()
+
+   def _open_move_motors_dialog(self):
+      """Open the Move Motors dialog for manual motor control."""
+      try:
+         from gui.dialogs.move_motors_dialog import MoveMotorsDialog
+      except ImportError:
+         try:
+            from dialogs.move_motors_dialog import MoveMotorsDialog
+         except Exception as e:
+            logger.error("Failed to import move motors dialog: %s", e)
+            QtWidgets.QMessageBox.critical(self, "Import Error", f"Could not import move motors dialog:\n{e}")
+            return
+      except Exception as e:
+         logger.error("Unexpected error importing move motors dialog: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Import Error", f"Unexpected error importing dialog:\n{e}")
+         return
+
+      # Ensure devices are built
+      if not self.devices_built or self.devices_released:
+         try:
+            logger.info("Building devices for move motors dialog")
+            self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+            self.devices_built = True
+            self.devices_released = False
+         except Exception as exc:
+            logger.error("Failed to build devices: %s", exc)
+            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+            return
+
+      if self.stage is None and self.focus is None:
+         logger.warning("No motors available for move motors dialog")
+         QtWidgets.QMessageBox.warning(self, "No Motors", "No stage or focus device available.")
+         return
+
+      try:
+         logger.info("Opening move motors dialog with stage=%s, focus=%s", 
+                    type(self.stage).__name__ if self.stage else None,
+                    type(self.focus).__name__ if self.focus else None)
+         dlg = MoveMotorsDialog(self.stage, self.focus, parent=self)
+         dlg.exec()
+         logger.info("Move motors dialog closed successfully")
+      except Exception as e:
+         logger.exception("Error opening move motors dialog: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Dialog Error", f"Could not open move motors dialog:\n{e}")
 
    def _on_calibration_saved(self, x_scale: float, y_scale: float):
       """Called when the calibration wizard has written new scale values."""
@@ -2434,6 +2618,13 @@ class MainWindow(QtWidgets.QMainWindow):
    def _start_multiaxis(self):
       if self.multi_thread is not None:
             return
+
+      # Stop stage position timer when multiaxis starts - multiaxis will update position itself
+      try:
+         logger.info("Stopping stage position timer - multiaxis will handle position updates")
+      except Exception:
+         pass
+      self._stop_stage_position_timer()
 
       try:
          logger.info(
@@ -2960,6 +3151,7 @@ class MainWindow(QtWidgets.QMainWindow):
                self.multi_runner = None
                self.multi_thread = None
                self._set_measurement_state("Finished", kind="Multi-Axis")
+               # Timer will be restarted by _apply_measurement_state
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
       self.multi_thread.start()
@@ -2975,6 +3167,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
       if self.multi_runner is not None:
             self.multi_runner.stop()
+
+      # NOTE: Timer restart is handled by _apply_measurement_state when state changes to "Finished"
+      # This is the correct place because it ensures timer is restarted whether multiaxis
+      # stops normally (via _set_measurement_state) or is stopped manually (via this method)
 
       # NOTE: do not automatically disconnect devices when the user presses
       # Stop. Disconnecting here caused the stage (and other devices) to become
@@ -3000,6 +3196,13 @@ class MainWindow(QtWidgets.QMainWindow):
    def _start_multiview_scan(self) -> None:
       if self.multiview_thread is not None:
          return
+
+      # Stop stage position timer when multiview scan starts - multiview will update position itself
+      try:
+         logger.info("Stopping stage position timer - multiview will handle position updates")
+      except Exception:
+         pass
+      self._stop_stage_position_timer()
 
       try:
          logger.info(
@@ -3190,6 +3393,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.multiview_runner = None
             self.multiview_thread = None
             self._set_measurement_state("Finished", kind="Multi View")
+            # Timer will be restarted by _apply_measurement_state
 
       self.multiview_thread = threading.Thread(target=worker, daemon=True)
       self.multiview_thread.start()
@@ -3206,6 +3410,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.multiview_runner.stop()
          except Exception:
             pass
+
+      # NOTE: Timer restart is handled by _apply_measurement_state when state changes to "Finished"
 
       try:
          logger.info("Multiview stop requested")

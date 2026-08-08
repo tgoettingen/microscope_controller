@@ -31,6 +31,39 @@ def _read_stage_scaling(config_path: str | Path | None) -> tuple[float, float, f
         return 1.0, 0.0, 1.0, 0.0
 
 
+def _read_stage_range(config_path: str | Path | None) -> dict:
+    """Return per-axis travel ranges from the device config.
+
+    Returned dict has the form::
+
+        {"x": (x_min|None, x_max|None), "y": (y_min|None, y_max|None)}
+
+    Each tuple side is ``None`` if that bound is not configured.
+    """
+    empty = {"x": (None, None), "y": (None, None)}
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        rc = cfg.get("stage", {}).get("range")
+    except Exception:
+        return empty
+    if not isinstance(rc, dict):
+        return empty
+
+    def _f(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    return {
+        "x": (_f(rc.get("x_min")), _f(rc.get("x_max"))),
+        "y": (_f(rc.get("y_min")), _f(rc.get("y_max"))),
+    }
+
+
 def _stage_unit(config_path: str | Path | None) -> str:
     """Return 'mm' if a non-trivial calibration is configured, else 'steps'."""
     xs, xo, ys, yo = _read_stage_scaling(config_path)
@@ -189,6 +222,23 @@ class MotorAxisDialog(QtWidgets.QDialog):
                     "Run <i>Action → Calibrate Stage…</i> to enable mm units.</small>"
                 )
                 banner_color = "#fff3cd"   # amber warning
+
+            # Append travel-range notice if a soft limit is configured for this axis.
+            try:
+                rng = _read_stage_range(config_path)
+            except Exception:
+                rng = {"x": (None, None), "y": (None, None)}
+            ax_limits = rng.get(self.axis_type.lower(), (None, None))
+            if ax_limits != (None, None):
+                lo, hi = ax_limits
+                def _fmt(v):
+                    return "unset" if v is None else f"{v:.6g}"
+                banner_text += (
+                    f'<br><span style="color:#9a6700"><b>Soft limits:</b> '
+                    f'[{_fmt(lo)}, {_fmt(hi)}] {self._unit}. '
+                    'Input fields above will be constrained to this range.</span>'
+                )
+
             banner = QtWidgets.QLabel(banner_text)
             banner.setWordWrap(True)
             banner.setStyleSheet(
@@ -205,6 +255,18 @@ class MotorAxisDialog(QtWidgets.QDialog):
         self.start_spin.setRange(-1e18, 1e18)
         self.end_spin.setRange(-1e18, 1e18)
         self.step_spin.setRange(-1e18, 1e18)
+
+        # --- Apply soft travel limits from config to X / Y position inputs ---
+        if axis_type in ("X", "Y"):
+            try:
+                rng = _read_stage_range(config_path)
+            except Exception:
+                rng = {}
+            lo, hi = rng.get(axis_type.lower(), (None, None))
+            clamped_lo = lo if lo is not None else -1e18
+            clamped_hi = hi if hi is not None else 1e18
+            self.start_spin.setRange(clamped_lo, clamped_hi)
+            self.end_spin.setRange(clamped_lo, clamped_hi)
 
         self.start_spin.setValue(0)
         self.end_spin.setValue(1000)
@@ -299,6 +361,17 @@ class MotorAxisDialog(QtWidgets.QDialog):
         self.post_pos_spin.setRange(-1e18, 1e18)
         self.post_pos_spin.setValue(0.0)
         self.post_pos_spin.setSpecialValueText("(none)")
+
+        if axis_type in ("X", "Y"):
+            try:
+                rng2 = _read_stage_range(config_path)
+                lo2, hi2 = rng2.get(axis_type.lower(), (None, None))
+                plo = lo2 if lo2 is not None else -1e18
+                phi = hi2 if hi2 is not None else 1e18
+                self.pre_pos_spin.setRange(plo, phi)
+                self.post_pos_spin.setRange(plo, phi)
+            except Exception:
+                pass
 
         if axis_type in ("X", "Y", "Z"):
             unit = self._unit if axis_type in ("X", "Y") else "steps"
