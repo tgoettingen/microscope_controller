@@ -37,9 +37,102 @@ from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 logger = logging.getLogger(__name__)
+
+
+class CollapsibleGroupBox(QtWidgets.QGroupBox):
+    """A QGroupBox that can be collapsed/expanded with a toggle button."""
+    
+    def __init__(self, title: str, parent: Optional[QtWidgets.QWidget] = None, 
+                 initially_collapsed: bool = False):
+        super().__init__(title, parent)
+        self._is_collapsed = initially_collapsed
+        self._content_widget: Optional[QtWidgets.QWidget] = None
+        self._toggle_button: Optional[QtWidgets.QPushButton] = None
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        """Set up the collapsible UI."""
+        # Create a custom title bar with toggle button
+        self.setTitle("")  # Clear default title
+        self.setFlat(True)
+        
+        # Main layout
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Title bar with toggle button
+        title_bar = QtWidgets.QWidget()
+        title_layout = QtWidgets.QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(8, 4, 8, 4)
+        
+        # Title label
+        self._title_label = QtWidgets.QLabel(self.title())
+        self._title_label.setStyleSheet("font-weight: bold;")
+        title_layout.addWidget(self._title_label)
+        
+        # Toggle button
+        self._toggle_button = QtWidgets.QPushButton()
+        self._toggle_button.setFixedSize(20, 20)
+        self._toggle_button.setText("▼" if not self._is_collapsed else "▶")
+        self._toggle_button.setStyleSheet("border: none; font-size: 12px;")
+        self._toggle_button.clicked.connect(self._toggle_collapse)
+        title_layout.addWidget(self._toggle_button)
+        
+        main_layout.addWidget(title_bar)
+        
+        # Content container
+        self._content_widget = QtWidgets.QWidget()
+        self._content_layout = QtWidgets.QVBoxLayout(self._content_widget)
+        self._content_layout.setContentsMargins(8, 4, 8, 8)
+        main_layout.addWidget(self._content_widget)
+        
+        # Set initial state
+        self._update_collapse_state()
+    
+    def setContentLayout(self, layout: QtWidgets.QLayout):
+        """Set the content layout for the collapsible area."""
+        # Clear existing layout
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add new layout
+        self._content_layout.addLayout(layout)
+    
+    def _toggle_collapse(self):
+        """Toggle the collapsed state."""
+        self._is_collapsed = not self._is_collapsed
+        self._update_collapse_state()
+    
+    def _update_collapse_state(self):
+        """Update the UI based on collapse state."""
+        if self._is_collapsed:
+            self._content_widget.setVisible(False)
+            self._toggle_button.setText("▶")
+        else:
+            self._content_widget.setVisible(True)
+            self._toggle_button.setText("▼")
+    
+    def setTitle(self, title: str):
+        """Set the title text."""
+        super().setTitle(title)
+        if hasattr(self, '_title_label'):
+            self._title_label.setText(title)
+    
+    def isCollapsed(self) -> bool:
+        """Return whether the group is collapsed."""
+        return self._is_collapsed
+    
+    def setCollapsed(self, collapsed: bool):
+        """Set the collapsed state."""
+        if self._is_collapsed != collapsed:
+            self._is_collapsed = collapsed
+            self._update_collapse_state()
 
 
 class StageCalibrationDialog(QtWidgets.QDialog):
@@ -132,8 +225,9 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         # ── Live position display ──────────────────────────────────────
         # Position is always in raw steps (that is what get_position() returns
         # before ScaledStageXY is active, and what we need to compute Δsteps).
-        pos_grp = QtWidgets.QGroupBox("Current Stage Position  [raw steps — as read from hardware]")
-        pos_lay = QtWidgets.QFormLayout(pos_grp)
+        pos_grp = CollapsibleGroupBox("Current Stage Position  [raw steps — as read from hardware]", initially_collapsed=False)
+        pos_lay = QtWidgets.QFormLayout()
+        pos_grp.setContentLayout(pos_lay)
 
         self._cur_x_label = QtWidgets.QLabel("—")
         self._cur_y_label = QtWidgets.QLabel("—")
@@ -142,8 +236,9 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         root.addWidget(pos_grp)
 
         # ── Step 1 — Set reference ─────────────────────────────────────
-        ref_grp = QtWidgets.QGroupBox("Step 1 — Set Reference Point  [records current step count]")
-        ref_lay = QtWidgets.QVBoxLayout(ref_grp)
+        ref_grp = CollapsibleGroupBox("Step 1 — Set Reference Point  [records current step count]", initially_collapsed=False)
+        ref_lay = QtWidgets.QVBoxLayout()
+        ref_grp.setContentLayout(ref_lay)
 
         self._set_ref_btn = QtWidgets.QPushButton("Set Reference Point")
         self._set_ref_btn.setToolTip("Snapshot the current position as the reference (Δ = 0).")
@@ -159,10 +254,12 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         root.addWidget(ref_grp)
 
         # ── Step 2/3 — Enter physical distance ────────────────────────
-        meas_grp = QtWidgets.QGroupBox(
-            "Step 2 — Enter Physical Distance Moved  [measured externally, in mm]"
+        meas_grp = CollapsibleGroupBox(
+            "Step 2 — Enter Physical Distance Moved  [measured externally, in mm]", 
+            initially_collapsed=False
         )
-        meas_lay = QtWidgets.QFormLayout(meas_grp)
+        meas_lay = QtWidgets.QFormLayout()
+        meas_grp.setContentLayout(meas_lay)
 
         self._dist_x_spin = QtWidgets.QDoubleSpinBox()
         self._dist_x_spin.setRange(0.0, 1e6)
@@ -190,8 +287,9 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         root.addWidget(meas_grp)
 
         # ── Result preview ────────────────────────────────────────────
-        result_grp = QtWidgets.QGroupBox("Scaling (current → new)")
-        result_lay = QtWidgets.QFormLayout(result_grp)
+        result_grp = CollapsibleGroupBox("Scaling (current → new)", initially_collapsed=True)
+        result_lay = QtWidgets.QFormLayout()
+        result_grp.setContentLayout(result_lay)
 
         self._current_x_label = QtWidgets.QLabel("—")
         self._current_y_label = QtWidgets.QLabel("—")
@@ -207,8 +305,9 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         root.addWidget(result_grp)
 
         # ── Travel range (soft limits) ────────────────────────────────
-        self._range_grp = QtWidgets.QGroupBox("Travel Range (Soft Limits)")
-        range_vlay = QtWidgets.QVBoxLayout(self._range_grp)
+        self._range_grp = CollapsibleGroupBox("Travel Range (Soft Limits)", initially_collapsed=True)
+        range_vlay = QtWidgets.QVBoxLayout()
+        self._range_grp.setContentLayout(range_vlay)
 
         self._range_enable_chk = QtWidgets.QCheckBox("Enable soft travel limits")
         self._range_enable_chk.setToolTip(
@@ -270,43 +369,6 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         )
         hint.setWordWrap(True)
         range_vlay.addWidget(hint)
-
-        # ── Auto-detect section ─────────────────────────────────────────
-        auto_detect_grp = QtWidgets.QGroupBox("Auto-Detect Travel Limits")
-        auto_lay = QtWidgets.QVBoxLayout(auto_detect_grp)
-
-        auto_info = QtWidgets.QLabel(
-            "<small>Automatically detect stage limits by moving to each direction "
-            "until unable to reach further. After detection, working range is set "
-            "to 95% of total range (2.5% safety margin from each end).</small>"
-        )
-        auto_info.setWordWrap(True)
-        auto_lay.addWidget(auto_info)
-
-        # Progress bar
-        self._auto_detect_progress_bar = QtWidgets.QProgressBar()
-        self._auto_detect_progress_bar.setVisible(False)
-        self._auto_detect_progress_bar.setRange(0, 100)
-        auto_lay.addWidget(self._auto_detect_progress_bar)
-
-        # Status label
-        self._auto_detect_status_label = QtWidgets.QLabel("Ready")
-        self._auto_detect_status_label.setVisible(False)
-        auto_lay.addWidget(self._auto_detect_status_label)
-
-        # Buttons
-        auto_btn_lay = QtWidgets.QHBoxLayout()
-        self._auto_detect_btn = QtWidgets.QPushButton("Auto Detect Limits")
-        self._auto_detect_btn.clicked.connect(self._on_auto_detect_limits)
-        auto_btn_lay.addWidget(self._auto_detect_btn)
-
-        self._auto_detect_cancel_btn = QtWidgets.QPushButton("Cancel")
-        self._auto_detect_cancel_btn.setVisible(False)
-        self._auto_detect_cancel_btn.clicked.connect(self._on_cancel_auto_detect)
-        auto_btn_lay.addWidget(self._auto_detect_cancel_btn)
-
-        auto_lay.addLayout(auto_btn_lay)
-        range_vlay.addWidget(auto_detect_grp)
 
         self._x_min_btn.clicked.connect(lambda: self._capture_current(self._x_min_spin, "x"))
         self._x_max_btn.clicked.connect(lambda: self._capture_current(self._x_max_spin, "x"))
