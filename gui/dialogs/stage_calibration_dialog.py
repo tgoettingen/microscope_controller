@@ -18,14 +18,23 @@ Step 4 – Confirm
 
 The computed scale has units [steps / mm] — the same convention used by
 ScaledStageXY, which converts:  raw_steps = logical_mm * scale + offset
+
+Auto Limit Detection
+--------------------
+Step A – Auto Detect Limits
+    Click "Auto Detect Limits" to automatically find the stage travel limits.
+    The stage will move to each direction until it cannot reach further.
+    After detection, the working range is set to 95% of the total range
+    (2.5% safety margin from each end).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from datetime import datetime
 
 from PyQt6 import QtWidgets, QtCore
@@ -51,6 +60,11 @@ class StageCalibrationDialog(QtWidgets.QDialog):
 
         self._ref_x: float | None = None   # step position at reference point
         self._ref_y: float | None = None
+
+        # Auto-detection state
+        self._auto_detecting = False
+        self._auto_detect_cancelled = False
+        self._auto_detect_progress = 0.0
 
         self.setWindowTitle("Stage Calibration — Move & Measure")
         self.setMinimumWidth(480)
@@ -256,6 +270,43 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         )
         hint.setWordWrap(True)
         range_vlay.addWidget(hint)
+
+        # ── Auto-detect section ─────────────────────────────────────────
+        auto_detect_grp = QtWidgets.QGroupBox("Auto-Detect Travel Limits")
+        auto_lay = QtWidgets.QVBoxLayout(auto_detect_grp)
+
+        auto_info = QtWidgets.QLabel(
+            "<small>Automatically detect stage limits by moving to each direction "
+            "until unable to reach further. After detection, working range is set "
+            "to 95% of total range (2.5% safety margin from each end).</small>"
+        )
+        auto_info.setWordWrap(True)
+        auto_lay.addWidget(auto_info)
+
+        # Progress bar
+        self._auto_detect_progress_bar = QtWidgets.QProgressBar()
+        self._auto_detect_progress_bar.setVisible(False)
+        self._auto_detect_progress_bar.setRange(0, 100)
+        auto_lay.addWidget(self._auto_detect_progress_bar)
+
+        # Status label
+        self._auto_detect_status_label = QtWidgets.QLabel("Ready")
+        self._auto_detect_status_label.setVisible(False)
+        auto_lay.addWidget(self._auto_detect_status_label)
+
+        # Buttons
+        auto_btn_lay = QtWidgets.QHBoxLayout()
+        self._auto_detect_btn = QtWidgets.QPushButton("Auto Detect Limits")
+        self._auto_detect_btn.clicked.connect(self._on_auto_detect_limits)
+        auto_btn_lay.addWidget(self._auto_detect_btn)
+
+        self._auto_detect_cancel_btn = QtWidgets.QPushButton("Cancel")
+        self._auto_detect_cancel_btn.setVisible(False)
+        self._auto_detect_cancel_btn.clicked.connect(self._on_cancel_auto_detect)
+        auto_btn_lay.addWidget(self._auto_detect_cancel_btn)
+
+        auto_lay.addLayout(auto_btn_lay)
+        range_vlay.addWidget(auto_detect_grp)
 
         self._x_min_btn.clicked.connect(lambda: self._capture_current(self._x_min_spin, "x"))
         self._x_max_btn.clicked.connect(lambda: self._capture_current(self._x_max_spin, "x"))
@@ -882,8 +933,306 @@ class StageCalibrationDialog(QtWidgets.QDialog):
 
     def closeEvent(self, event):
         self._timer.stop()
+        # Cancel auto-detection if running
+        if self._auto_detecting:
+            self._auto_detect_cancelled = True
         super().closeEvent(event)
 
     def reject(self):
         self._timer.stop()
+        # Cancel auto-detection if running
+        if self._auto_detecting:
+            self._auto_detect_cancelled = True
         super().reject()
+
+    # ------------------------------------------------------------------ #
+    # Auto-detect travel limits
+    # ------------------------------------------------------------------ #
+
+    def _on_auto_detect_limits(self):
+        """Start the automatic limit detection process."""
+        if self._auto_detecting:
+            return
+
+        # Confirm before starting
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Start Auto-Detection",
+            "This will move the stage to find its travel limits.\n\n"
+            "Make sure the stage has enough space to move freely.\n"
+            "The process may take several minutes.\n\n"
+            "Do you want to continue?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        # Start auto-detection in a separate thread
+        self._auto_detecting = True
+        self._auto_detect_cancelled = False
+        self._auto_detect_progress = 0.0
+
+        # Update UI
+        self._auto_detect_btn.setEnabled(False)
+        self._auto_detect_cancel_btn.setVisible(True)
+        self._auto_detect_progress_bar.setVisible(True)
+        self._auto_detect_status_label.setVisible(True)
+        self._auto_detect_status_label.setText("Starting detection...")
+
+        # Run detection in background thread
+        self._auto_detect_thread = QtCore.QThread()
+        self._auto_detect_worker = AutoDetectWorker(self._stage)
+        self._auto_detect_worker.moveToThread(self._auto_detect_thread)
+        self._auto_detect_worker.started.connect(self._on_auto_detect_started)
+        self._auto_detect_worker.progress.connect(self._on_auto_detect_progress)
+        self._auto_detect_worker.finished.connect(self._on_auto_detect_finished)
+        self._auto_detect_worker.error.connect(self._on_auto_detect_error)
+        self._auto_detect_thread.started.connect(self._auto_detect_worker.run)
+        self._auto_detect_thread.start()
+
+    def _on_cancel_auto_detect(self):
+        """Cancel the ongoing auto-detection."""
+        if self._auto_detecting:
+            self._auto_detect_cancelled = True
+            self._auto_detect_status_label.setText("Cancelling...")
+
+    def _on_auto_detect_started(self):
+        """Called when auto-detection starts."""
+        logger.info("Auto-detection started")
+        self._auto_detect_status_label.setText("Detecting limits...")
+
+    def _on_auto_detect_progress(self, progress: float, status: str):
+        """Update progress during auto-detection."""
+        self._auto_detect_progress = progress
+        self._auto_detect_progress_bar.setValue(int(progress))
+        self._auto_detect_status_label.setText(status)
+
+    def _on_auto_detect_finished(self, limits: dict):
+        """Called when auto-detection completes successfully."""
+        self._auto_detecting = False
+        self._auto_detect_thread.quit()
+        self._auto_detect_thread.wait()
+
+        # Restore UI
+        self._auto_detect_btn.setEnabled(True)
+        self._auto_detect_cancel_btn.setVisible(False)
+        self._auto_detect_progress_bar.setVisible(False)
+        self._auto_detect_status_label.setVisible(False)
+
+        # Apply 95% working range
+        safe_limits = self._calculate_95_percent_range(limits)
+
+        # Update UI with detected limits
+        self._apply_detected_limits(safe_limits)
+
+        logger.info("Auto-detection completed: %s", safe_limits)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Auto-Detection Complete",
+            f"Travel limits detected successfully!\n\n"
+            f"Working range set to 95% of total range (2.5% safety margin).\n\n"
+            f"X: [{safe_limits['x_min']:.2f}, {safe_limits['x_max']:.2f}]\n"
+            f"Y: [{safe_limits['y_min']:.2f}, {safe_limits['y_max']:.2f}]"
+        )
+
+    def _on_auto_detect_error(self, error_msg: str):
+        """Called when auto-detection fails."""
+        self._auto_detecting = False
+        self._auto_detect_thread.quit()
+        self._auto_detect_thread.wait()
+
+        # Restore UI
+        self._auto_detect_btn.setEnabled(True)
+        self._auto_detect_cancel_btn.setVisible(False)
+        self._auto_detect_progress_bar.setVisible(False)
+        self._auto_detect_status_label.setVisible(False)
+
+        logger.error("Auto-detection failed: %s", error_msg)
+        QtWidgets.QMessageBox.critical(
+            self,
+            "Auto-Detection Failed",
+            f"Auto-detection failed:\n{error_msg}"
+        )
+
+    def _calculate_95_percent_range(self, limits: dict) -> dict:
+        """Calculate 95% working range from detected limits.
+
+        Args:
+            limits: Dict with 'x_min', 'x_max', 'y_min', 'y_max'
+
+        Returns:
+            Dict with same keys, but with 2.5% margin from each end
+        """
+        safe_limits = {}
+        for axis in ['x', 'y']:
+            min_val = limits[f'{axis}_min']
+            max_val = limits[f'{axis}_max']
+            total_range = max_val - min_val
+            margin = total_range * 0.025  # 2.5% margin
+            safe_limits[f'{axis}_min'] = min_val + margin
+            safe_limits[f'{axis}_max'] = max_val - margin
+        return safe_limits
+
+    def _apply_detected_limits(self, limits: dict):
+        """Apply detected limits to the UI range fields."""
+        self._range_enable_chk.setChecked(True)
+        self._x_min_spin.setValue(limits['x_min'])
+        self._x_max_spin.setValue(limits['x_max'])
+        self._y_min_spin.setValue(limits['y_min'])
+        self._y_max_spin.setValue(limits['y_max'])
+
+
+class AutoDetectWorker(QtCore.QObject):
+    """Worker for auto-detecting stage limits in background thread."""
+
+    started = QtCore.pyqtSignal()
+    progress = QtCore.pyqtSignal(float, str)  # progress (0-100), status message
+    finished = QtCore.pyqtSignal(dict)  # detected limits
+    error = QtCore.pyqtSignal(str)  # error message
+
+    def __init__(self, stage):
+        super().__init__()
+        self._stage = stage
+        self._cancelled = False
+
+    def run(self):
+        """Execute the auto-detection algorithm."""
+        try:
+            self.started.emit()
+            limits = self._detect_limits()
+            if not self._cancelled:
+                self.finished.emit(limits)
+        except Exception as e:
+            if not self._cancelled:
+                self.error.emit(str(e))
+
+    def _detect_limits(self) -> dict:
+        """Detect stage limits by moving to each direction until failure."""
+        # Get current position as starting point
+        start_x, start_y = self._stage.get_position()
+        logger.info("Starting auto-detection from position: x=%s, y=%s", start_x, start_y)
+
+        limits = {
+            'x_min': None,
+            'x_max': None,
+            'y_min': None,
+            'y_max': None
+        }
+
+        # Detect X limits
+        if not self._cancelled:
+            self.progress.emit(10, "Detecting X negative limit...")
+            limits['x_min'] = self._detect_axis_limit('x', -1, start_x, start_y)
+
+        if not self._cancelled:
+            self.progress.emit(30, "Detecting X positive limit...")
+            limits['x_max'] = self._detect_axis_limit('x', 1, start_x, start_y)
+
+        # Detect Y limits
+        if not self._cancelled:
+            self.progress.emit(50, "Detecting Y negative limit...")
+            limits['y_min'] = self._detect_axis_limit('y', -1, start_x, start_y)
+
+        if not self._cancelled:
+            self.progress.emit(70, "Detecting Y positive limit...")
+            limits['y_max'] = self._detect_axis_limit('y', 1, start_x, start_y)
+
+        if not self._cancelled:
+            self.progress.emit(90, "Returning to start position...")
+            self._safe_move_to(start_x, start_y)
+
+        self.progress.emit(100, "Detection complete")
+        return limits
+
+    def _detect_axis_limit(self, axis: str, direction: int, start_x: float, start_y: float) -> float:
+        """Detect limit for a single axis in a given direction.
+
+        Args:
+            axis: 'x' or 'y'
+            direction: -1 for negative, 1 for positive
+            start_x, start_y: Starting position
+
+        Returns:
+            The limit position in steps
+        """
+        # Initial coarse search parameters
+        coarse_step = 1000.0  # Initial step size in steps
+        max_coarse_steps = 50  # Maximum coarse steps before giving up
+
+        current_x, current_y = self._stage.get_position()
+        last_successful_position = current_x if axis == 'x' else current_y
+
+        # Coarse search: move in increasingly larger steps until failure
+        for i in range(max_coarse_steps):
+            if self._cancelled:
+                break
+
+            try:
+                # Calculate new position
+                if axis == 'x':
+                    new_x = current_x + (direction * coarse_step)
+                    new_y = current_y
+                else:
+                    new_x = current_x
+                    new_y = current_y + (direction * coarse_step)
+
+                # Try to move
+                self._safe_move_to(new_x, new_y)
+                current_x, current_y = self._stage.get_position()
+                last_successful_position = current_x if axis == 'x' else current_y
+
+                # Update progress
+                progress = 10 + (i / max_coarse_steps) * 20
+                self.progress.emit(progress, f"Coarse search {axis.upper()} direction {direction:+d}: step {i+1}/{max_coarse_steps}")
+
+            except Exception as e:
+                # Movement failed - we found the limit
+                logger.info("Coarse search failed at step %d: %s", i, e)
+                break
+
+        # Fine search: binary search to find precise limit
+        # Start from last successful position
+        lower_bound = last_successful_position
+        upper_bound = last_successful_position + (direction * coarse_step * 2)
+
+        # Perform binary search
+        for i in range(10):  # 10 iterations of binary search
+            if self._cancelled:
+                break
+
+            mid = (lower_bound + upper_bound) / 2
+
+            try:
+                if axis == 'x':
+                    self._safe_move_to(mid, current_y)
+                else:
+                    self._safe_move_to(current_x, mid)
+
+                # Movement successful - update lower bound
+                lower_bound = mid
+                current_x, current_y = self._stage.get_position()
+
+            except Exception:
+                # Movement failed - update upper bound
+                upper_bound = mid
+
+            # Update progress
+            progress = 40 + (i / 10) * 10
+            self.progress.emit(progress, f"Fine search {axis.upper()} direction {direction:+d}: iteration {i+1}/10")
+
+        # Return the last successful position as the limit
+        return lower_bound
+
+    def _safe_move_to(self, x: float, y: float):
+        """Safely move to position with timeout and error handling."""
+        try:
+            self._stage.move_to(x, y)
+            # Small delay to allow movement to complete
+            time.sleep(0.1)
+        except Exception as e:
+            # Check if it's a timeout or movement error
+            error_msg = str(e).lower()
+            if 'timeout' in error_msg or 'error' in error_msg or 'fail' in error_msg:
+                raise
+            # Some errors might be acceptable, log and continue
+            logger.warning("Movement warning: %s", e)
