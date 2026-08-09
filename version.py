@@ -6,7 +6,7 @@ Import this module anywhere to access the canonical version string:
 """
 
 APP_NAME = "Microscope Controller"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.2"
 
 # Human-readable combined string, e.g. "Microscope Controller 1.0.0"
 APP_VERSION_STRING = f"{APP_NAME} {APP_VERSION}"

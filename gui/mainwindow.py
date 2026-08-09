@@ -146,6 +146,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # Paths supplied on the command line (or defaults)
       self._config_path = config_path
+      try:
+         self._config_filename = Path(config_path).name  # Store config filename for title
+      except Exception:
+         self._config_filename = "config"  # Fallback if path processing fails
+      self._experiment_filename: str | None = None  # Store experiment filename for title
 
       # Current detector selection coming from MultiAxisTab.
       # None => no filtering (show all); set[str] => show only these ids.
@@ -223,12 +228,26 @@ class MainWindow(QtWidgets.QMainWindow):
       self._capture_original_layout()
       self._load_layout(kind="default")
       
-      # Start stage position update timer (will only update when multiaxis not running)
+      # Update window title with loaded filenames
+      self._update_window_title()
+
+   def _update_window_title(self):
+      """Update window title to show config and experiment filenames."""
       try:
-         logger.info("Initializing stage position timer")
-      except Exception:
-         pass
-      self._start_stage_position_timer()
+         title_parts = ["Microscope Control System"]
+         
+         # Add config filename if available
+         if hasattr(self, '_config_filename') and self._config_filename:
+            title_parts.append(f": {self._config_filename}")
+         
+         # Add experiment filename if available
+         if hasattr(self, '_experiment_filename') and self._experiment_filename:
+            title_parts.append(f": {self._experiment_filename}")
+         
+         self.setWindowTitle("".join(title_parts))
+         logger.info("Window title updated: %s", "".join(title_parts))
+      except Exception as e:
+         logger.warning("Failed to update window title: %s", e)
 
 
    def _set_measurement_state(self, state: str, kind: str | None = None) -> None:
@@ -3984,7 +4003,11 @@ class MainWindow(QtWidgets.QMainWindow):
       self._release_current_devices()
 
       self._config_path = path
-
+      try:
+         self._config_filename = Path(path).name  # Update config filename
+      except Exception:
+         self._config_filename = "config"  # Fallback if path processing fails
+      
       # Keep child tabs in sync so new axis dialogs use the selected config.
       try:
          self.multi_tab._config_path = path
@@ -3994,6 +4017,9 @@ class MainWindow(QtWidgets.QMainWindow):
          self.multiviewctl_tab._config_path = path
       except Exception:
          pass
+
+      # Update window title with new config filename
+      self._update_window_title()
 
       # Reset the plot legend / registered detectors so stale curves from the
       # previous hardware config do not linger before re-registering below.
@@ -4046,6 +4072,13 @@ class MainWindow(QtWidgets.QMainWindow):
       )
       if not path:
          return
+
+      # Update experiment filename and window title
+      try:
+         self._experiment_filename = Path(path).name
+      except Exception:
+         self._experiment_filename = "experiment"  # Fallback if path processing fails
+      self._update_window_title()
 
       with open(path) as f:
          data = json.load(f)
@@ -4152,6 +4185,13 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception as exc:
          QtWidgets.QMessageBox.warning(self, "Load Experiment", f"Could not read {path}:\n{exc}")
          return
+
+      # Update experiment filename and window title
+      try:
+         self._experiment_filename = Path(path).name
+      except Exception:
+         self._experiment_filename = "experiment"  # Fallback if path processing fails
+      self._update_window_title()
 
       # Reuse the same restore logic as the interactive dialog.
       # Patch a minimal file-dialog-free path by borrowing the body of
