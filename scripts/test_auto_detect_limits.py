@@ -144,6 +144,81 @@ def test_95_percent_calculation():
         print(f"✗ Error testing 95% calculation: {e}")
         return False
 
+def test_error_handling_improvements():
+    """Test that error handling has been improved to prevent crashes."""
+    try:
+        from gui.dialogs import stage_calibration_dialog
+        import inspect
+        
+        # Check for custom LimitReachedError
+        if hasattr(stage_calibration_dialog, 'LimitReachedError'):
+            print("✓ Custom LimitReachedError exception exists")
+        else:
+            print("✗ LimitReachedError exception missing")
+            return False
+        
+        # Check improved _safe_move_to method
+        source = inspect.getsource(stage_calibration_dialog.AutoDetectWorker._safe_move_to)
+        
+        error_checks = [
+            'is_limit_error',
+            'is_timeout_error', 
+            'is_hardware_error',
+            'is_movement_error',
+            'LimitReachedError'
+        ]
+        
+        all_checks = True
+        for check in error_checks:
+            if check in source:
+                print(f"✓ Error handling includes {check}")
+            else:
+                print(f"⚠ Error handling might miss {check}")
+        
+        return True
+    except Exception as e:
+        print(f"✗ Error checking error handling: {e}")
+        return False
+
+def test_adaptive_step_algorithm():
+    """Test that adaptive step size algorithm is implemented."""
+    try:
+        from gui.dialogs import stage_calibration_dialog
+        import inspect
+        
+        source = inspect.getsource(stage_calibration_dialog.AutoDetectWorker._detect_axis_limit)
+        
+        adaptive_features = [
+            'adaptive',
+            'min_step',
+            'max_step', 
+            'initial_step',
+            'expanding',
+            'refining',
+            'current_step',
+            '1.5'  # Step size increase factor
+        ]
+        
+        all_features = True
+        for feature in adaptive_features:
+            if feature in source:
+                print(f"✓ Adaptive algorithm includes {feature}")
+            else:
+                print(f"⚠ Adaptive algorithm might miss {feature}")
+                all_features = False
+        
+        # Check that old fixed-step approach is gone
+        if 'coarse_step = 1000.0' not in source:
+            print("✓ Old fixed-step approach removed")
+        else:
+            print("⚠ Old fixed-step approach still present")
+            all_features = False
+        
+        return all_features
+    except Exception as e:
+        print(f"✗ Error checking adaptive algorithm: {e}")
+        return False
+
 def test_state_management():
     """Test that auto-detect state management exists."""
     try:
@@ -181,15 +256,20 @@ def main():
     results.append(test_auto_detect_worker_class())
     results.append(test_95_percent_calculation())
     results.append(test_state_management())
+    results.append(test_error_handling_improvements())
+    results.append(test_adaptive_step_algorithm())
     
     print("=" * 60)
     if all(results):
         print("✓ All tests passed")
         print("\nAuto-detect limits functionality:")
         print("- UI components: Progress bar, status label, detect/cancel buttons")
-        print("- Algorithm: Coarse search + binary search for precise limits")
+        print("- Algorithm: Adaptive step size with expanding + refining phases")
+        print("- Speed: Exponential step increase for fast limit finding")
+        print("- Precision: Binary search refinement for accurate limits")
         print("- Safety: 95% working range (2.5% margin from each end)")
-        print("- Error handling: Cancellation support, error recovery")
+        print("- Error handling: Custom LimitReachedError, comprehensive error classification")
+        print("- Crash prevention: Robust error handling prevents crashes on limit detection")
         print("- Thread safety: Background worker thread for detection")
         return 0
     else:

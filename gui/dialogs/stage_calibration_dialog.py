@@ -42,6 +42,11 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 logger = logging.getLogger(__name__)
 
 
+class LimitReachedError(Exception):
+    """Custom exception for when stage limit is reached."""
+    pass
+
+
 class CollapsibleGroupBox(QtWidgets.QGroupBox):
     """A QGroupBox that can be collapsed/expanded with a toggle button."""
     
@@ -1250,7 +1255,7 @@ class AutoDetectWorker(QtCore.QObject):
         return limits
 
     def _detect_axis_limit(self, axis: str, direction: int, start_x: float, start_y: float) -> float:
-        """Detect limit for a single axis in a given direction.
+        """Detect limit for a single axis in a given direction using adaptive step size.
 
         Args:
             axis: 'x' or 'y'
@@ -1260,84 +1265,152 @@ class AutoDetectWorker(QtCore.QObject):
         Returns:
             The limit position in steps
         """
-        # Initial coarse search parameters
-        coarse_step = 1000.0  # Initial step size in steps
-        max_coarse_steps = 50  # Maximum coarse steps before giving up
-
+        # Adaptive search parameters
+        min_step = 10.0      # Minimum step size for precision
+        max_step = 5000.0    # Maximum step size for speed
+        initial_step = 500.0 # Starting step size
+        
         current_x, current_y = self._stage.get_position()
         last_successful_position = current_x if axis == 'x' else current_y
-
-        # Coarse search: move in increasingly larger steps until failure
-        for i in range(max_coarse_steps):
-            if self._cancelled:
-                break
-
-            try:
-                # Calculate new position
-                if axis == 'x':
-                    new_x = current_x + (direction * coarse_step)
-                    new_y = current_y
-                else:
-                    new_x = current_x
-                    new_y = current_y + (direction * coarse_step)
-
-                # Try to move
-                self._safe_move_to(new_x, new_y)
-                current_x, current_y = self._stage.get_position()
-                last_successful_position = current_x if axis == 'x' else current_y
-
-                # Update progress
-                progress = 10 + (i / max_coarse_steps) * 20
-                self.progress.emit(progress, f"Coarse search {axis.upper()} direction {direction:+d}: step {i+1}/{max_coarse_steps}")
-
-            except Exception as e:
-                # Movement failed - we found the limit
-                logger.info("Coarse search failed at step %d: %s", i, e)
-                break
-
-        # Fine search: binary search to find precise limit
-        # Start from last successful position
+        current_step = initial_step
+        
+        # Adaptive search: exponentially increase step size until failure, then binary search
+        phase = "expanding"  # "expanding" or "refining"
         lower_bound = last_successful_position
-        upper_bound = last_successful_position + (direction * coarse_step * 2)
-
-        # Perform binary search
-        for i in range(10):  # 10 iterations of binary search
-            if self._cancelled:
-                break
-
-            mid = (lower_bound + upper_bound) / 2
-
+        upper_bound = None
+        
+        max_iterations = 100  # Safety limit
+        iteration = 0
+        
+        while iteration < max_iterations and not self._cancelled:
+            iteration += 1
+            
             try:
-                if axis == 'x':
-                    self._safe_move_to(mid, current_y)
+                # Calculate new position based on current phase
+                if phase == "expanding":
+                    # Exponentially increase step size for speed
+                    step = current_step
+                    if axis == 'x':
+                        new_x = current_x + (direction * step)
+                        new_y = current_y
+                    else:
+                        new_x = current_x
+                        new_y = current_y + (direction * step)
                 else:
-                    self._safe_move_to(current_x, mid)
+                    # Binary search for precision
+                    mid = (lower_bound + upper_bound) / 2
+                    if axis == 'x':
+                        new_x = mid
+                        new_y = current_y
+                    else:
+                        new_x = current_x
+                        new_y = mid
 
-                # Movement successful - update lower bound
-                lower_bound = mid
-                current_x, current_y = self._stage.get_position()
+                # Try to move with comprehensive error handling
+                self._safe_move_to(new_x, new_y)
+                new_x, new_y = self._stage.get_position()
+                current_x, current_y = new_x, new_y
+                last_successful_position = current_x if axis == 'x' else current_y
+                
+                if phase == "expanding":
+                    # Movement successful - increase step size for next iteration
+                    lower_bound = last_successful_position
+                    current_step = min(current_step * 1.5, max_step)  # Increase by 50%, cap at max_step
+                    
+                    # Update progress
+                    progress = 10 + (iteration / max_iterations) * 20
+                    self.progress.emit(progress, f"Expanding search {axis.upper()} direction {direction:+d}: step {iteration} (step size: {current_step:.0f})")
+                else:
+                    # Movement successful in refining phase - update lower bound
+                    lower_bound = mid
+                    
+                    # Update progress
+                    progress = 50 + (iteration / max_iterations) * 20
+                    self.progress.emit(progress, f"Refining {axis.upper()} direction {direction:+d}: iteration {iteration}")
 
-            except Exception:
-                # Movement failed - update upper bound
-                upper_bound = mid
-
-            # Update progress
-            progress = 40 + (i / 10) * 10
-            self.progress.emit(progress, f"Fine search {axis.upper()} direction {direction:+d}: iteration {i+1}/10")
-
+            except (LimitReachedError, Exception) as e:
+                # Movement failed - handle based on phase
+                error_msg = str(e).lower()
+                logger.info("Movement failed at iteration %d (phase %s): %s", iteration, phase, e)
+                
+                # Check if it's our custom limit error or a regular exception
+                is_limit_error = isinstance(e, LimitReachedError) or any(keyword in error_msg for keyword in 
+                    ['limit', 'boundary', 'range', 'out of', 'exceed', 'maximum', 'minimum', 'timeout'])
+                
+                if phase == "expanding":
+                    # First failure - switch to binary search mode
+                    phase = "refining"
+                    upper_bound = last_successful_position + (direction * current_step)
+                    current_step = min_step  # Use minimum step for precision
+                    logger.info("Switching to refining phase. Bounds: [%s, %s]", lower_bound, upper_bound)
+                else:
+                    # Failure in refining phase - update upper bound
+                    upper_bound = (lower_bound + upper_bound) / 2
+                    
+                    # Check if we've converged sufficiently
+                    if abs(upper_bound - lower_bound) < min_step:
+                        logger.info("Converged to within min_step: %s", abs(upper_bound - lower_bound))
+                        break
+                
+                # Small delay to let hardware recover
+                time.sleep(0.2)
+        
         # Return the last successful position as the limit
-        return lower_bound
+        logger.info("Final limit for %s direction %d: %s", axis, direction, last_successful_position)
+        return last_successful_position
 
     def _safe_move_to(self, x: float, y: float):
-        """Safely move to position with timeout and error handling."""
+        """Safely move to position with comprehensive error handling and crash prevention."""
         try:
+            # Log the movement attempt
+            logger.debug("Attempting move to: x=%s, y=%s", x, y)
+            
+            # Perform the movement
             self._stage.move_to(x, y)
-            # Small delay to allow movement to complete
-            time.sleep(0.1)
+            
+            # Allow time for movement to complete
+            time.sleep(0.2)
+            
+            # Verify the movement was successful by reading position
+            try:
+                current_x, current_y = self._stage.get_position()
+                logger.debug("Current position after move: x=%s, y=%s", current_x, current_y)
+            except Exception as pos_error:
+                logger.warning("Could not verify position after move: %s", pos_error)
+                
         except Exception as e:
-            # Check if it's a timeout or movement error
+            # Comprehensive error classification
             error_msg = str(e).lower()
-            if 'timeout' in error_msg or 'error' in error_msg or 'fail' in error_msg:
-                raise
-            # Some errors might be acceptable, log and continue
-            logger.warning("Movement warning: %s", e)
+            logger.warning("Movement failed for x=%s, y=%s: %s", x, y, e)
+            
+            # Classify error types
+            is_limit_error = any(keyword in error_msg for keyword in 
+                               ['limit', 'boundary', 'range', 'out of', 'exceed', 'maximum', 'minimum'])
+            is_timeout_error = any(keyword in error_msg for keyword in 
+                                 ['timeout', 'timed out', 'time out'])
+            is_hardware_error = any(keyword in error_msg for keyword in 
+                                  ['hardware', 'device', 'connection', 'disconnected', 'not connected'])
+            is_movement_error = any(keyword in error_msg for keyword in 
+                                  ['move', 'movement', 'position', 'step'])
+            
+            # Handle different error types
+            if is_limit_error:
+                # This is expected when hitting limits - treat as limit reached
+                logger.info("Limit reached (expected): %s", e)
+                raise LimitReachedError(f"Limit reached: {e}")
+            elif is_timeout_error:
+                # Timeout might indicate a limit or communication issue
+                logger.info("Movement timeout (might indicate limit): %s", e)
+                raise LimitReachedError(f"Movement timeout (limit): {e}")
+            elif is_hardware_error:
+                # Hardware errors should be raised for upper level handling
+                logger.error("Hardware error during movement: %s", e)
+                raise RuntimeError(f"Hardware error: {e}")
+            elif is_movement_error:
+                # General movement errors - likely limit related
+                logger.info("Movement error (likely limit): %s", e)
+                raise LimitReachedError(f"Movement error (limit): {e}")
+            else:
+                # Unknown errors - log and raise
+                logger.error("Unknown movement error: %s", e)
+                raise RuntimeError(f"Unknown movement error: {e}")
