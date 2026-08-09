@@ -56,6 +56,7 @@ def test_ui_uses_collapsible():
         
         # Check that standard QGroupBox is not used for main sections
         main_sections = [
+            'Instructions',
             'Current Stage Position',
             'Step 1 — Set Reference Point',
             'Step 2 — Enter Physical Distance Moved',
@@ -100,6 +101,12 @@ def test_initial_collapse_states():
             print("✓ Some sections are initially expanded")
         else:
             print("⚠ No sections are initially expanded")
+        
+        # Check specifically for Instructions being collapsed
+        if 'Instructions' in source and 'initially_collapsed=True' in source:
+            print("✓ Instructions section is initially collapsed")
+        else:
+            print("⚠ Instructions section might not be initially collapsed")
         
         return True
     except Exception as e:
@@ -167,7 +174,7 @@ def main():
         print("- Better for small screens with collapsible sections")
         print("\nInitial states:")
         print("- Expanded: Current Stage Position, Step 1 (Set Reference), Step 2 (Enter Distance)")
-        print("- Collapsed: Scaling preview, Travel Range, Auto-Detect (advanced features)")
+        print("- Collapsed: Instructions, Scaling preview, Travel Range, Auto-Detect (advanced features)")
         return 0
     else:
         print("✗ Some tests failed")

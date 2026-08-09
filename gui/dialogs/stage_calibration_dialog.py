@@ -209,7 +209,11 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         root.addWidget(status_banner)
         root.addSpacing(6)
 
-        # ── Instructions ──────────────────────────────────────────────
+        # ── Instructions (collapsible) ──────────────────────────────────────
+        info_grp = CollapsibleGroupBox("Instructions", initially_collapsed=True)
+        info_lay = QtWidgets.QVBoxLayout()
+        info_grp.setContentLayout(info_lay)
+        
         info = QtWidgets.QLabel(
             "<b>How it works:</b><br>"
             "1. Click <i>Set Reference Point</i> to record the current stage position.<br>"
@@ -219,7 +223,8 @@ class StageCalibrationDialog(QtWidgets.QDialog):
             "written to the device config."
         )
         info.setWordWrap(True)
-        root.addWidget(info)
+        info_lay.addWidget(info)
+        root.addWidget(info_grp)
         root.addSpacing(8)
 
         # ── Live position display ──────────────────────────────────────
@@ -369,6 +374,44 @@ class StageCalibrationDialog(QtWidgets.QDialog):
         )
         hint.setWordWrap(True)
         range_vlay.addWidget(hint)
+
+        # ── Auto-detect section ─────────────────────────────────────────
+        self._auto_detect_grp = CollapsibleGroupBox("Auto-Detect Travel Limits", initially_collapsed=True)
+        auto_lay = QtWidgets.QVBoxLayout()
+        self._auto_detect_grp.setContentLayout(auto_lay)
+
+        auto_info = QtWidgets.QLabel(
+            "<small>Automatically detect stage limits by moving to each direction "
+            "until unable to reach further. After detection, working range is set "
+            "to 95% of total range (2.5% safety margin from each end).</small>"
+        )
+        auto_info.setWordWrap(True)
+        auto_lay.addWidget(auto_info)
+
+        # Progress bar
+        self._auto_detect_progress_bar = QtWidgets.QProgressBar()
+        self._auto_detect_progress_bar.setVisible(False)
+        self._auto_detect_progress_bar.setRange(0, 100)
+        auto_lay.addWidget(self._auto_detect_progress_bar)
+
+        # Status label
+        self._auto_detect_status_label = QtWidgets.QLabel("Ready")
+        self._auto_detect_status_label.setVisible(False)
+        auto_lay.addWidget(self._auto_detect_status_label)
+
+        # Buttons
+        auto_btn_lay = QtWidgets.QHBoxLayout()
+        self._auto_detect_btn = QtWidgets.QPushButton("Auto Detect Limits")
+        self._auto_detect_btn.clicked.connect(self._on_auto_detect_limits)
+        auto_btn_lay.addWidget(self._auto_detect_btn)
+
+        self._auto_detect_cancel_btn = QtWidgets.QPushButton("Cancel")
+        self._auto_detect_cancel_btn.setVisible(False)
+        self._auto_detect_cancel_btn.clicked.connect(self._on_cancel_auto_detect)
+        auto_btn_lay.addWidget(self._auto_detect_cancel_btn)
+
+        auto_lay.addLayout(auto_btn_lay)
+        range_vlay.addWidget(self._auto_detect_grp)
 
         self._x_min_btn.clicked.connect(lambda: self._capture_current(self._x_min_spin, "x"))
         self._x_max_btn.clicked.connect(lambda: self._capture_current(self._x_max_spin, "x"))
