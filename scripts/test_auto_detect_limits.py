@@ -164,11 +164,13 @@ def test_error_handling_improvements():
             'is_limit_error',
             'is_timeout_error', 
             'is_hardware_error',
-            'is_communication_error',  # New communication error handling
+            'is_communication_error',
+            'is_write_timeout',  # New write timeout handling
             'is_movement_error',
             'LimitReachedError',
-            'retry_count',  # New retry mechanism
-            'attempt'  # Retry attempt tracking
+            'retry_count',
+            'attempt',
+            'retry_delay'  # New adaptive retry delay
         ]
         
         all_checks = True
@@ -178,13 +180,35 @@ def test_error_handling_improvements():
             else:
                 print(f"⚠ Error handling might miss {check}")
         
-        # Check for communication error specific keywords
-        comm_keywords = ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial']
-        comm_found = any(keyword in source for keyword in comm_keywords)
-        if comm_found:
-            print("✓ Communication error handling includes specific keywords")
+        # Check for serial error specific keywords
+        serial_keywords = ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout', 'serialtimeout']
+        serial_found = any(keyword in source for keyword in serial_keywords)
+        if serial_found:
+            print("✓ Serial communication error handling includes specific keywords")
         else:
-            print("⚠ Communication error handling might miss specific keywords")
+            print("⚠ Serial communication error handling might miss specific keywords")
+        
+        # Check for increased retry count
+        if 'retry_count: int = 4' in source:
+            print("✓ Retry count increased to 4 for better serial error handling")
+        elif 'retry_count = 4' in source:
+            print("✓ Retry count increased to 4 for better serial error handling")
+        else:
+            print("⚠ Retry count might not be increased (checking current value)")
+            # Try to find the retry count value
+            import re
+            retry_match = re.search(r'retry_count[:\s]*=\s*(\d+)', source)
+            if retry_match:
+                retry_value = retry_match.group(1)
+                print(f"  Current retry count: {retry_value}")
+            else:
+                print("  Could not determine retry count")
+        
+        # Check for adaptive retry delays
+        if 'retry_delay' in source and '2.0' in source:
+            print("✓ Adaptive retry delays implemented (including 2.0s for write timeout)")
+        else:
+            print("⚠ Adaptive retry delays might not be fully implemented")
         
         return True
     except Exception as e:
@@ -280,8 +304,10 @@ def main():
         print("- Precision: Binary search refinement for accurate limits")
         print("- Safety: 95% working range (2.5% margin from each end)")
         print("- Error handling: Custom LimitReachedError, comprehensive error classification")
-        print("- Communication errors: Special handling for protocol errors (e.g., 'expected reply with command gets; got gts')")
-        print("- Retry mechanism: Automatic retry for temporary errors (2 retries with delays)")
+        print("- Serial errors: Enhanced handling for SerialTimeoutException and write timeout")
+        print("- Retry mechanism: Automatic retry for temporary errors (4 retries with adaptive delays)")
+        print("- Adaptive delays: 2.0s for write timeout, 1.5s for timeout, 1.0s for communication")
+        print("- Protocol errors: Special handling for Standa protocol errors (e.g., 'expected reply with command gets; got gts')")
         print("- Crash prevention: Robust error handling prevents crashes on limit detection")
         print("- Thread safety: Background worker thread for detection")
         return 0

@@ -1359,12 +1359,12 @@ class AutoDetectWorker(QtCore.QObject):
         logger.info("Final limit for %s direction %d: %s", axis, direction, last_successful_position)
         return last_successful_position
 
-    def _safe_move_to(self, x: float, y: float, retry_count: int = 2):
-        """Safely move to position with comprehensive error handling, crash prevention, and retry logic.
+    def _safe_move_to(self, x: float, y: float, retry_count: int = 4):
+        """Safely move to position with comprehensive error handling, crash prevention, and enhanced retry logic.
         
         Args:
             x, y: Target position
-            retry_count: Number of retries for temporary errors
+            retry_count: Number of retries for temporary errors (increased for serial communication issues)
         """
         for attempt in range(retry_count + 1):
             try:
@@ -1374,8 +1374,8 @@ class AutoDetectWorker(QtCore.QObject):
                 # Perform the movement
                 self._stage.move_to(x, y)
                 
-                # Allow time for movement to complete
-                time.sleep(0.2)
+                # Allow time for movement to complete (longer for serial devices)
+                time.sleep(0.3)
                 
                 # Verify the movement was successful by reading position
                 try:
@@ -1397,38 +1397,61 @@ class AutoDetectWorker(QtCore.QObject):
                 is_limit_error = any(keyword in error_msg for keyword in 
                                    ['limit', 'boundary', 'range', 'out of', 'exceed', 'maximum', 'minimum'])
                 is_timeout_error = any(keyword in error_msg for keyword in 
-                                     ['timeout', 'timed out', 'time out'])
+                                     ['timeout', 'timed out', 'time out', 'serialtimeout'])
                 is_hardware_error = any(keyword in error_msg for keyword in 
                                       ['hardware', 'device', 'connection', 'disconnected', 'not connected'])
                 is_communication_error = any(keyword in error_msg for keyword in 
-                                          ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial'])
+                                          ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout'])
+                is_write_timeout = 'write timeout' in error_msg or 'serialtimeout' in error_msg
                 is_movement_error = any(keyword in error_msg for keyword in 
                                       ['move', 'movement', 'position', 'step'])
+                
+                # Calculate retry delay based on error type
+                if is_write_timeout:
+                    retry_delay = 2.0  # Longer delay for write timeout
+                elif is_communication_error:
+                    retry_delay = 1.0  # Medium delay for communication errors
+                elif is_timeout_error:
+                    retry_delay = 1.5  # Medium-long delay for timeout
+                else:
+                    retry_delay = 0.5  # Short delay for other errors
                 
                 # Handle different error types
                 if is_limit_error:
                     # This is expected when hitting limits - treat as limit reached
                     logger.info("Limit reached (expected): %s", e)
                     raise LimitReachedError(f"Limit reached: {e}")
-                elif is_timeout_error:
-                    # Timeout might indicate a limit or communication issue
+                elif is_write_timeout:
+                    # Serial write timeout - often indicates hardware busy or communication stress
                     if attempt < retry_count:
-                        logger.info("Timeout detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
-                        time.sleep(0.5)  # Wait before retry
+                        logger.info("Serial write timeout detected, retrying with longer delay... (attempt %d/%d, delay: %.1fs)", 
+                                   attempt + 1, retry_count + 1, retry_delay)
+                        time.sleep(retry_delay)
                         continue
                     else:
-                        logger.info("Movement timeout after retries (might indicate limit): %s", e)
-                        raise LimitReachedError(f"Movement timeout (limit): {e}")
+                        logger.info("Serial write timeout after retries (likely limit or hardware stress): %s", e)
+                        raise LimitReachedError(f"Serial write timeout (limit/hardware stress): {e}")
                 elif is_communication_error:
                     # Communication errors - might be temporary or indicate limit stress
                     if attempt < retry_count:
-                        logger.info("Communication error detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
-                        time.sleep(0.5)  # Wait before retry
+                        logger.info("Communication error detected, retrying... (attempt %d/%d, delay: %.1fs)", 
+                                   attempt + 1, retry_count + 1, retry_delay)
+                        time.sleep(retry_delay)
                         continue
                     else:
                         # After retries, treat as possible limit error
                         logger.info("Communication error after retries (might indicate limit stress): %s", e)
                         raise LimitReachedError(f"Communication error (possible limit): {e}")
+                elif is_timeout_error:
+                    # Timeout might indicate a limit or communication issue
+                    if attempt < retry_count:
+                        logger.info("Timeout detected, retrying... (attempt %d/%d, delay: %.1fs)", 
+                                   attempt + 1, retry_count + 1, retry_delay)
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.info("Movement timeout after retries (might indicate limit): %s", e)
+                        raise LimitReachedError(f"Movement timeout (limit): {e}")
                 elif is_hardware_error:
                     # Hardware errors should be raised for upper level handling
                     logger.error("Hardware error during movement: %s", e)
@@ -1436,8 +1459,9 @@ class AutoDetectWorker(QtCore.QObject):
                 elif is_movement_error:
                     # General movement errors - likely limit related
                     if attempt < retry_count:
-                        logger.info("Movement error detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
-                        time.sleep(0.3)  # Wait before retry
+                        logger.info("Movement error detected, retrying... (attempt %d/%d, delay: %.1fs)", 
+                                   attempt + 1, retry_count + 1, retry_delay)
+                        time.sleep(retry_delay)
                         continue
                     else:
                         logger.info("Movement error after retries (likely limit): %s", e)
