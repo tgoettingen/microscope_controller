@@ -1359,58 +1359,94 @@ class AutoDetectWorker(QtCore.QObject):
         logger.info("Final limit for %s direction %d: %s", axis, direction, last_successful_position)
         return last_successful_position
 
-    def _safe_move_to(self, x: float, y: float):
-        """Safely move to position with comprehensive error handling and crash prevention."""
-        try:
-            # Log the movement attempt
-            logger.debug("Attempting move to: x=%s, y=%s", x, y)
-            
-            # Perform the movement
-            self._stage.move_to(x, y)
-            
-            # Allow time for movement to complete
-            time.sleep(0.2)
-            
-            # Verify the movement was successful by reading position
+    def _safe_move_to(self, x: float, y: float, retry_count: int = 2):
+        """Safely move to position with comprehensive error handling, crash prevention, and retry logic.
+        
+        Args:
+            x, y: Target position
+            retry_count: Number of retries for temporary errors
+        """
+        for attempt in range(retry_count + 1):
             try:
-                current_x, current_y = self._stage.get_position()
-                logger.debug("Current position after move: x=%s, y=%s", current_x, current_y)
-            except Exception as pos_error:
-                logger.warning("Could not verify position after move: %s", pos_error)
+                # Log the movement attempt
+                logger.debug("Attempting move to: x=%s, y=%s (attempt %d/%d)", x, y, attempt + 1, retry_count + 1)
                 
-        except Exception as e:
-            # Comprehensive error classification
-            error_msg = str(e).lower()
-            logger.warning("Movement failed for x=%s, y=%s: %s", x, y, e)
-            
-            # Classify error types
-            is_limit_error = any(keyword in error_msg for keyword in 
-                               ['limit', 'boundary', 'range', 'out of', 'exceed', 'maximum', 'minimum'])
-            is_timeout_error = any(keyword in error_msg for keyword in 
-                                 ['timeout', 'timed out', 'time out'])
-            is_hardware_error = any(keyword in error_msg for keyword in 
-                                  ['hardware', 'device', 'connection', 'disconnected', 'not connected'])
-            is_movement_error = any(keyword in error_msg for keyword in 
-                                  ['move', 'movement', 'position', 'step'])
-            
-            # Handle different error types
-            if is_limit_error:
-                # This is expected when hitting limits - treat as limit reached
-                logger.info("Limit reached (expected): %s", e)
-                raise LimitReachedError(f"Limit reached: {e}")
-            elif is_timeout_error:
-                # Timeout might indicate a limit or communication issue
-                logger.info("Movement timeout (might indicate limit): %s", e)
-                raise LimitReachedError(f"Movement timeout (limit): {e}")
-            elif is_hardware_error:
-                # Hardware errors should be raised for upper level handling
-                logger.error("Hardware error during movement: %s", e)
-                raise RuntimeError(f"Hardware error: {e}")
-            elif is_movement_error:
-                # General movement errors - likely limit related
-                logger.info("Movement error (likely limit): %s", e)
-                raise LimitReachedError(f"Movement error (limit): {e}")
-            else:
-                # Unknown errors - log and raise
-                logger.error("Unknown movement error: %s", e)
-                raise RuntimeError(f"Unknown movement error: {e}")
+                # Perform the movement
+                self._stage.move_to(x, y)
+                
+                # Allow time for movement to complete
+                time.sleep(0.2)
+                
+                # Verify the movement was successful by reading position
+                try:
+                    current_x, current_y = self._stage.get_position()
+                    logger.debug("Current position after move: x=%s, y=%s", current_x, current_y)
+                    # If we got here, movement was successful
+                    return
+                except Exception as pos_error:
+                    logger.warning("Could not verify position after move: %s", pos_error)
+                    # Position verification failed, but movement might have succeeded
+                    # Continue and let the next iteration handle it if needed
+                    
+            except Exception as e:
+                # Comprehensive error classification
+                error_msg = str(e).lower()
+                logger.warning("Movement failed for x=%s, y=%s (attempt %d): %s", x, y, attempt + 1, e)
+                
+                # Classify error types
+                is_limit_error = any(keyword in error_msg for keyword in 
+                                   ['limit', 'boundary', 'range', 'out of', 'exceed', 'maximum', 'minimum'])
+                is_timeout_error = any(keyword in error_msg for keyword in 
+                                     ['timeout', 'timed out', 'time out'])
+                is_hardware_error = any(keyword in error_msg for keyword in 
+                                      ['hardware', 'device', 'connection', 'disconnected', 'not connected'])
+                is_communication_error = any(keyword in error_msg for keyword in 
+                                          ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial'])
+                is_movement_error = any(keyword in error_msg for keyword in 
+                                      ['move', 'movement', 'position', 'step'])
+                
+                # Handle different error types
+                if is_limit_error:
+                    # This is expected when hitting limits - treat as limit reached
+                    logger.info("Limit reached (expected): %s", e)
+                    raise LimitReachedError(f"Limit reached: {e}")
+                elif is_timeout_error:
+                    # Timeout might indicate a limit or communication issue
+                    if attempt < retry_count:
+                        logger.info("Timeout detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
+                        time.sleep(0.5)  # Wait before retry
+                        continue
+                    else:
+                        logger.info("Movement timeout after retries (might indicate limit): %s", e)
+                        raise LimitReachedError(f"Movement timeout (limit): {e}")
+                elif is_communication_error:
+                    # Communication errors - might be temporary or indicate limit stress
+                    if attempt < retry_count:
+                        logger.info("Communication error detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
+                        time.sleep(0.5)  # Wait before retry
+                        continue
+                    else:
+                        # After retries, treat as possible limit error
+                        logger.info("Communication error after retries (might indicate limit stress): %s", e)
+                        raise LimitReachedError(f"Communication error (possible limit): {e}")
+                elif is_hardware_error:
+                    # Hardware errors should be raised for upper level handling
+                    logger.error("Hardware error during movement: %s", e)
+                    raise RuntimeError(f"Hardware error: {e}")
+                elif is_movement_error:
+                    # General movement errors - likely limit related
+                    if attempt < retry_count:
+                        logger.info("Movement error detected, retrying... (attempt %d/%d)", attempt + 1, retry_count + 1)
+                        time.sleep(0.3)  # Wait before retry
+                        continue
+                    else:
+                        logger.info("Movement error after retries (likely limit): %s", e)
+                        raise LimitReachedError(f"Movement error (limit): {e}")
+                else:
+                    # Unknown errors - log and raise
+                    logger.error("Unknown movement error: %s", e)
+                    raise RuntimeError(f"Unknown movement error: {e}")
+        
+        # If we get here, all retries failed
+        logger.error("Movement failed after %d retries", retry_count)
+        raise RuntimeError(f"Movement failed after {retry_count} retries")

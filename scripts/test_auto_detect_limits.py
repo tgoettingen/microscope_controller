@@ -164,8 +164,11 @@ def test_error_handling_improvements():
             'is_limit_error',
             'is_timeout_error', 
             'is_hardware_error',
+            'is_communication_error',  # New communication error handling
             'is_movement_error',
-            'LimitReachedError'
+            'LimitReachedError',
+            'retry_count',  # New retry mechanism
+            'attempt'  # Retry attempt tracking
         ]
         
         all_checks = True
@@ -174,6 +177,14 @@ def test_error_handling_improvements():
                 print(f"✓ Error handling includes {check}")
             else:
                 print(f"⚠ Error handling might miss {check}")
+        
+        # Check for communication error specific keywords
+        comm_keywords = ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial']
+        comm_found = any(keyword in source for keyword in comm_keywords)
+        if comm_found:
+            print("✓ Communication error handling includes specific keywords")
+        else:
+            print("⚠ Communication error handling might miss specific keywords")
         
         return True
     except Exception as e:
@@ -269,6 +280,8 @@ def main():
         print("- Precision: Binary search refinement for accurate limits")
         print("- Safety: 95% working range (2.5% margin from each end)")
         print("- Error handling: Custom LimitReachedError, comprehensive error classification")
+        print("- Communication errors: Special handling for protocol errors (e.g., 'expected reply with command gets; got gts')")
+        print("- Retry mechanism: Automatic retry for temporary errors (2 retries with delays)")
         print("- Crash prevention: Robust error handling prevents crashes on limit detection")
         print("- Thread safety: Background worker thread for detection")
         return 0
