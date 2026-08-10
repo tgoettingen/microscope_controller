@@ -59,6 +59,20 @@ class LightSource(Device):
     @abstractmethod
     def off(self) -> None: ...
 
+class ExcitationSource(Device):
+    """Excitation source (e.g., LED, laser) that can be controlled via serial protocol.
+    
+    Similar to LightSource but specifically for excitation in multi-axis scans.
+    """
+    @abstractmethod
+    def on(self) -> None: ...
+    @abstractmethod
+    def off(self) -> None: ...
+    @abstractmethod
+    def set_channel(self, channel: int) -> None: ...
+    @abstractmethod
+    def get_channel(self) -> int: ...
+
 
 class FilterWheel(Device):
     @abstractmethod

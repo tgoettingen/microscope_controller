@@ -52,26 +52,23 @@
   },
   "detector": [
     {
-      "type": "ComPort",
-      "name": "vm210",
-      "port": "/dev/tty.usbserial-210",
-      "baudrate": 115200,
-      "format": "int24",
-      "mode": 1,
-      "read_timeout": 0.1,
-      "reader_hz": 1000.0,
-      "ring_buffer_size": 8192,
-      "frame_length": 10,
-      "frame_header": "0A01",
-      "frame_trailer": "010A",
-      "overflow_policy": "overwrite",
+      "type": "simulated",
+      "name": "detector1",
+      "port": "com6",
+      "scale": 10.0,
+      "offset": -1.0
+    },
+    {
+      "type": "simulated",
+      "name": "detector2",
+      "port": "com7",
       "scale": 1.0,
-      "offset": 0.0
+      "offset": 11.0
     }
   ],
   "excitation": {
     "type": "ExcitationDevice",
-    "name": "switcher",
+    "name": "switching",
     "port": "/dev/cu.usbmodemM43210051",
     "channel": 0,
     "simulate": false

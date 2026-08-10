@@ -37,6 +37,7 @@ from devices.standa_stage import StandaStageXY
 from devices.simulated import SimulatedCamera, SimulatedDetector, SimulatedFilterWheel, SimulatedLight, SimulatedFocus, SimulatedStageXY
 from devices.voltage_meter_comport import ComPort
 from devices.scaled import ScaledStageXY, ScaledFocusZ, ScaledLightSource
+from devices.excitation_device import ExcitationDevice, SimulatedExcitationDevice
 from devices.motor_specs import (
     CATALOGUE as MOTOR_SPEC_CATALOGUE,
     DEFAULT_DEVICE_TYPE_TO_SPEC,
@@ -432,18 +433,65 @@ def build_devices(config_path="config/default_devices.json"):
         except Exception:
             pass
 
+    # Excitation source(s) - support single or multiple
+    excitation_cfg = cfg.get("excitation")
+    if excitation_cfg:
+        if isinstance(excitation_cfg, list):
+            # Multiple excitation devices
+            excitation = []
+            for exc_cfg in excitation_cfg:
+                if isinstance(exc_cfg, dict):
+                    exc_type = exc_cfg.get("type", "simulated")
+                    exc_name = exc_cfg.get("name", f"excitation_{len(excitation)}")
+                    if exc_type == "ExcitationDevice":
+                        simulate = exc_cfg.get("simulate", False)
+                        if simulate:
+                            exc_device = SimulatedExcitationDevice(name=exc_name)
+                        else:
+                            exc_device = ExcitationDevice(
+                                name=exc_name,
+                                port=exc_cfg.get("port"),
+                                channel=exc_cfg.get("channel", 0),
+                                simulate=False
+                            )
+                    else:
+                        exc_device = SimulatedExcitationDevice(name=exc_name)
+                    excitation.append(exc_device)
+        elif isinstance(excitation_cfg, dict):
+            # Single excitation device
+            excitation_type = excitation_cfg.get("type", "simulated")
+            if excitation_type == "ExcitationDevice":
+                simulate = excitation_cfg.get("simulate", False)
+                if simulate:
+                    excitation = SimulatedExcitationDevice(name="excitation")
+                else:
+                    excitation = ExcitationDevice(
+                        name="excitation",
+                        port=excitation_cfg.get("port"),
+                        channel=excitation_cfg.get("channel", 0),
+                        simulate=False
+                    )
+            else:
+                # Any other type (including "simulated") uses simulated device
+                excitation = SimulatedExcitationDevice(name="excitation")
+        else:
+            excitation = SimulatedExcitationDevice(name="excitation")
+    else:
+        excitation = SimulatedExcitationDevice(name="excitation")
+
     try:
         det_count = len(detector) if isinstance(detector, list) else (1 if detector is not None else 0)
         logger.info(
-            "Built devices (camera=%s stage=%s focus=%s light=%s fw=%s detectors=%s)",
+            "Built devices (camera=%s stage=%s focus=%s light=%s fw=%s detectors=%s excitation=%s)",
             type(camera).__name__ if camera is not None else None,
             type(stage).__name__ if stage is not None else None,
             type(focus).__name__ if focus is not None else None,
             type(light).__name__ if light is not None else None,
             type(fw).__name__ if fw is not None else None,
             det_count,
+            type(excitation).__name__ if excitation is not None else None,
         )
     except Exception:
         pass
 
-    return camera, stage, focus, light, fw, detector
+    return camera, stage, focus, light, fw, detector, excitation

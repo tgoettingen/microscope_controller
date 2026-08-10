@@ -11,6 +11,7 @@ from devices.base import (
     LightSource,
     FilterWheel,
     Detector,
+    ExcitationSource,
 )
 from core.experiment import ChannelConfig
 
@@ -381,6 +382,69 @@ class DetectorAxis(Axis):
         # No-op: do not call set_scale(); scaling comes from config.
         if self.wait_s > 0:
             time.sleep(self.wait_s)
+
+
+# ---------------------------------------------------------
+#  Excitation axis (LED/laser control via SerialLink)
+# ---------------------------------------------------------
+
+class ExcitationAxis(Axis):
+    """Axis for controlling excitation source ON/OFF during multi-axis scans.
+    
+    This axis can be used to turn excitation sources on/off at specific points
+    in a scan sequence, useful for time-resolved measurements or background
+    subtraction.
+    """
+    
+    def __init__(
+        self,
+        excitation: 'ExcitationSource',
+        states: List[bool] | None = None,
+        wait_s: float = 0.0,
+    ):
+        """Initialize excitation axis.
+        
+        Args:
+            excitation: ExcitationSource device instance
+            states: List of boolean states (True=ON, False=OFF) to cycle through
+            wait_s: Wait time after state change
+        """
+        self.excitation = excitation
+        self.states = list(states) if states else [True, False]  # Default: ON/OFF cycle
+        self.wait_s = float(wait_s)
+        self._current_state_index = 0
+    
+    def name(self) -> str:
+        return "Excitation"
+    
+    def prepare(self) -> None:
+        """Prepare excitation source - ensure it's in initial state."""
+        if self.states:
+            initial_state = self.states[0]
+            if initial_state:
+                self.excitation.on()
+            else:
+                self.excitation.off()
+            self._current_state_index = 0
+    
+    def positions(self):
+        """Yield excitation states (True=ON, False=OFF)."""
+        for state in self.states:
+            yield state
+    
+    def apply(self, pos: bool) -> None:
+        """Apply excitation state (turn on/off)."""
+        if pos:
+            self.excitation.on()
+        else:
+            self.excitation.off()
+        
+        if self.wait_s > 0:
+            time.sleep(self.wait_s)
+    
+    def state_updates(self, pos: bool) -> Dict[str, Any]:
+        """Return state updates for logging and display."""
+        return {"excitation_on": pos}
 
 
 # ---------------------------------------------------------

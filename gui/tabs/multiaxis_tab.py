@@ -8,6 +8,7 @@ from gui.dialogs.channel_axis_dialog import ChannelAxisDialog
 from gui.dialogs.detector_axis_dialog import DetectorAxisDialog
 from gui.dialogs.round_axis_dialog import RoundAxisDialog
 from gui.dialogs.group_axis_dialog import GroupAxisDialog
+from gui.dialogs.excitation_axis_dialog import ExcitationAxisDialog
 
 
 class MultiAxisTab(QtWidgets.QWidget):
@@ -266,7 +267,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         # detector-specific axis. Fall back to a generic "Detector" entry when
         # no detectors are known yet.
         det_names = self.get_available_detectors()
-        items = ["X", "Y", "Z", "Channel"]
+        items = ["X", "Y", "Z", "Channel", "Excitation"]
         if det_names:
             items += list(det_names)
         else:
@@ -291,6 +292,21 @@ class MultiAxisTab(QtWidgets.QWidget):
             d = DetectorAxisDialog(self)
         elif axis_type in det_names:
             d = DetectorAxisDialog(self, detector_name=axis_type)
+        elif axis_type == "Excitation":
+            # Try to get excitation devices from config
+            excitation_devices = None
+            try:
+                from core.factory import load_config, build_devices
+                cfg = load_config(self._config_path)
+                exc_cfg = cfg.get("excitation")
+                if exc_cfg:
+                    # Build the devices to get the actual device objects
+                    _, _, _, _, _, _, excitation = build_devices(self._config_path)
+                    excitation_devices = excitation if isinstance(excitation, list) else [excitation]
+            except Exception:
+                pass
+            
+            d = ExcitationAxisDialog(self, excitation_devices=excitation_devices)
         elif axis_type == "Round":
             d = RoundAxisDialog(self)
         else:
@@ -327,6 +343,8 @@ class MultiAxisTab(QtWidgets.QWidget):
             dlg = ChannelAxisDialog(self)
         elif cfg.axis_type == "Detector":
             dlg = DetectorAxisDialog(self, detector_name=cfg.params.get("detector"))
+        elif cfg.axis_type == "Excitation":
+            dlg = ExcitationAxisDialog(self)
         elif cfg.axis_type == "Round":
             dlg = RoundAxisDialog(self)
         else:

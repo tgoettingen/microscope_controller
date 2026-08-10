@@ -58,7 +58,7 @@ from core.multiaxis import (
    AxisConfig,
    MultiAxisExperiment, MultiAxisRunner,
    XAxis, YAxis, ZAxis,
-   ChannelAxis, DetectorAxis, RoundAxis,
+   ChannelAxis, DetectorAxis, RoundAxis, ExcitationAxis,
 )
 
 try:
@@ -1777,6 +1777,13 @@ class MainWindow(QtWidgets.QMainWindow):
       move_motors_action.triggered.connect(self._open_move_motors_dialog)
       action_menu.addAction(move_motors_action)
 
+      excitation_control_action = QAction("Excitation Control…", self)
+      excitation_control_action.setToolTip(
+          "Control excitation devices: turn channels on/off, select channels, and view status."
+      )
+      excitation_control_action.triggered.connect(self._open_excitation_control_dialog)
+      action_menu.addAction(excitation_control_action)
+
       # View menu for toggling docks
       view_menu = menubar.addMenu("&View")
       try:
@@ -2171,7 +2178,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # Ensure devices are built
       if not self.devices_built or self.devices_released:
          try:
-            self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
             self.devices_built = True
             self.devices_released = False
          except Exception as exc:
@@ -2206,7 +2213,7 @@ class MainWindow(QtWidgets.QMainWindow):
       if not self.devices_built or self.devices_released:
          try:
             logger.info("Building devices for move motors dialog")
-            self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
             self.devices_built = True
             self.devices_released = False
          except Exception as exc:
@@ -2229,6 +2236,49 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception as e:
          logger.exception("Error opening move motors dialog: %s", e)
          QtWidgets.QMessageBox.critical(self, "Dialog Error", f"Could not open move motors dialog:\n{e}")
+
+   def _open_excitation_control_dialog(self):
+      """Open the Excitation Control dialog for manual excitation device control."""
+      try:
+         from gui.dialogs.excitation_control_dialog import ExcitationControlDialog
+      except ImportError:
+         try:
+            from dialogs.excitation_control_dialog import ExcitationControlDialog
+         except Exception as e:
+            logger.error("Failed to import excitation control dialog: %s", e)
+            QtWidgets.QMessageBox.critical(self, "Import Error", f"Could not import excitation control dialog:\n{e}")
+            return
+      except Exception as e:
+         logger.error("Unexpected error importing excitation control dialog: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Import Error", f"Unexpected error importing dialog:\n{e}")
+         return
+
+      # Ensure devices are built
+      if not self.devices_built or self.devices_released:
+         try:
+            logger.info("Building devices for excitation control dialog")
+            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
+            self.devices_built = True
+            self.devices_released = False
+         except Exception as exc:
+            logger.error("Failed to build devices: %s", exc)
+            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+            return
+
+      if self.excitation is None:
+         logger.warning("No excitation devices available for excitation control dialog")
+         QtWidgets.QMessageBox.warning(self, "No Excitation Devices", "No excitation device available.")
+         return
+
+      try:
+         logger.info("Opening excitation control dialog with %d device(s)", 
+                    len(self.excitation) if isinstance(self.excitation, list) else 1)
+         dlg = ExcitationControlDialog(self.excitation, parent=self)
+         dlg.exec()
+         logger.info("Excitation control dialog closed successfully")
+      except Exception as e:
+         logger.exception("Error opening excitation control dialog: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Dialog Error", f"Could not open excitation control dialog:\n{e}")
 
    def _on_calibration_saved(self, x_scale: float, y_scale: float):
       """Called when the calibration wizard has written new scale values."""
@@ -2299,15 +2349,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # Reuse existing devices if they are already built and still connected.
       if not self.devices_built or self.devices_released:
-         cam, stage, focus, light, fw, det = build_devices(self._config_path)
-         self.cam, self.stage, self.focus, self.light, self.fw, self.det = cam, stage, focus, light, fw, det
+         cam, stage, focus, light, fw, det, excitation = build_devices(self._config_path)
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = cam, stage, focus, light, fw, det, excitation
          self.devices_built = True
          self.devices_released = False
          # Ensure ComPort detectors are in their intended stream mode before acquisition.
          self._set_comport_mode_for_all(det)
          self._connect_detector_errors(det)
       else:
-         cam, stage, focus, light, fw, det = self.cam, self.stage, self.focus, self.light, self.fw, self.det
+         cam, stage, focus, light, fw, det, excitation = self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation
       # populate available detectors in multi-axis tab
       try:
          det_ids = []
@@ -2682,7 +2732,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # Build devices only if not already built or if previously released
       if not self.devices_built or self.devices_released:
-         self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
          # Ensure ComPort detectors are in their intended stream mode before acquisition.
          self._set_comport_mode_for_all(self.det)
          self._connect_detector_errors(self.det)
@@ -2716,7 +2766,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
       # Use the stored devices
-      cam, stage, focus, light, fw, det = self.cam, self.stage, self.focus, self.light, self.fw, self.det
+      cam, stage, focus, light, fw, det, excitation = self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation
       # Build a device map for pre/post moves and axis dialogs
       device_map = {
          "stage": stage,
@@ -2724,7 +2774,13 @@ class MainWindow(QtWidgets.QMainWindow):
          "camera": cam,
          "light": light,
          "fw": fw,
+         "excitation": excitation,
       }
+      # Add individual excitation devices to the map if there are multiple
+      if isinstance(excitation, list):
+         for exc in excitation:
+            if hasattr(exc, 'name'):
+               device_map[exc.name] = exc
       if isinstance(det, list):
          for d in det:
             device_map[getattr(d, 'name', getattr(d, 'port', 'detector'))] = d
@@ -2834,6 +2890,32 @@ class MainWindow(QtWidgets.QMainWindow):
                if det_target is None:
                   det_target = det
                axes.append(DetectorAxis(det_target, scales=None, wait_s=p.get("wait", 0.0)))
+            elif t == "Excitation":
+               # Get the specific excitation device by name if specified
+               exc_name = p.get("excitation")
+               if exc_name:
+                  excitation_device = device_map.get(exc_name)
+                  if excitation_device is None:
+                     # Try to find it in the list
+                     if isinstance(excitation, list):
+                        for exc in excitation:
+                           if hasattr(exc, 'name') and exc.name == exc_name:
+                              excitation_device = exc
+                              break
+                     else:
+                        excitation_device = excitation
+               else:
+                  # Use the first available excitation device
+                  if isinstance(excitation, list):
+                     excitation_device = excitation[0] if excitation else None
+                  else:
+                     excitation_device = excitation
+               
+               if excitation_device is None:
+                  logger.warning("No excitation device available for Excitation axis")
+                  continue
+               
+               axes.append(ExcitationAxis(excitation_device, p.get("states", [True, False]), p.get("wait", 0.0)))
             elif t == "Round":
                axes.append(RoundAxis(p["n_rounds"]))
 
@@ -3250,7 +3332,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
       # Build devices only if not already built or if previously released.
       if not self.devices_built or self.devices_released:
-         self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
          self._connect_detector_errors(self.det)
          self.devices_built = True
          self.devices_released = False
@@ -3267,7 +3349,7 @@ class MainWindow(QtWidgets.QMainWindow):
          except Exception:
             pass
 
-      cam, stage, focus, light, fw = self.cam, self.stage, self.focus, self.light, self.fw
+      cam, stage, focus, light, fw, excitation = self.cam, self.stage, self.focus, self.light, self.fw, self.excitation
 
       axes = []
       for cfg in cfgs:
@@ -3281,7 +3363,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "camera": cam,
             "light": light,
             "fw": fw,
+            "excitation": excitation,
          }
+         # Add individual excitation devices to the map if there are multiple
+         if isinstance(excitation, list):
+            for exc in excitation:
+               if hasattr(exc, 'name'):
+                  device_map[exc.name] = exc
 
          if t == "X":
             motor_devices = [device_map.get(n) for n in p.get("motors", []) if device_map.get(n) is not None]
@@ -3333,6 +3421,32 @@ class MainWindow(QtWidgets.QMainWindow):
             )
          elif t == "Channel":
             axes.append(ChannelAxis(cam, light, fw, p["channels"], p.get("wait", 0.0)))
+         elif t == "Excitation":
+            # Get the specific excitation device by name if specified
+            exc_name = p.get("excitation")
+            if exc_name:
+               excitation_device = device_map.get(exc_name)
+               if excitation_device is None:
+                  # Try to find it in the list
+                  if isinstance(excitation, list):
+                     for exc in excitation:
+                        if hasattr(exc, 'name') and exc.name == exc_name:
+                           excitation_device = exc
+                           break
+                  else:
+                     excitation_device = excitation
+            else:
+               # Use the first available excitation device
+               if isinstance(excitation, list):
+                  excitation_device = excitation[0] if excitation else None
+               else:
+                  excitation_device = excitation
+            
+            if excitation_device is None:
+               logger.warning("No excitation device available for Excitation axis")
+               continue
+            
+            axes.append(ExcitationAxis(excitation_device, p.get("states", [True, False]), p.get("wait", 0.0)))
          elif t == "Round":
             axes.append(RoundAxis(p["n_rounds"]))
 
@@ -3936,7 +4050,7 @@ class MainWindow(QtWidgets.QMainWindow):
          return
 
       detectors = self.det if isinstance(self.det, list) else [self.det]
-      for dev in [self.cam, self.stage, self.focus, self.light, self.fw, *detectors]:
+      for dev in [self.cam, self.stage, self.focus, self.light, self.fw, self.excitation, *detectors]:
          if dev is None:
             continue
          try:
@@ -3950,6 +4064,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.light = None
       self.fw = None
       self.det = None
+      self.excitation = None
       self.devices_built = False
       self.devices_released = True
 
@@ -3966,7 +4081,7 @@ class MainWindow(QtWidgets.QMainWindow):
       if self.devices_built and not self.devices_released:
          return True
       try:
-         self.cam, self.stage, self.focus, self.light, self.fw, self.det = build_devices(self._config_path)
+         self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
          # Ensure ComPort detectors are in their intended stream mode and
          # surface connection errors to the user.
          self._set_comport_mode_for_all(self.det)
