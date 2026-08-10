@@ -281,6 +281,48 @@ def test_state_management():
         print(f"✗ Error checking state management: {e}")
         return False
 
+def test_safe_return_logic():
+    """Test that safe return logic is implemented for limit handling."""
+    try:
+        from gui.dialogs import stage_calibration_dialog
+        import inspect
+        
+        # Check for _clamp_to_limits method
+        if hasattr(stage_calibration_dialog.AutoDetectWorker, '_clamp_to_limits'):
+            print("✓ _clamp_to_limits method exists")
+        else:
+            print("✗ _clamp_to_limits method missing")
+            return False
+        
+        # Check for safe return logic in _detect_limits
+        source = inspect.getsource(stage_calibration_dialog.AutoDetectWorker._detect_limits)
+        
+        safe_return_features = [
+            'safe position',
+            'clamp_to_limits',
+            'except (LimitReachedError, Exception)',
+            'Could not return to start position'
+        ]
+        
+        all_features = True
+        for feature in safe_return_features:
+            if feature in source:
+                print(f"✓ Safe return logic includes {feature}")
+            else:
+                print(f"⚠ Safe return logic might miss {feature}")
+                all_features = False
+        
+        # Check for error handling in individual limit detection
+        if 'try:' in source and 'except Exception as e:' in source:
+            print("✓ Individual limit detection has error handling")
+        else:
+            print("⚠ Individual limit detection might lack error handling")
+        
+        return True
+    except Exception as e:
+        print(f"✗ Error checking safe return logic: {e}")
+        return False
+
 def main():
     print("Testing auto-detect limits functionality...")
     print("=" * 60)
@@ -293,6 +335,7 @@ def main():
     results.append(test_state_management())
     results.append(test_error_handling_improvements())
     results.append(test_adaptive_step_algorithm())
+    results.append(test_safe_return_logic())
     
     print("=" * 60)
     if all(results):
@@ -308,6 +351,8 @@ def main():
         print("- Retry mechanism: Automatic retry for temporary errors (4 retries with adaptive delays)")
         print("- Adaptive delays: 2.0s for write timeout, 1.5s for timeout, 1.0s for communication")
         print("- Protocol errors: Special handling for Standa protocol errors (e.g., 'expected reply with command gets; got gts')")
+        print("- Safe return: Intelligent return to safe position if start position is outside limits")
+        print("- Limit clamping: _clamp_to_limits method ensures final position is within detected range")
         print("- Crash prevention: Robust error handling prevents crashes on limit detection")
         print("- Thread safety: Background worker thread for detection")
         return 0

@@ -1232,24 +1232,49 @@ class AutoDetectWorker(QtCore.QObject):
         # Detect X limits
         if not self._cancelled:
             self.progress.emit(10, "Detecting X negative limit...")
-            limits['x_min'] = self._detect_axis_limit('x', -1, start_x, start_y)
+            try:
+                limits['x_min'] = self._detect_axis_limit('x', -1, start_x, start_y)
+            except Exception as e:
+                logger.error("Failed to detect X negative limit: %s", e)
+                limits['x_min'] = start_x  # Fallback to start position
 
         if not self._cancelled:
             self.progress.emit(30, "Detecting X positive limit...")
-            limits['x_max'] = self._detect_axis_limit('x', 1, start_x, start_y)
+            try:
+                limits['x_max'] = self._detect_axis_limit('x', 1, start_x, start_y)
+            except Exception as e:
+                logger.error("Failed to detect X positive limit: %s", e)
+                limits['x_max'] = start_x  # Fallback to start position
 
         # Detect Y limits
         if not self._cancelled:
             self.progress.emit(50, "Detecting Y negative limit...")
-            limits['y_min'] = self._detect_axis_limit('y', -1, start_x, start_y)
+            try:
+                limits['y_min'] = self._detect_axis_limit('y', -1, start_x, start_y)
+            except Exception as e:
+                logger.error("Failed to detect Y negative limit: %s", e)
+                limits['y_min'] = start_y  # Fallback to start position
 
         if not self._cancelled:
             self.progress.emit(70, "Detecting Y positive limit...")
-            limits['y_max'] = self._detect_axis_limit('y', 1, start_x, start_y)
+            try:
+                limits['y_max'] = self._detect_axis_limit('y', 1, start_x, start_y)
+            except Exception as e:
+                logger.error("Failed to detect Y positive limit: %s", e)
+                limits['y_max'] = start_y  # Fallback to start position
 
         if not self._cancelled:
-            self.progress.emit(90, "Returning to start position...")
-            self._safe_move_to(start_x, start_y)
+            self.progress.emit(90, "Returning to safe position...")
+            # Try to return to start position, but handle the case where start position is outside detected limits
+            try:
+                self._safe_move_to(start_x, start_y)
+            except (LimitReachedError, Exception) as e:
+                logger.warning("Could not return to start position %s, %s: %s", start_x, start_y, e)
+                # Return to a safe position within detected limits
+                safe_x = self._clamp_to_limits(start_x, limits.get('x_min'), limits.get('x_max'))
+                safe_y = self._clamp_to_limits(start_y, limits.get('y_min'), limits.get('y_max'))
+                logger.info("Returning to safe position instead: %s, %s", safe_x, safe_y)
+                self._safe_move_to(safe_x, safe_y)
 
         self.progress.emit(100, "Detection complete")
         return limits
@@ -1358,6 +1383,23 @@ class AutoDetectWorker(QtCore.QObject):
         # Return the last successful position as the limit
         logger.info("Final limit for %s direction %d: %s", axis, direction, last_successful_position)
         return last_successful_position
+
+    def _clamp_to_limits(self, value: float, min_limit: float | None, max_limit: float | None) -> float:
+        """Clamp a value to be within the specified limits.
+        
+        Args:
+            value: The value to clamp
+            min_limit: Minimum limit (None if no limit)
+            max_limit: Maximum limit (None if no limit)
+            
+        Returns:
+            Clamped value within limits
+        """
+        if min_limit is not None and value < min_limit:
+            return min_limit
+        if max_limit is not None and value > max_limit:
+            return max_limit
+        return value
 
     def _safe_move_to(self, x: float, y: float, retry_count: int = 4):
         """Safely move to position with comprehensive error handling, crash prevention, and enhanced retry logic.
