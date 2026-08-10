@@ -166,6 +166,7 @@ def test_error_handling_improvements():
             'is_hardware_error',
             'is_communication_error',
             'is_write_timeout',  # New write timeout handling
+            'is_read_error',  # New read error handling
             'is_movement_error',
             'LimitReachedError',
             'retry_count',
@@ -181,7 +182,7 @@ def test_error_handling_improvements():
                 print(f"⚠ Error handling might miss {check}")
         
         # Check for serial error specific keywords
-        serial_keywords = ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout', 'serialtimeout']
+        serial_keywords = ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout', 'serialtimeout', 'read returned less than expected', 'read']
         serial_found = any(keyword in source for keyword in serial_keywords)
         if serial_found:
             print("✓ Serial communication error handling includes specific keywords")
@@ -348,8 +349,9 @@ def main():
         print("- Safety: 95% working range (2.5% margin from each end)")
         print("- Error handling: Custom LimitReachedError, comprehensive error classification")
         print("- Serial errors: Enhanced handling for SerialTimeoutException and write timeout")
+        print("- Read errors: New handling for 'read returned less than expected' errors")
         print("- Retry mechanism: Automatic retry for temporary errors (4 retries with adaptive delays)")
-        print("- Adaptive delays: 2.0s for write timeout, 1.5s for timeout, 1.0s for communication")
+        print("- Adaptive delays: 2.0s for write timeout, 1.5s for read/timeout, 1.0s for communication")
         print("- Protocol errors: Special handling for Standa protocol errors (e.g., 'expected reply with command gets; got gts')")
         print("- Safe return: Intelligent return to safe position if start position is outside limits")
         print("- Limit clamping: _clamp_to_limits method ensures final position is within detected range")

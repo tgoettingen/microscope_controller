@@ -1443,14 +1443,19 @@ class AutoDetectWorker(QtCore.QObject):
                 is_hardware_error = any(keyword in error_msg for keyword in 
                                       ['hardware', 'device', 'connection', 'disconnected', 'not connected'])
                 is_communication_error = any(keyword in error_msg for keyword in 
-                                          ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout'])
+                                          ['reply', 'command', 'protocol', 'gts', 'gets', 'communication', 'serial', 'write timeout', 'read returned less than expected', 'read'])
                 is_write_timeout = 'write timeout' in error_msg or 'serialtimeout' in error_msg
+                is_read_error = 'read returned less than expected' in error_msg or 'read' in error_msg
+                is_movement_error = any(keyword in error_msg for keyword in 
+                                      ['move', 'movement', 'position', 'step'])
                 is_movement_error = any(keyword in error_msg for keyword in 
                                       ['move', 'movement', 'position', 'step'])
                 
                 # Calculate retry delay based on error type
                 if is_write_timeout:
                     retry_delay = 2.0  # Longer delay for write timeout
+                elif is_read_error:
+                    retry_delay = 1.5  # Medium-long delay for read errors
                 elif is_communication_error:
                     retry_delay = 1.0  # Medium delay for communication errors
                 elif is_timeout_error:
@@ -1473,6 +1478,17 @@ class AutoDetectWorker(QtCore.QObject):
                     else:
                         logger.info("Serial write timeout after retries (likely limit or hardware stress): %s", e)
                         raise LimitReachedError(f"Serial write timeout (limit/hardware stress): {e}")
+                elif is_read_error:
+                    # Read errors - data returned less than expected
+                    if attempt < retry_count:
+                        logger.info("Read error detected (returned less than expected), retrying... (attempt %d/%d, delay: %.1fs)", 
+                                   attempt + 1, retry_count + 1, retry_delay)
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # After retries, treat as possible limit error
+                        logger.info("Read error after retries (might indicate limit stress): %s", e)
+                        raise LimitReachedError(f"Read error (possible limit): {e}")
                 elif is_communication_error:
                     # Communication errors - might be temporary or indicate limit stress
                     if attempt < retry_count:
