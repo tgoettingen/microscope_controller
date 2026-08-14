@@ -919,38 +919,51 @@ class StageControlTab(QtWidgets.QWidget):
             y_real = self.y_spin.value()
             z_real = self.z_spin.value()
             
-            print(f"DEBUG: Moving to X={x_real}, Y={y_real}, Z={z_real}")
+            print(f"\n{'='*60}")
+            print(f"DEBUG: MOVE OPERATION STARTED")
+            print(f"{'='*60}")
+            print(f"DEBUG: Input position (real units): X={x_real}, Y={y_real}, Z={z_real}")
             print(f"DEBUG: Stage exists: {self.stage is not None}")
             print(f"DEBUG: Focus exists: {self.focus is not None}")
-            print(f"DEBUG: Stage config - x_scale={self.stage_config['x_scale']}, x_offset={self.stage_config['x_offset']}")
-            print(f"DEBUG: Stage config - y_scale={self.stage_config['y_scale']}, y_offset={self.stage_config['y_offset']}")
-            print(f"DEBUG: Focus config - scale={self.focus_config['scale']}, offset={self.focus_config['offset']}")
-            print(f"DEBUG: Stage limits - x_min={self.stage_config.get('x_min')}, x_max={self.stage_config.get('x_max')}")
-            print(f"DEBUG: Stage limits - y_min={self.stage_config.get('y_min')}, y_max={self.stage_config.get('y_max')}")
+            print(f"DEBUG: Stage config:")
+            print(f"  - x_scale: {self.stage_config['x_scale']}")
+            print(f"  - x_offset: {self.stage_config['x_offset']}")
+            print(f"  - y_scale: {self.stage_config['y_scale']}")
+            print(f"  - y_offset: {self.stage_config['y_offset']}")
+            print(f"DEBUG: Focus config:")
+            print(f"  - scale: {self.focus_config['scale']}")
+            print(f"  - offset: {self.focus_config['offset']}")
+            print(f"DEBUG: Stage limits:")
+            print(f"  - x_min: {self.stage_config.get('x_min')}")
+            print(f"  - x_max: {self.stage_config.get('x_max')}")
+            print(f"  - y_min: {self.stage_config.get('y_min')}")
+            print(f"  - y_max: {self.stage_config.get('y_max')}")
             
             # Convert real units to steps
+            print(f"\nDEBUG: CONVERSION TO STEPS")
             x_steps = self._real_units_to_steps(x_real, self.stage_config['x_scale'], self.stage_config['x_offset'])
             y_steps = self._real_units_to_steps(y_real, self.stage_config['y_scale'], self.stage_config['y_offset'])
             z_steps = self._real_units_to_steps(z_real, self.focus_config['scale'], self.focus_config['offset'])
             
-            print(f"DEBUG: Steps - X={x_steps}, Y={y_steps}, Z={z_steps}")
+            print(f"DEBUG: Resulting steps: X={x_steps}, Y={y_steps}, Z={z_steps}")
             
             # Check if steps are reasonable
             if abs(x_steps) < 1 and abs(y_steps) < 1:
-                print(f"DEBUG: WARNING - Steps are too small! Check scale/offset configuration")
+                print(f"\nDEBUG: WARNING - Steps are too small!")
                 print(f"DEBUG: Expected steps should be in the range of hundreds to thousands")
+                print(f"DEBUG: Check if scale value is correct (should be steps/unit)")
             
             if self.stage and hasattr(self.stage, 'move_to'):
-                print(f"DEBUG: Calling stage.move_to({x_steps}, {y_steps})")
+                print(f"\nDEBUG: Calling stage.move_to({x_steps}, {y_steps})")
                 self.stage.move_to(x_steps, y_steps)
-                print(f"DEBUG: Stage move completed")
+                print(f"DEBUG: Stage move completed successfully")
             else:
-                print(f"DEBUG: Stage move_to not available")
+                print(f"\nDEBUG: ERROR - Stage move_to not available")
                 
             if self.focus and hasattr(self.focus, 'move_to'):
                 print(f"DEBUG: Calling focus.move_to({z_steps})")
                 self.focus.move_to(z_steps)
-                print(f"DEBUG: Focus move completed")
+                print(f"DEBUG: Focus move completed successfully")
             else:
                 print(f"DEBUG: Focus move_to not available")
                 
@@ -960,8 +973,11 @@ class StageControlTab(QtWidgets.QWidget):
                 
             self._refresh_position()
             
+            print(f"\nDEBUG: MOVE OPERATION COMPLETED")
+            print(f"{'='*60}\n")
+            
         except Exception as e:
-            print(f"DEBUG: Move error: {e}")
+            print(f"\nDEBUG: MOVE ERROR: {e}")
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.warning(self, "Move Error", f"Failed to move: {e}")
