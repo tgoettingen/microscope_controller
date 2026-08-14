@@ -748,7 +748,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "detimg": getattr(self, "detimg_dock", None),
             "plot": getattr(self, "plot_dock", None),
             "detctl": getattr(self, "detctl_dock", None),
-            "move_motors": getattr(self, "move_motors_dock", None),
+            "stage_control": getattr(self, "stage_control_dock", None),
             "excitation_control": getattr(self, "excitation_control_dock", None),
             "stage_calibration": getattr(self, "stage_calibration_dock", None),
          }
@@ -819,7 +819,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("detimg", getattr(self, "detimg_dock", None)),
             ("plot", getattr(self, "plot_dock", None)),
             ("detctl", getattr(self, "detctl_dock", None)),
-            ("move_motors", getattr(self, "move_motors_dock", None)),
+            ("stage_control", getattr(self, "stage_control_dock", None)),
             ("excitation_control", getattr(self, "excitation_control_dock", None)),
             ("stage_calibration", getattr(self, "stage_calibration_dock", None)),
          ]
@@ -1182,40 +1182,42 @@ class MainWindow(QtWidgets.QMainWindow):
          )
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.detctl_dock)
 
-         # Move Motors dock
+         # Stage Control dock
          try:
-            from gui.tabs.move_motors_tab import MoveMotorsTab
+            from gui.tabs.move_motors_tab import StageControlTab
          except ImportError:
             try:
-               from tabs.move_motors_tab import MoveMotorsTab
+               from tabs.move_motors_tab import StageControlTab
             except Exception:
-               logger.warning("Could not import MoveMotorsTab")
-               MoveMotorsTab = None
+               logger.warning("Could not import StageControlTab")
+               StageControlTab = None
          
-         if MoveMotorsTab is not None:
-            self.move_motors_tab = MoveMotorsTab()
-            self.move_motors_dock = QtWidgets.QDockWidget("Move Motors", self)
-            self.move_motors_dock.setObjectName("dock_move_motors")
-            self.move_motors_dock.setWidget(self.move_motors_tab)
-            self.move_motors_dock.setAllowedAreas(
+         if StageControlTab is not None:
+            self.stage_control_tab = StageControlTab(config_path=self._config_path)
+            self.stage_control_dock = QtWidgets.QDockWidget("Stage", self)
+            self.stage_control_dock.setObjectName("dock_stage_control")
+            self.stage_control_dock.setWidget(self.stage_control_tab)
+            self.stage_control_dock.setAllowedAreas(
                QtCore.Qt.DockWidgetArea.LeftDockWidgetArea |
                QtCore.Qt.DockWidgetArea.RightDockWidgetArea |
                QtCore.Qt.DockWidgetArea.TopDockWidgetArea |
                QtCore.Qt.DockWidgetArea.BottomDockWidgetArea
             )
-            self.move_motors_dock.setFeatures(
+            self.stage_control_dock.setFeatures(
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
             )
-            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.move_motors_dock)
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.stage_control_dock)
             # Initially hide it
-            self.move_motors_dock.setVisible(False)
-            logger.info("Move Motors dock created successfully")
+            self.stage_control_dock.setVisible(False)
+            # Connect dock close event to cleanup
+            self.stage_control_dock.closeEvent = lambda e: self._cleanup_stage_control(e)
+            logger.info("Stage Control dock created successfully")
          else:
-            self.move_motors_tab = None
-            self.move_motors_dock = None
-            logger.warning("Move Motors dock could not be created - MoveMotorsTab import failed")
+            self.stage_control_tab = None
+            self.stage_control_dock = None
+            logger.warning("Stage Control dock could not be created - StageControlTab import failed")
 
          # Excitation Control dock
          try:
@@ -2014,7 +2016,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "detimg_dock", None),
             getattr(self, "plot_dock", None),
             getattr(self, "detctl_dock", None),
-            getattr(self, "move_motors_dock", None),
+            getattr(self, "stage_control_dock", None),
             getattr(self, "excitation_control_dock", None),
             getattr(self, "stage_calibration_dock", None),
          ]
@@ -2072,7 +2074,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("multiviewctl", getattr(self, "multiviewctl_dock", None)),
             ("camctl", getattr(self, "camctl_dock", None)),
             ("detctl", getattr(self, "detctl_dock", None)),
-            ("move_motors", getattr(self, "move_motors_dock", None)),
+            ("stage_control", getattr(self, "stage_control_dock", None)),
             ("excitation_control", getattr(self, "excitation_control_dock", None)),
             ("stage_calibration", getattr(self, "stage_calibration_dock", None)),
          ]
@@ -2286,21 +2288,21 @@ class MainWindow(QtWidgets.QMainWindow):
          # Add separator and new dock items
          view_menu.addSeparator()
          
-         # Move Motors
-         if hasattr(self, 'move_motors_dock') and self.move_motors_dock is not None:
+         # Stage Control
+         if hasattr(self, 'stage_control_dock') and self.stage_control_dock is not None:
             try:
-               move_motors_act = QAction("Move Motors", self, checkable=True)
-               move_motors_act.setChecked(False)
-               move_motors_act.triggered.connect(lambda checked: self._toggle_move_motors_dock(checked))
-               view_menu.addAction(move_motors_act)
+               stage_control_act = QAction("Stage", self, checkable=True)
+               stage_control_act.setChecked(False)
+               stage_control_act.triggered.connect(lambda checked: self._toggle_stage_control_dock(checked))
+               view_menu.addAction(stage_control_act)
                if not hasattr(self, '_view_dock_actions'):
                   self._view_dock_actions = {}
-               self._view_dock_actions["move_motors"] = move_motors_act
-               logger.info("Added Move Motors to View menu")
+               self._view_dock_actions["stage_control"] = stage_control_act
+               logger.info("Added Stage to View menu")
             except Exception as e:
-               logger.error("Failed to add Move Motors to View menu: %s", e)
+               logger.error("Failed to add Stage to View menu: %s", e)
          else:
-            logger.warning("Move Motors dock not available for View menu")
+            logger.warning("Stage Control dock not available for View menu")
          
          # Excitation Control
          if hasattr(self, 'excitation_control_dock') and self.excitation_control_dock is not None:
@@ -2339,13 +2341,13 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception as e:
          logger.exception("Error adding new docks to View menu: %s", e)
 
-   def _toggle_move_motors_dock(self, checked: bool):
-      """Toggle Move Motors dock visibility and ensure devices are ready."""
+   def _toggle_stage_control_dock(self, checked: bool):
+      """Toggle Stage Control dock visibility and ensure devices are ready."""
       if checked:
          # Ensure devices are built before showing
          if not self.devices_built or self.devices_released:
             try:
-               logger.info("Building devices for move motors panel")
+               logger.info("Building devices for stage control panel")
                self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
                self.devices_built = True
                self.devices_released = False
@@ -2355,15 +2357,25 @@ class MainWindow(QtWidgets.QMainWindow):
                return False
          
          # Update the tab with devices
-         if hasattr(self, 'move_motors_tab') and self.move_motors_tab:
-            self.move_motors_tab.set_stage(self.stage)
-            self.move_motors_tab.set_focus(self.focus)
+         if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+            self.stage_control_tab.set_stage(self.stage)
+            self.stage_control_tab.set_focus(self.focus)
+            self.stage_control_tab.set_config_path(self._config_path)
          
-         self.move_motors_dock.setVisible(True)
-         self.move_motors_dock.raise_()
+         self.stage_control_dock.setVisible(True)
+         self.stage_control_dock.raise_()
       else:
-         self.move_motors_dock.setVisible(False)
+         self.stage_control_dock.setVisible(False)
       return True
+
+   def _cleanup_stage_control(self, event):
+      """Clean up stage control resources when dock is closed."""
+      try:
+         if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+            self.stage_control_tab.cleanup()
+         event.accept()
+      except Exception:
+         event.accept()
 
    def _toggle_excitation_control_dock(self, checked: bool):
       """Toggle Excitation Control dock visibility and ensure devices are ready."""
@@ -2427,14 +2439,14 @@ class MainWindow(QtWidgets.QMainWindow):
       return True
 
    def _open_move_motors_dialog(self):
-      """Toggle Move Motors dock visibility."""
-      if hasattr(self, 'move_motors_dock') and self.move_motors_dock is not None:
+      """Toggle Stage Control dock visibility."""
+      if hasattr(self, 'stage_control_dock') and self.stage_control_dock is not None:
          # Toggle the dock visibility
-         current_visible = self.move_motors_dock.isVisible()
-         self._toggle_move_motors_dock(not current_visible)
+         current_visible = self.stage_control_dock.isVisible()
+         self._toggle_stage_control_dock(not current_visible)
          # Update menu item state
-         if hasattr(self, '_view_dock_actions') and 'move_motors' in self._view_dock_actions:
-            act = self._view_dock_actions['move_motors']
+         if hasattr(self, '_view_dock_actions') and 'stage_control' in self._view_dock_actions:
+            act = self._view_dock_actions['stage_control']
             act.blockSignals(True)
             act.setChecked(not current_visible)
             act.blockSignals(False)
