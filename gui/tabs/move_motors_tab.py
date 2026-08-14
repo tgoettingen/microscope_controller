@@ -312,19 +312,20 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _steps_to_real_units(self, steps: float, scale: float, offset: float) -> float:
         """Convert steps to real units."""
-        # Scale represents steps per unit (e.g., 103149 steps/mm)
-        real_units = steps / scale + offset
+        # Stage get_position() returns real units (mm), not actual steps
+        # No conversion needed, just apply offset
+        real_units = steps + offset
         print(f"DEBUG: Steps {steps} -> Real units {real_units} (scale={scale} steps/unit, offset={offset})")
+        print(f"DEBUG: NOTE: Stage get_position() returns real units, not actual steps")
         return real_units
     
     def _real_units_to_steps(self, real_units: float, scale: float, offset: float) -> float:
         """Convert real units to steps."""
-        if scale == 0:
-            print(f"DEBUG: Scale is 0, returning 0")
-            return 0.0
-        # Scale represents steps per unit (e.g., 103149 steps/mm)
-        steps = (real_units - offset) * scale
+        # Stage move_to() expects real units (same as get_position returns)
+        # No conversion needed, just apply offset
+        steps = real_units - offset
         print(f"DEBUG: Real units {real_units} -> Steps {steps} (scale={scale} steps/unit, offset={offset})")
+        print(f"DEBUG: NOTE: Stage move_to() expects real units, not actual steps")
         return steps
         
     def _build_ui(self) -> None:
