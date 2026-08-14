@@ -44,6 +44,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
         x_norm = max(0.0, min(1.0, x_norm))
         y_norm = max(0.0, min(1.0, y_norm))
         
+        # Invert Y for screen coordinates (screen Y increases downward)
+        y_norm = 1.0 - y_norm
+        
         # If we have a target position and it matches the new current position, clear target
         if self.target_position is not None:
             if abs(self.target_position[0] - x_norm) < 0.01 and abs(self.target_position[1] - y_norm) < 0.01:
@@ -82,6 +85,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
             clicked_x = max(0.0, min(1.0, clicked_x))
             clicked_y = max(0.0, min(1.0, clicked_y))
             
+            # Invert Y for stage coordinates (screen Y increases downward, stage Y increases upward)
+            clicked_y = 1.0 - clicked_y
+            
             # Convert to real units using limits
             real_x = self.x_min + clicked_x * (self.x_max - self.x_min)
             real_y = self.y_min + clicked_y * (self.y_max - self.y_min)
@@ -108,6 +114,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
             dragged_x = max(0.0, min(1.0, dragged_x))
             dragged_y = max(0.0, min(1.0, dragged_y))
             
+            # Invert Y for stage coordinates
+            dragged_y = 1.0 - dragged_y
+            
             # Convert to real units using limits
             real_x = self.x_min + dragged_x * (self.x_max - self.x_min)
             real_y = self.y_min + dragged_y * (self.y_max - self.y_min)
@@ -131,6 +140,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
             # Clamp to valid range
             released_x = max(0.0, min(1.0, released_x))
             released_y = max(0.0, min(1.0, released_y))
+            
+            # Invert Y for stage coordinates
+            released_y = 1.0 - released_y
             
             # Convert to real units using limits
             real_x = self.x_min + released_x * (self.x_max - self.x_min)
@@ -227,7 +239,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawRect(1, 1, width - 3, height - 3)
         
-        # Draw limit labels
+        # Draw limit labels (Y is inverted: top=min, bottom=max)
         painter.setPen(QtGui.QColor(80, 80, 80))
         painter.setFont(QtGui.QFont("Arial", 8))
         
@@ -235,9 +247,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.drawText(5, height - 5, f"{self.x_min:.1f}")
         painter.drawText(width - 40, height - 5, f"{self.x_max:.1f}")
         
-        # Y limits labels
-        painter.drawText(5, 12, f"{self.y_max:.1f}")
-        painter.drawText(5, height - 12, f"{self.y_min:.1f}")
+        # Y limits labels (inverted: top=min, bottom=max)
+        painter.drawText(5, 12, f"{self.y_min:.1f}")  # Top = min
+        painter.drawText(5, height - 12, f"{self.y_max:.1f}")  # Bottom = max
         
         painter.end()
 
@@ -312,13 +324,18 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _steps_to_real_units(self, steps: float, scale: float, offset: float) -> float:
         """Convert steps to real units."""
-        return steps * scale + offset
+        real_units = steps * scale + offset
+        print(f"DEBUG: Steps {steps} -> Real units {real_units} (scale={scale}, offset={offset})")
+        return real_units
     
     def _real_units_to_steps(self, real_units: float, scale: float, offset: float) -> float:
         """Convert real units to steps."""
         if scale == 0:
+            print(f"DEBUG: Scale is 0, returning 0")
             return 0.0
-        return (real_units - offset) / scale
+        steps = (real_units - offset) / scale
+        print(f"DEBUG: Real units {real_units} -> Steps {steps} (scale={scale}, offset={offset})")
+        return steps
         
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
@@ -372,11 +389,11 @@ class StageControlTab(QtWidgets.QWidget):
         y_slider_layout.setContentsMargins(0, 0, 0, 0)
         y_slider_layout.setSpacing(4)
         
-        # Y max label at top
-        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
-        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_max_label)
+        # Y min label at top (since slider is reversed, top = min)
+        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
+        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_min_label)
         
         self.y_spin = QtWidgets.QDoubleSpinBox()
         self.y_spin.setRange(-1e6, 1e6)
@@ -394,11 +411,11 @@ class StageControlTab(QtWidgets.QWidget):
         y_slider_layout.addWidget(self.y_spin)
         y_slider_layout.addWidget(self.y_slider)
         
-        # Y min label at bottom
-        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
-        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_min_label)
+        # Y max label at bottom (since slider is reversed, bottom = max)
+        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
+        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_max_label)
         
         position_layout.addWidget(y_slider_container, 1, 0, 1, 1)
         
@@ -789,11 +806,12 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # Convert to normalized 0-1000 range
+        # Convert to normalized 0-1000 range (reversed for Y axis)
         y_norm = int(((value - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
+        y_norm_reversed = 1000 - y_norm  # Reverse for Y axis (up is positive)
         
         self.y_slider.blockSignals(True)
-        self.y_slider.setValue(y_norm)
+        self.y_slider.setValue(y_norm_reversed)
         self.y_slider.blockSignals(False)
         
         # Update position block target if in normal mode
@@ -815,8 +833,9 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # Convert from normalized 0-1000 range to real units
-        y_real = y_min + (value / 1000.0) * (y_max - y_min)
+        # Convert from normalized 0-1000 range to real units (reversed for Y axis)
+        y_norm_reversed = 1000 - value  # Reverse back from slider direction
+        y_real = y_min + (y_norm_reversed / 1000.0) * (y_max - y_min)
         
         self.y_spin.blockSignals(True)
         self.y_spin.setValue(y_real)
@@ -882,6 +901,7 @@ class StageControlTab(QtWidgets.QWidget):
         # Convert to normalized 0-1000 range
         x_norm = int(((x_val - x_min) / (x_max - x_min)) * 1000) if x_max > x_min else 500
         y_norm = int(((y_val - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
+        y_norm_reversed = 1000 - y_norm  # Reverse for Y axis (up is positive)
         z_norm = int(((z_val - z_min) / (z_max - z_min)) * 1000) if z_max > z_min else 500
         
         self.x_slider.blockSignals(True)
@@ -889,7 +909,7 @@ class StageControlTab(QtWidgets.QWidget):
         self.z_slider.blockSignals(True)
         
         self.x_slider.setValue(x_norm)
-        self.y_slider.setValue(y_norm)
+        self.y_slider.setValue(y_norm_reversed)
         self.z_slider.setValue(z_norm)
         
         self.x_slider.blockSignals(False)
@@ -912,6 +932,9 @@ class StageControlTab(QtWidgets.QWidget):
             print(f"DEBUG: Moving to X={x_real}, Y={y_real}, Z={z_real}")
             print(f"DEBUG: Stage exists: {self.stage is not None}")
             print(f"DEBUG: Focus exists: {self.focus is not None}")
+            print(f"DEBUG: Stage config - x_scale={self.stage_config['x_scale']}, x_offset={self.stage_config['x_offset']}")
+            print(f"DEBUG: Stage config - y_scale={self.stage_config['y_scale']}, y_offset={self.stage_config['y_offset']}")
+            print(f"DEBUG: Focus config - scale={self.focus_config['scale']}, offset={self.focus_config['offset']}")
             
             # Convert real units to steps
             x_steps = self._real_units_to_steps(x_real, self.stage_config['x_scale'], self.stage_config['x_offset'])
