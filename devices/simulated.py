@@ -13,7 +13,11 @@ def _caps(kind: str, **extra):
 
 
 class SimulatedStageXY:
-    """Simple XY stage simulation with instant movement."""
+    """Simple XY stage simulation with instant movement.
+    
+    Note: When wrapped by ScaledStageXY, this receives scaled coordinates (steps).
+    Range validation is handled by ScaledStageXY.
+    """
 
     def __init__(self):
         self.connected = False
