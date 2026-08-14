@@ -22,6 +22,7 @@ except Exception:
 try:
    from PyQt6 import QtWidgets, QtCore
    from PyQt6.QtGui import QAction, QActionGroup
+   from PyQt6.QtCore import Qt
 except Exception:
    # PyQt6 not importable — check whether PyQt5 is present to give targeted advice
    if importlib.util.find_spec("PyQt5") is not None:
@@ -1320,7 +1321,7 @@ class MainWindow(QtWidgets.QMainWindow):
          self.detctl_dock.setFeatures(
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
-            QtWidgets.QDockWidget.DockWidgetClosable
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
          self._install_dock_context_menu(self.detctl_dock, "detctl")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.detctl_dock)
