@@ -312,8 +312,9 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _steps_to_real_units(self, steps: float, scale: float, offset: float) -> float:
         """Convert steps to real units."""
-        real_units = steps * scale + offset
-        print(f"DEBUG: Steps {steps} -> Real units {real_units} (scale={scale}, offset={offset})")
+        # Scale represents steps per unit (e.g., 103149 steps/mm)
+        real_units = steps / scale + offset
+        print(f"DEBUG: Steps {steps} -> Real units {real_units} (scale={scale} steps/unit, offset={offset})")
         return real_units
     
     def _real_units_to_steps(self, real_units: float, scale: float, offset: float) -> float:
@@ -321,8 +322,9 @@ class StageControlTab(QtWidgets.QWidget):
         if scale == 0:
             print(f"DEBUG: Scale is 0, returning 0")
             return 0.0
-        steps = (real_units - offset) / scale
-        print(f"DEBUG: Real units {real_units} -> Steps {steps} (scale={scale}, offset={offset})")
+        # Scale represents steps per unit (e.g., 103149 steps/mm)
+        steps = (real_units - offset) * scale
+        print(f"DEBUG: Real units {real_units} -> Steps {steps} (scale={scale} steps/unit, offset={offset})")
         return steps
         
     def _build_ui(self) -> None:
@@ -923,6 +925,8 @@ class StageControlTab(QtWidgets.QWidget):
             print(f"DEBUG: Stage config - x_scale={self.stage_config['x_scale']}, x_offset={self.stage_config['x_offset']}")
             print(f"DEBUG: Stage config - y_scale={self.stage_config['y_scale']}, y_offset={self.stage_config['y_offset']}")
             print(f"DEBUG: Focus config - scale={self.focus_config['scale']}, offset={self.focus_config['offset']}")
+            print(f"DEBUG: Stage limits - x_min={self.stage_config.get('x_min')}, x_max={self.stage_config.get('x_max')}")
+            print(f"DEBUG: Stage limits - y_min={self.stage_config.get('y_min')}, y_max={self.stage_config.get('y_max')}")
             
             # Convert real units to steps
             x_steps = self._real_units_to_steps(x_real, self.stage_config['x_scale'], self.stage_config['x_offset'])
@@ -930,6 +934,11 @@ class StageControlTab(QtWidgets.QWidget):
             z_steps = self._real_units_to_steps(z_real, self.focus_config['scale'], self.focus_config['offset'])
             
             print(f"DEBUG: Steps - X={x_steps}, Y={y_steps}, Z={z_steps}")
+            
+            # Check if steps are reasonable
+            if abs(x_steps) < 1 and abs(y_steps) < 1:
+                print(f"DEBUG: WARNING - Steps are too small! Check scale/offset configuration")
+                print(f"DEBUG: Expected steps should be in the range of hundreds to thousands")
             
             if self.stage and hasattr(self.stage, 'move_to'):
                 print(f"DEBUG: Calling stage.move_to({x_steps}, {y_steps})")

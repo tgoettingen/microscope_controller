@@ -803,6 +803,140 @@ class MainWindow(QtWidgets.QMainWindow):
          return
 
 
+   def _install_dock_context_menu(self, dock: QtWidgets.QDockWidget, dock_id: str) -> None:
+      """Install a context menu on a dock widget with space-filling options."""
+      try:
+         dock.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+         dock.customContextMenuRequested.connect(
+            lambda pos: self._show_dock_context_menu(dock, dock_id, pos)
+         )
+         
+         # Install double-click handler for title bar
+         title_bar = dock.titleBarWidget()
+         if title_bar is not None:
+            title_bar.mouseDoubleClickEvent = lambda event: self._toggle_dock_maximize(dock, dock_id)
+      except Exception:
+         pass
+
+   def _show_dock_context_menu(self, dock: QtWidgets.QDockWidget, dock_id: str, pos) -> None:
+      """Show context menu for dock widget with space-filling options."""
+      try:
+         menu = QtWidgets.QMenu(self)
+         
+         fill_action = menu.addAction("Fill Available Space")
+         fill_action.triggered.connect(lambda: self._fill_dock_space(dock, dock_id))
+         
+         maximize_action = menu.addAction("Maximize Panel")
+         maximize_action.triggered.connect(lambda: self._toggle_dock_maximize(dock, dock_id))
+         
+         restore_action = menu.addAction("Restore Normal Size")
+         restore_action.triggered.connect(lambda: self._restore_dock_size(dock, dock_id))
+         
+         menu.addSeparator()
+         
+         auto_arrange_action = menu.addAction("Auto-Arrange All Panels")
+         auto_arrange_action.triggered.connect(self._auto_arrange_visible_panels)
+         
+         menu.exec(dock.mapToGlobal(pos))
+      except Exception:
+         pass
+
+   def _fill_dock_space(self, dock: QtWidgets.QDockWidget, dock_id: str) -> None:
+      """Make the dock expand to fill available space in its area."""
+      try:
+         # Get the dock's current geometry
+         current_geo = dock.geometry()
+         
+         # Find sibling docks in the same area
+         area = self.dockWidgetArea(dock)
+         sibling_docks = self.findChildren(QtWidgets.QDockWidget)
+         area_siblings = [d for d in sibling_docks if d != dock and self.dockWidgetArea(d) == area and d.isVisible()]
+         
+         if not area_siblings:
+            # No siblings, already filling space
+            return
+         
+         # Calculate total available space and distribute
+         main_window_size = self.size()
+         
+         # Resize to fill significant portion of available space
+         if area in (QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, QtCore.Qt.DockWidgetArea.RightDockWidgetArea):
+            # Vertical dock - expand horizontally
+             target_width = int(main_window_size.width() * 0.4)  # 40% of window width
+             self.resizeDocks([dock] + area_siblings, [target_width] + [200] * len(area_siblings), QtCore.Qt.Orientation.Horizontal)
+         else:
+            # Horizontal dock - expand vertically
+            target_height = int(main_window_size.height() * 0.4)  # 40% of window height
+            self.resizeDocks([dock] + area_siblings, [target_height] + [200] * len(area_siblings), QtCore.Qt.Orientation.Vertical)
+            
+      except Exception:
+         pass
+
+   def _toggle_dock_maximize(self, dock: QtWidgets.QDockWidget, dock_id: str) -> None:
+      """Toggle dock between normal and maximized size."""
+      try:
+         # Check if currently maximized (heuristic: if it's very large)
+         current_size = dock.size()
+         window_size = self.size()
+         
+         is_maximized = (current_size.width() > window_size.width() * 0.7 or 
+                        current_size.height() > window_size.height() * 0.7)
+         
+         if is_maximized:
+            self._restore_dock_size(dock, dock_id)
+         else:
+            self._maximize_dock(dock, dock_id)
+      except Exception:
+         pass
+
+   def _maximize_dock(self, dock: QtWidgets.QDockWidget, dock_id: str) -> None:
+      """Maximize the dock to fill most of the window."""
+      try:
+         # Hide other docks temporarily
+         all_docks = self.findChildren(QtWidgets.QDockWidget)
+         other_docks = [d for d in all_docks if d != dock and d.isVisible()]
+         
+         # Store visibility state
+         if not hasattr(self, '_maximize_state'):
+            self._maximize_state = {}
+         self._maximize_state[dock_id] = [d.isVisible() for d in other_docks]
+         
+         for d in other_docks:
+            d.setVisible(False)
+         
+         # Make dock floating and maximize
+         dock.setFloating(True)
+         dock.showMaximized()
+         
+      except Exception:
+         pass
+
+   def _restore_dock_size(self, dock: QtWidgets.QDockWidget, dock_id: str) -> None:
+      """Restore dock to normal size and show other docks."""
+      try:
+         # Restore from floating state
+         if dock.isFloating():
+            dock.setFloating(False)
+            dock.showNormal()
+         
+         # Restore other docks visibility
+         if hasattr(self, '_maximize_state') and dock_id in self._maximize_state:
+            all_docks = self.findChildren(QtWidgets.QDockWidget)
+            other_docks = [d for d in all_docks if d != dock]
+            visibility_states = self._maximize_state[dock_id]
+            
+            for i, d in enumerate(other_docks):
+               if i < len(visibility_states):
+                  d.setVisible(visibility_states[i])
+            
+            del self._maximize_state[dock_id]
+         
+         # Auto-arrange to restore sensible layout
+         self._auto_arrange_visible_panels()
+         
+      except Exception:
+         pass
+
    def _sync_view_menu_checks(self):
       """One-shot sync of View menu checkmarks from current dock state."""
       try:
@@ -985,6 +1119,7 @@ class MainWindow(QtWidgets.QMainWindow):
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
       )
+      self._install_dock_context_menu(self.demo_dock, "demo")
       self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.demo_dock)
 
       # Multi-axis tab dock
@@ -1002,6 +1137,7 @@ class MainWindow(QtWidgets.QMainWindow):
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
       )
+      self._install_dock_context_menu(self.multi_dock, "multiaxis")
       self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multi_dock)
 
       # Multi-view camera control dock (scan definition for camera capture)
@@ -1019,6 +1155,7 @@ class MainWindow(QtWidgets.QMainWindow):
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
          QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
       )
+      self._install_dock_context_menu(self.multiviewctl_dock, "multiviewctl")
       self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multiviewctl_dock)
 
       # Enable tabbed docking and splitting for all docks
@@ -1072,6 +1209,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.cam_dock, "camera")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.cam_dock)
 
          # Camera control dock (webcam preview controls)
@@ -1090,6 +1228,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.camctl_dock, "camctl")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.camctl_dock)
 
          # Wire camera control signals
@@ -1117,6 +1256,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.multiview_dock, "multiview")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.multiview_dock)
 
          # Keep a thread-safe copy of the toggle state (worker threads must not read Qt widgets)
@@ -1141,6 +1281,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.detimg_dock, "detimg")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.detimg_dock)
 
          # Plot dock
@@ -1158,6 +1299,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.plot_dock, "plot")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.plot_dock)
 
          # Detector controls dock
@@ -1178,8 +1320,9 @@ class MainWindow(QtWidgets.QMainWindow):
          self.detctl_dock.setFeatures(
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
-            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
+            QtWidgets.QDockWidget.DockWidgetClosable
          )
+         self._install_dock_context_menu(self.detctl_dock, "detctl")
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.detctl_dock)
 
          # Stage Control dock
@@ -1208,6 +1351,7 @@ class MainWindow(QtWidgets.QMainWindow):
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
             )
+            self._install_dock_context_menu(self.stage_control_dock, "stage_control")
             self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.stage_control_dock)
             # Initially hide it
             self.stage_control_dock.setVisible(False)
@@ -1246,6 +1390,7 @@ class MainWindow(QtWidgets.QMainWindow):
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
             )
+            self._install_dock_context_menu(self.excitation_control_dock, "excitation_control")
             self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.excitation_control_dock)
             # Initially hide it
             self.excitation_control_dock.setVisible(False)
@@ -1281,6 +1426,7 @@ class MainWindow(QtWidgets.QMainWindow):
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
                QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
             )
+            self._install_dock_context_menu(self.stage_calibration_dock, "stage_calibration")
             self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.stage_calibration_dock)
             # Initially hide it
             self.stage_calibration_dock.setVisible(False)
