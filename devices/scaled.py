@@ -253,8 +253,8 @@ class ScaledStageXY:
     def move_to(self, x: float, y: float) -> None:
         # Validate logical coordinates against soft limits *before* scaling,
         # and cross-check any electrical operating-point settings.
-        ScaledStageXY._check_axis(x, self._x_limits, self._op_x, "X")
-        ScaledStageXY._check_axis(y, self._y_limits, self._op_y, "Y")
+        ScaledStageXY._check_axis(x/self.x_scale, self._x_limits, self._op_x, "X")
+        ScaledStageXY._check_axis(y/self.y_scale, self._y_limits, self._op_y, "Y")
 
         rx = float(x) * self.x_scale + self.x_offset
         ry = float(y) * self.y_scale + self.y_offset
