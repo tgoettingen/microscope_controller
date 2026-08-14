@@ -2780,6 +2780,9 @@ class MainWindow(QtWidgets.QMainWindow):
          
          # Update the tab with devices
          if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+            logger.info(f"Setting stage on stage_control_tab: {self.stage}")
+            logger.info(f"Stage type: {type(self.stage)}")
+            logger.info(f"Stage has move_to: {hasattr(self.stage, 'move_to')}")
             self.stage_control_tab.set_stage(self.stage)
             self.stage_control_tab.set_focus(self.focus)
             self.stage_control_tab.set_config_path(self._config_path)

@@ -1026,6 +1026,11 @@ class StageControlTab(QtWidgets.QWidget):
     
     def set_stage(self, stage: StageXY):
         """Set the stage device and refresh position."""
+        print(f"DEBUG: set_stage called with stage: {stage}")
+        print(f"DEBUG: Stage type: {type(stage)}")
+        print(f"DEBUG: Stage id: {id(stage)}")
+        print(f"DEBUG: Stage has move_to: {hasattr(stage, 'move_to')}")
+        
         self.stage = stage
         self._update_device_status()
         # Immediately refresh position after loading hardware
