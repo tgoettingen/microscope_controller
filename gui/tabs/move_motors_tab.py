@@ -143,7 +143,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
             self.update()
     
     def paintEvent(self, event):
-        """Paint the position block with current position indicator."""
+        """Paint the position block with current position indicator and limit borders."""
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         
@@ -219,6 +219,25 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawLine(int(cur_x), int(cur_y), int(cur_x), height)
         painter.drawLine(int(cur_x), int(cur_y), width, int(cur_y))
+        
+        # Draw limit boundaries (highlight the actual usable area)
+        # The entire block represents the limits, so draw a subtle inner frame
+        # to indicate the boundary
+        painter.setPen(QtGui.QColor(50, 50, 50, 50))
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        painter.drawRect(1, 1, width - 3, height - 3)
+        
+        # Draw limit labels
+        painter.setPen(QtGui.QColor(80, 80, 80))
+        painter.setFont(QtGui.QFont("Arial", 8))
+        
+        # X limits labels
+        painter.drawText(5, height - 5, f"{self.x_min:.1f}")
+        painter.drawText(width - 40, height - 5, f"{self.x_max:.1f}")
+        
+        # Y limits labels
+        painter.drawText(5, 12, f"{self.y_max:.1f}")
+        painter.drawText(5, height - 12, f"{self.y_min:.1f}")
         
         painter.end()
 
@@ -323,14 +342,15 @@ class StageControlTab(QtWidgets.QWidget):
         position_layout.setSpacing(4)
         position_layout.setContentsMargins(8, 8, 8, 8)
         
+        # Get limits for labels and tooltip
+        x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
+        x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
+        y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
+        y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
+        
         # Position block in center (row 1, col 1)
         self.position_block = PositionBlockWidget()
-        self.position_block.set_limits(
-            self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0,
-            self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0,
-            self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0,
-            self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
-        )
+        self.position_block.set_limits(x_min, x_max, y_min, y_max)
         self.position_block.setMinimumSize(200, 200)  # Match slider dimensions: 200x200
         self.position_block.setMaximumSize(200, 200)  # Fixed size to match sliders
         self.position_block.position_clicked.connect(self._on_position_block_clicked)
@@ -345,6 +365,12 @@ class StageControlTab(QtWidgets.QWidget):
         y_slider_layout.setContentsMargins(0, 0, 0, 0)
         y_slider_layout.setSpacing(4)
         
+        # Y max label at top
+        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
+        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_max_label)
+        
         self.y_spin = QtWidgets.QDoubleSpinBox()
         self.y_spin.setRange(-1e6, 1e6)
         self.y_spin.setDecimals(3)
@@ -356,9 +382,16 @@ class StageControlTab(QtWidgets.QWidget):
         self.y_slider.setRange(0, 1000)
         self.y_slider.setValue(0)
         self.y_slider.setFixedHeight(200)  # Exactly 200px to match position block height
+        self.y_slider.setToolTip(f"Y range: {y_min:.1f} to {y_max:.1f} {self.stage_config['unit']}")
         
         y_slider_layout.addWidget(self.y_spin)
         y_slider_layout.addWidget(self.y_slider)
+        
+        # Y min label at bottom
+        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
+        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_min_label)
         
         position_layout.addWidget(y_slider_container, 1, 0, 1, 1)
         
@@ -372,6 +405,26 @@ class StageControlTab(QtWidgets.QWidget):
         self.x_slider.setRange(0, 1000)
         self.x_slider.setValue(0)
         self.x_slider.setFixedWidth(200)  # Exactly 200px to match position block width
+        self.x_slider.setToolTip(f"X range: {x_min:.1f} to {x_max:.1f} {self.stage_config['unit']}")
+        
+        # X limits labels row
+        x_limits_row = QtWidgets.QWidget()
+        x_limits_layout = QtWidgets.QHBoxLayout(x_limits_row)
+        x_limits_layout.setContentsMargins(0, 0, 0, 0)
+        x_limits_layout.setSpacing(0)
+        
+        x_min_label = QtWidgets.QLabel(f"{x_min:.1f}")
+        x_min_label.setStyleSheet("font-size: 9px; color: #666;")
+        x_limits_layout.addWidget(x_min_label)
+        
+        x_limits_layout.addStretch()
+        
+        x_max_label = QtWidgets.QLabel(f"{x_max:.1f}")
+        x_max_label.setStyleSheet("font-size: 9px; color: #666;")
+        x_limits_layout.addWidget(x_max_label)
+        
+        x_slider_layout.addWidget(self.x_slider)
+        x_slider_layout.addWidget(x_limits_row)
         
         self.x_spin = QtWidgets.QDoubleSpinBox()
         self.x_spin.setRange(-1e6, 1e6)
@@ -380,7 +433,6 @@ class StageControlTab(QtWidgets.QWidget):
         self.x_spin.setValue(0.0)
         self.x_spin.setMaximumWidth(100)
         
-        x_slider_layout.addWidget(self.x_slider)
         x_slider_layout.addWidget(self.x_spin)
         
         position_layout.addWidget(x_slider_container, 2, 1, 1, 1)
@@ -641,18 +693,18 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # X slider limits
+        # X slider limits - use 0-1000 range normalized
         self.x_spin.setRange(x_min, x_max)
-        self.x_slider.setRange(int(x_min * 100), int(x_max * 100))
+        self.x_slider.setRange(0, 1000)  # Normalized 0-1000 range
         
-        # Y slider limits
+        # Y slider limits - use 0-1000 range normalized
         self.y_spin.setRange(y_min, y_max)
-        self.y_slider.setRange(int(y_min * 100), int(y_max * 100))
+        self.y_slider.setRange(0, 1000)  # Normalized 0-1000 range
         
-        # Z slider limits
+        # Z slider limits - use 0-1000 range normalized
         if self.focus_config['min'] is not None and self.focus_config['max'] is not None:
             self.z_spin.setRange(self.focus_config['min'], self.focus_config['max'])
-            self.z_slider.setRange(int(self.focus_config['min'] * 100), int(self.focus_config['max'] * 100))
+            self.z_slider.setRange(0, 1000)  # Normalized 0-1000 range
         
         # Sync position block limits with slider limits
         if hasattr(self, 'position_block'):
@@ -660,8 +712,15 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_x_spin_changed(self, value):
         """Handle X spinbox change."""
+        # Get limits for normalization
+        x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
+        x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
+        
+        # Convert to normalized 0-1000 range
+        x_norm = int(((value - x_min) / (x_max - x_min)) * 1000) if x_max > x_min else 500
+        
         self.x_slider.blockSignals(True)
-        self.x_slider.setValue(int(value * 100))
+        self.x_slider.setValue(x_norm)
         self.x_slider.blockSignals(False)
         
         # Update position block target if in normal mode
@@ -669,20 +728,25 @@ class StageControlTab(QtWidgets.QWidget):
             x_val = self.x_spin.value()
             y_val = self.y_spin.value()
             # Get current limits for normalization
-            x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
-            x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
             y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
             y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
             # Convert to normalized coordinates for position block
-            x_norm = (x_val - x_min) / (x_max - x_min) if x_max > x_min else 0.5
-            y_norm = (y_val - y_min) / (y_max - y_min) if y_max > y_min else 0.5
-            self.position_block.target_position = (x_norm, y_norm)
+            x_norm_block = (x_val - x_min) / (x_max - x_min) if x_max > x_min else 0.5
+            y_norm_block = (y_val - y_min) / (y_max - y_min) if y_max > y_min else 0.5
+            self.position_block.target_position = (x_norm_block, y_norm_block)
             self.position_block.update()
     
     def _on_x_slider_changed(self, value):
         """Handle X slider change."""
+        # Get limits for conversion
+        x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
+        x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
+        
+        # Convert from normalized 0-1000 range to real units
+        x_real = x_min + (value / 1000.0) * (x_max - x_min)
+        
         self.x_spin.blockSignals(True)
-        self.x_spin.setValue(value / 100.0)
+        self.x_spin.setValue(x_real)
         self.x_spin.blockSignals(False)
         
         # Update position block target if in normal mode
@@ -690,8 +754,6 @@ class StageControlTab(QtWidgets.QWidget):
             x_val = self.x_spin.value()
             y_val = self.y_spin.value()
             # Get current limits for normalization
-            x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
-            x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
             y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
             y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
             # Convert to normalized coordinates for position block
@@ -706,8 +768,15 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_y_spin_changed(self, value):
         """Handle Y spinbox change."""
+        # Get limits for normalization
+        y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
+        y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
+        
+        # Convert to normalized 0-1000 range
+        y_norm = int(((value - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
+        
         self.y_slider.blockSignals(True)
-        self.y_slider.setValue(int(value * 100))
+        self.y_slider.setValue(y_norm)
         self.y_slider.blockSignals(False)
         
         # Update position block target if in normal mode
@@ -717,18 +786,23 @@ class StageControlTab(QtWidgets.QWidget):
             # Get current limits for normalization
             x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
             x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
-            y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
-            y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
             # Convert to normalized coordinates for position block
-            x_norm = (x_val - x_min) / (x_max - x_min) if x_max > x_min else 0.5
-            y_norm = (y_val - y_min) / (y_max - y_min) if y_max > y_min else 0.5
-            self.position_block.target_position = (x_norm, y_norm)
+            x_norm_block = (x_val - x_min) / (x_max - x_min) if x_max > x_min else 0.5
+            y_norm_block = (y_val - y_min) / (y_max - y_min) if y_max > y_min else 0.5
+            self.position_block.target_position = (x_norm_block, y_norm_block)
             self.position_block.update()
     
     def _on_y_slider_changed(self, value):
         """Handle Y slider change."""
+        # Get limits for conversion
+        y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
+        y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
+        
+        # Convert from normalized 0-1000 range to real units
+        y_real = y_min + (value / 1000.0) * (y_max - y_min)
+        
         self.y_spin.blockSignals(True)
-        self.y_spin.setValue(value / 100.0)
+        self.y_spin.setValue(y_real)
         self.y_spin.blockSignals(False)
         
         # Update position block target if in normal mode
@@ -738,8 +812,6 @@ class StageControlTab(QtWidgets.QWidget):
             # Get current limits for normalization
             x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
             x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
-            y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
-            y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
             # Convert to normalized coordinates for position block
             x_norm = (x_val - x_min) / (x_max - x_min) if x_max > x_min else 0.5
             y_norm = (y_val - y_min) / (y_max - y_min) if y_max > y_min else 0.5
@@ -752,29 +824,56 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_z_spin_changed(self, value):
         """Handle Z spinbox change."""
+        # Get limits for normalization
+        z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
+        z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
+        
+        # Convert to normalized 0-1000 range
+        z_norm = int(((value - z_min) / (z_max - z_min)) * 1000) if z_max > z_min else 500
+        
         self.z_slider.blockSignals(True)
-        self.z_slider.setValue(int(value * 100))
+        self.z_slider.setValue(z_norm)
         self.z_slider.blockSignals(False)
     
     def _on_z_slider_changed(self, value):
         """Handle Z slider change."""
+        # Get limits for conversion
+        z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
+        z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
+        
+        # Convert from normalized 0-1000 range to real units
+        z_real = z_min + (value / 1000.0) * (z_max - z_min)
+        
         self.z_spin.blockSignals(True)
-        self.z_spin.setValue(value / 100.0)
+        self.z_spin.setValue(z_real)
         self.z_spin.blockSignals(False)
     
     def _update_sliders_from_spinboxes(self):
-        """Update sliders from current spinbox values."""
+        """Update sliders from current spinbox values using normalized coordinates."""
         x_val = self.x_spin.value()
         y_val = self.y_spin.value()
         z_val = self.z_spin.value()
+        
+        # Get limits for normalization
+        x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
+        x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
+        y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
+        y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
+        z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
+        z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
+        
+        # Convert to normalized 0-1000 range
+        x_norm = int(((x_val - x_min) / (x_max - x_min)) * 1000) if x_max > x_min else 500
+        y_norm = int(((y_val - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
+        z_norm = int(((z_val - z_min) / (z_max - z_min)) * 1000) if z_max > z_min else 500
         
         self.x_slider.blockSignals(True)
         self.y_slider.blockSignals(True)
         self.z_slider.blockSignals(True)
         
-        self.x_slider.setValue(int(x_val * 100))
-        self.y_slider.setValue(int(y_val * 100))
-        self.z_slider.setValue(int(z_val * 100))
+        self.x_slider.setValue(x_norm)
+        self.y_slider.setValue(y_norm)
+        self.z_slider.setValue(z_norm)
         
         self.x_slider.blockSignals(False)
         self.y_slider.blockSignals(False)
@@ -787,16 +886,30 @@ class StageControlTab(QtWidgets.QWidget):
             y_real = self.y_spin.value()
             z_real = self.z_spin.value()
             
+            print(f"DEBUG: Moving to X={x_real}, Y={y_real}, Z={z_real}")
+            print(f"DEBUG: Stage exists: {self.stage is not None}")
+            print(f"DEBUG: Focus exists: {self.focus is not None}")
+            
             # Convert real units to steps
             x_steps = self._real_units_to_steps(x_real, self.stage_config['x_scale'], self.stage_config['x_offset'])
             y_steps = self._real_units_to_steps(y_real, self.stage_config['y_scale'], self.stage_config['y_offset'])
             z_steps = self._real_units_to_steps(z_real, self.focus_config['scale'], self.focus_config['offset'])
             
+            print(f"DEBUG: Steps - X={x_steps}, Y={y_steps}, Z={z_steps}")
+            
             if self.stage and hasattr(self.stage, 'move_to'):
+                print(f"DEBUG: Calling stage.move_to({x_steps}, {y_steps})")
                 self.stage.move_to(x_steps, y_steps)
+                print(f"DEBUG: Stage move completed")
+            else:
+                print(f"DEBUG: Stage move_to not available")
                 
             if self.focus and hasattr(self.focus, 'move_to'):
+                print(f"DEBUG: Calling focus.move_to({z_steps})")
                 self.focus.move_to(z_steps)
+                print(f"DEBUG: Focus move completed")
+            else:
+                print(f"DEBUG: Focus move_to not available")
                 
             # Reset target position after successful move (in normal mode)
             if not self._is_live_mode:
@@ -805,6 +918,9 @@ class StageControlTab(QtWidgets.QWidget):
             self._refresh_position()
             
         except Exception as e:
+            print(f"DEBUG: Move error: {e}")
+            import traceback
+            traceback.print_exc()
             QtWidgets.QMessageBox.warning(self, "Move Error", f"Failed to move: {e}")
     
     def _refresh_position(self):
@@ -812,8 +928,13 @@ class StageControlTab(QtWidgets.QWidget):
         try:
             x_real, y_real, z_real = 0.0, 0.0, 0.0
             
+            print(f"DEBUG: Refreshing position...")
+            print(f"DEBUG: Stage exists: {self.stage is not None}")
+            print(f"DEBUG: Focus exists: {self.focus is not None}")
+            
             if self.stage and hasattr(self.stage, 'get_position'):
                 pos = self.stage.get_position()
+                print(f"DEBUG: Stage position raw: {pos}")
                 if isinstance(pos, (tuple, list)) and len(pos) >= 2:
                     x_steps, y_steps = float(pos[0]), float(pos[1])
                 else:
@@ -823,10 +944,12 @@ class StageControlTab(QtWidgets.QWidget):
                 # Convert steps to real units
                 x_real = self._steps_to_real_units(x_steps, self.stage_config['x_scale'], self.stage_config['x_offset'])
                 y_real = self._steps_to_real_units(y_steps, self.stage_config['y_scale'], self.stage_config['y_offset'])
+                print(f"DEBUG: Stage position real: X={x_real}, Y={y_real}")
                     
             if self.focus and hasattr(self.focus, 'get_position'):
                 z_steps = float(self.focus.get_position()) if self.focus.get_position() is not None else 0.0
                 z_real = self._steps_to_real_units(z_steps, self.focus_config['scale'], self.focus_config['offset'])
+                print(f"DEBUG: Focus position real: Z={z_real}")
                 
             self.current_x_label.setText(f"X: {x_real:.3f} {self.stage_config['unit']}")
             self.current_y_label.setText(f"Y: {y_real:.3f} {self.stage_config['unit']}")
@@ -851,6 +974,9 @@ class StageControlTab(QtWidgets.QWidget):
             self.position_changed.emit(x_real, y_real, z_real)
             
         except Exception as e:
+            print(f"DEBUG: Refresh error: {e}")
+            import traceback
+            traceback.print_exc()
             self.current_x_label.setText("Error")
             self.current_y_label.setText("Error")
             self.current_z_label.setText("Error")
