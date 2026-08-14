@@ -748,6 +748,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "detimg": getattr(self, "detimg_dock", None),
             "plot": getattr(self, "plot_dock", None),
             "detctl": getattr(self, "detctl_dock", None),
+            "move_motors": getattr(self, "move_motors_dock", None),
+            "excitation_control": getattr(self, "excitation_control_dock", None),
+            "stage_calibration": getattr(self, "stage_calibration_dock", None),
          }
 
          for key, dock in dock_map.items():
@@ -816,6 +819,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ("detimg", getattr(self, "detimg_dock", None)),
             ("plot", getattr(self, "plot_dock", None)),
             ("detctl", getattr(self, "detctl_dock", None)),
+            ("move_motors", getattr(self, "move_motors_dock", None)),
+            ("excitation_control", getattr(self, "excitation_control_dock", None)),
+            ("stage_calibration", getattr(self, "stage_calibration_dock", None)),
          ]
          for key, dock in pairs:
             act = actions.get(key)
@@ -1175,6 +1181,109 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
          )
          self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.detctl_dock)
+
+         # Move Motors dock
+         try:
+            from gui.tabs.move_motors_tab import MoveMotorsTab
+         except ImportError:
+            try:
+               from tabs.move_motors_tab import MoveMotorsTab
+            except Exception:
+               logger.warning("Could not import MoveMotorsTab")
+               MoveMotorsTab = None
+         
+         if MoveMotorsTab is not None:
+            self.move_motors_tab = MoveMotorsTab()
+            self.move_motors_dock = QtWidgets.QDockWidget("Move Motors", self)
+            self.move_motors_dock.setObjectName("dock_move_motors")
+            self.move_motors_dock.setWidget(self.move_motors_tab)
+            self.move_motors_dock.setAllowedAreas(
+               QtCore.Qt.DockWidgetArea.LeftDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.RightDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.TopDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            self.move_motors_dock.setFeatures(
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
+            )
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.move_motors_dock)
+            # Initially hide it
+            self.move_motors_dock.setVisible(False)
+         else:
+            self.move_motors_tab = None
+            self.move_motors_dock = None
+
+         # Excitation Control dock
+         try:
+            from gui.tabs.excitation_control_tab import ExcitationControlTab
+         except ImportError:
+            try:
+               from tabs.excitation_control_tab import ExcitationControlTab
+            except Exception:
+               logger.warning("Could not import ExcitationControlTab")
+               ExcitationControlTab = None
+         
+         if ExcitationControlTab is not None:
+            # Create with empty device list initially
+            self.excitation_control_tab = ExcitationControlTab([])
+            self.excitation_control_dock = QtWidgets.QDockWidget("Excitation Control", self)
+            self.excitation_control_dock.setObjectName("dock_excitation_control")
+            self.excitation_control_dock.setWidget(self.excitation_control_tab)
+            self.excitation_control_dock.setAllowedAreas(
+               QtCore.Qt.DockWidgetArea.LeftDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.RightDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.TopDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            self.excitation_control_dock.setFeatures(
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
+            )
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.excitation_control_dock)
+            # Initially hide it
+            self.excitation_control_dock.setVisible(False)
+         else:
+            self.excitation_control_tab = None
+            self.excitation_control_dock = None
+
+         # Stage Calibration dock
+         try:
+            from gui.tabs.stage_calibration_tab import StageCalibrationTab
+         except ImportError:
+            try:
+               from tabs.stage_calibration_tab import StageCalibrationTab
+            except Exception:
+               logger.warning("Could not import StageCalibrationTab")
+               StageCalibrationTab = None
+         
+         if StageCalibrationTab is not None:
+            self.stage_calibration_tab = StageCalibrationTab(config_path=self._config_path)
+            self.stage_calibration_dock = QtWidgets.QDockWidget("Stage Calibration", self)
+            self.stage_calibration_dock.setObjectName("dock_stage_calibration")
+            self.stage_calibration_dock.setWidget(self.stage_calibration_tab)
+            self.stage_calibration_dock.setAllowedAreas(
+               QtCore.Qt.DockWidgetArea.LeftDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.RightDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.TopDockWidgetArea |
+               QtCore.Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            self.stage_calibration_dock.setFeatures(
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
+               QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable
+            )
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.stage_calibration_dock)
+            # Initially hide it
+            self.stage_calibration_dock.setVisible(False)
+            
+            # Connect calibration saved signal
+            self.stage_calibration_tab.calibration_saved.connect(self._on_calibration_saved)
+         else:
+            self.stage_calibration_tab = None
+            self.stage_calibration_dock = None
 
          # connect view change signals so docks can be shown/hidden as view changes
          try:
@@ -1777,6 +1886,14 @@ class MainWindow(QtWidgets.QMainWindow):
       move_motors_action.triggered.connect(self._open_move_motors_dialog)
       action_menu.addAction(move_motors_action)
 
+      calibrate_stage_action = QAction("Calibrate Stage…", self)
+      calibrate_stage_action.setToolTip(
+          "Move & Measure wizard: move the stage a known physical distance\n"
+          "and compute the steps-per-mm scaling factor for X and Y."
+      )
+      calibrate_stage_action.triggered.connect(self._open_stage_calibration)
+      action_menu.addAction(calibrate_stage_action)
+
       excitation_control_action = QAction("Excitation Control…", self)
       excitation_control_action.setToolTip(
           "Control excitation devices: turn channels on/off, select channels, and view status."
@@ -1821,6 +1938,30 @@ class MainWindow(QtWidgets.QMainWindow):
          detctl_act.triggered.connect(lambda checked: self.detctl_dock.setVisible(bool(checked)))
          view_menu.addAction(detctl_act)
          self._view_dock_actions["detctl"] = detctl_act
+         
+         # New control docks
+         view_menu.addSeparator()
+         
+         if hasattr(self, 'move_motors_dock') and self.move_motors_dock is not None:
+            move_motors_act = QAction("Move Motors", self, checkable=True)
+            move_motors_act.setChecked(False)
+            move_motors_act.triggered.connect(lambda checked: self.move_motors_dock.setVisible(bool(checked)))
+            view_menu.addAction(move_motors_act)
+            self._view_dock_actions["move_motors"] = move_motors_act
+         
+         if hasattr(self, 'excitation_control_dock') and self.excitation_control_dock is not None:
+            excitation_control_act = QAction("Excitation Control", self, checkable=True)
+            excitation_control_act.setChecked(False)
+            excitation_control_act.triggered.connect(lambda checked: self.excitation_control_dock.setVisible(bool(checked)))
+            view_menu.addAction(excitation_control_act)
+            self._view_dock_actions["excitation_control"] = excitation_control_act
+         
+         if hasattr(self, 'stage_calibration_dock') and self.stage_calibration_dock is not None:
+            stage_calibration_act = QAction("Stage Calibration", self, checkable=True)
+            stage_calibration_act.setChecked(False)
+            stage_calibration_act.triggered.connect(lambda checked: self.stage_calibration_dock.setVisible(bool(checked)))
+            view_menu.addAction(stage_calibration_act)
+            self._view_dock_actions["stage_calibration"] = stage_calibration_act
          demo_act = QAction("Strip Chart", self, checkable=True)
          demo_act.setChecked(True)
          demo_act.triggered.connect(lambda checked: self.demo_dock.setVisible(bool(checked)))
@@ -1917,6 +2058,9 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "detimg_dock", None),
             getattr(self, "plot_dock", None),
             getattr(self, "detctl_dock", None),
+            getattr(self, "move_motors_dock", None),
+            getattr(self, "excitation_control_dock", None),
+            getattr(self, "stage_calibration_dock", None),
          ]
          docks = [d for d in docks if d is not None]
          for d in docks:
@@ -1972,6 +2116,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ("multiviewctl", getattr(self, "multiviewctl_dock", None)),
             ("camctl", getattr(self, "camctl_dock", None)),
             ("detctl", getattr(self, "detctl_dock", None)),
+            ("move_motors", getattr(self, "move_motors_dock", None)),
+            ("excitation_control", getattr(self, "excitation_control_dock", None)),
+            ("stage_calibration", getattr(self, "stage_calibration_dock", None)),
          ]
          visible_keys: set[str] = set()
          visible_docks: dict[str, QtWidgets.QDockWidget] = {}
@@ -2165,120 +2312,88 @@ class MainWindow(QtWidgets.QMainWindow):
       )
 
    def _open_stage_calibration(self):
-      """Open the Move & Measure stage calibration wizard."""
+      """Open the Stage Calibration dock panel."""
       try:
-         from gui.dialogs.stage_calibration_dialog import StageCalibrationDialog
-      except ImportError:
-         try:
-            from dialogs.stage_calibration_dialog import StageCalibrationDialog
-         except Exception:
-            QtWidgets.QMessageBox.critical(self, "Import Error", "Could not import stage calibration dialog.")
+         # Ensure devices are built
+         if not self.devices_built or self.devices_released:
+            try:
+               logger.info("Building devices for stage calibration panel")
+               self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
+               self.devices_built = True
+               self.devices_released = False
+            except Exception as exc:
+               logger.error("Failed to build devices: %s", exc)
+               QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+               return
+
+         if self.stage is None:
+            logger.warning("No stage available for stage calibration panel")
+            QtWidgets.QMessageBox.warning(self, "No Stage", "No stage device available.")
             return
 
-      # Ensure devices are built
-      if not self.devices_built or self.devices_released:
-         try:
-            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
-            self.devices_built = True
-            self.devices_released = False
-         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
-            return
-
-      if self.stage is None:
-         QtWidgets.QMessageBox.warning(self, "No Stage", "No stage device available.")
-         return
-
-      dlg = StageCalibrationDialog(self.stage, self._config_path, parent=self)
-      dlg.calibration_saved.connect(self._on_calibration_saved)
-      dlg.exec()
+         # Update the tab with devices
+         if hasattr(self, 'stage_calibration_tab') and self.stage_calibration_tab:
+            self.stage_calibration_tab.set_stage(self.stage)
+            self.stage_calibration_tab.set_config_path(self._config_path)
+            self.stage_calibration_dock.setVisible(True)
+            self.stage_calibration_dock.raise_()
+      except Exception as e:
+         logger.exception("Error opening stage calibration panel: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Error", f"Could not open stage calibration panel:\n{e}")
 
    def _open_move_motors_dialog(self):
-      """Open the Move Motors dialog for manual motor control."""
+      """Open the Move Motors dock panel."""
       try:
-         from gui.dialogs.move_motors_dialog import MoveMotorsDialog
-      except ImportError:
-         try:
-            from dialogs.move_motors_dialog import MoveMotorsDialog
-         except Exception as e:
-            logger.error("Failed to import move motors dialog: %s", e)
-            QtWidgets.QMessageBox.critical(self, "Import Error", f"Could not import move motors dialog:\n{e}")
-            return
+         # Ensure devices are built
+         if not self.devices_built or self.devices_released:
+            try:
+               logger.info("Building devices for move motors panel")
+               self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
+               self.devices_built = True
+               self.devices_released = False
+            except Exception as exc:
+               logger.error("Failed to build devices: %s", exc)
+               QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+               return
+
+         # Update the tab with devices
+         if hasattr(self, 'move_motors_tab') and self.move_motors_tab:
+            self.move_motors_tab.set_stage(self.stage)
+            self.move_motors_tab.set_focus(self.focus)
+            self.move_motors_dock.setVisible(True)
+            self.move_motors_dock.raise_()
       except Exception as e:
-         logger.error("Unexpected error importing move motors dialog: %s", e)
-         QtWidgets.QMessageBox.critical(self, "Import Error", f"Unexpected error importing dialog:\n{e}")
-         return
-
-      # Ensure devices are built
-      if not self.devices_built or self.devices_released:
-         try:
-            logger.info("Building devices for move motors dialog")
-            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
-            self.devices_built = True
-            self.devices_released = False
-         except Exception as exc:
-            logger.error("Failed to build devices: %s", exc)
-            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
-            return
-
-      if self.stage is None and self.focus is None:
-         logger.warning("No motors available for move motors dialog")
-         QtWidgets.QMessageBox.warning(self, "No Motors", "No stage or focus device available.")
-         return
-
-      try:
-         logger.info("Opening move motors dialog with stage=%s, focus=%s", 
-                    type(self.stage).__name__ if self.stage else None,
-                    type(self.focus).__name__ if self.focus else None)
-         dlg = MoveMotorsDialog(self.stage, self.focus, parent=self)
-         dlg.exec()
-         logger.info("Move motors dialog closed successfully")
-      except Exception as e:
-         logger.exception("Error opening move motors dialog: %s", e)
-         QtWidgets.QMessageBox.critical(self, "Dialog Error", f"Could not open move motors dialog:\n{e}")
+         logger.exception("Error opening move motors panel: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Error", f"Could not open move motors panel:\n{e}")
 
    def _open_excitation_control_dialog(self):
-      """Open the Excitation Control dialog for manual excitation device control."""
+      """Open the Excitation Control dock panel."""
       try:
-         from gui.dialogs.excitation_control_dialog import ExcitationControlDialog
-      except ImportError:
-         try:
-            from dialogs.excitation_control_dialog import ExcitationControlDialog
-         except Exception as e:
-            logger.error("Failed to import excitation control dialog: %s", e)
-            QtWidgets.QMessageBox.critical(self, "Import Error", f"Could not import excitation control dialog:\n{e}")
-            return
-      except Exception as e:
-         logger.error("Unexpected error importing excitation control dialog: %s", e)
-         QtWidgets.QMessageBox.critical(self, "Import Error", f"Unexpected error importing dialog:\n{e}")
-         return
+         # Ensure devices are built
+         if not self.devices_built or self.devices_released:
+            try:
+               logger.info("Building devices for excitation control panel")
+               self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
+               self.devices_built = True
+               self.devices_released = False
+            except Exception as exc:
+               logger.error("Failed to build devices: %s", exc)
+               QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+               return
 
-      # Ensure devices are built
-      if not self.devices_built or self.devices_released:
-         try:
-            logger.info("Building devices for excitation control dialog")
-            self.cam, self.stage, self.focus, self.light, self.fw, self.det, self.excitation = build_devices(self._config_path)
-            self.devices_built = True
-            self.devices_released = False
-         except Exception as exc:
-            logger.error("Failed to build devices: %s", exc)
-            QtWidgets.QMessageBox.critical(self, "Device Error", f"Could not build devices:\n{exc}")
+         if self.excitation is None:
+            logger.warning("No excitation devices available for excitation control panel")
+            QtWidgets.QMessageBox.warning(self, "No Excitation Devices", "No excitation device available.")
             return
 
-      if self.excitation is None:
-         logger.warning("No excitation devices available for excitation control dialog")
-         QtWidgets.QMessageBox.warning(self, "No Excitation Devices", "No excitation device available.")
-         return
-
-      try:
-         logger.info("Opening excitation control dialog with %d device(s)", 
-                    len(self.excitation) if isinstance(self.excitation, list) else 1)
-         dlg = ExcitationControlDialog(self.excitation, parent=self)
-         dlg.exec()
-         logger.info("Excitation control dialog closed successfully")
+         # Update the tab with devices
+         if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
+            self.excitation_control_tab.set_excitation_devices(self.excitation)
+            self.excitation_control_dock.setVisible(True)
+            self.excitation_control_dock.raise_()
       except Exception as e:
-         logger.exception("Error opening excitation control dialog: %s", e)
-         QtWidgets.QMessageBox.critical(self, "Dialog Error", f"Could not open excitation control dialog:\n{e}")
+         logger.exception("Error opening excitation control panel: %s", e)
+         QtWidgets.QMessageBox.critical(self, "Error", f"Could not open excitation control panel:\n{e}")
 
    def _on_calibration_saved(self, x_scale: float, y_scale: float):
       """Called when the calibration wizard has written new scale values."""
