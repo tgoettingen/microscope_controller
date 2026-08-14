@@ -44,9 +44,6 @@ class PositionBlockWidget(QtWidgets.QWidget):
         x_norm = max(0.0, min(1.0, x_norm))
         y_norm = max(0.0, min(1.0, y_norm))
         
-        # Invert Y for screen coordinates (screen Y increases downward)
-        y_norm = 1.0 - y_norm
-        
         # If we have a target position and it matches the new current position, clear target
         if self.target_position is not None:
             if abs(self.target_position[0] - x_norm) < 0.01 and abs(self.target_position[1] - y_norm) < 0.01:
@@ -85,9 +82,6 @@ class PositionBlockWidget(QtWidgets.QWidget):
             clicked_x = max(0.0, min(1.0, clicked_x))
             clicked_y = max(0.0, min(1.0, clicked_y))
             
-            # Invert Y for stage coordinates (screen Y increases downward, stage Y increases upward)
-            clicked_y = 1.0 - clicked_y
-            
             # Convert to real units using limits
             real_x = self.x_min + clicked_x * (self.x_max - self.x_min)
             real_y = self.y_min + clicked_y * (self.y_max - self.y_min)
@@ -114,9 +108,6 @@ class PositionBlockWidget(QtWidgets.QWidget):
             dragged_x = max(0.0, min(1.0, dragged_x))
             dragged_y = max(0.0, min(1.0, dragged_y))
             
-            # Invert Y for stage coordinates
-            dragged_y = 1.0 - dragged_y
-            
             # Convert to real units using limits
             real_x = self.x_min + dragged_x * (self.x_max - self.x_min)
             real_y = self.y_min + dragged_y * (self.y_max - self.y_min)
@@ -140,9 +131,6 @@ class PositionBlockWidget(QtWidgets.QWidget):
             # Clamp to valid range
             released_x = max(0.0, min(1.0, released_x))
             released_y = max(0.0, min(1.0, released_y))
-            
-            # Invert Y for stage coordinates
-            released_y = 1.0 - released_y
             
             # Convert to real units using limits
             real_x = self.x_min + released_x * (self.x_max - self.x_min)
@@ -239,7 +227,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawRect(1, 1, width - 3, height - 3)
         
-        # Draw limit labels (Y is inverted: top=min, bottom=max)
+        # Draw limit labels
         painter.setPen(QtGui.QColor(80, 80, 80))
         painter.setFont(QtGui.QFont("Arial", 8))
         
@@ -247,9 +235,9 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.drawText(5, height - 5, f"{self.x_min:.1f}")
         painter.drawText(width - 40, height - 5, f"{self.x_max:.1f}")
         
-        # Y limits labels (inverted: top=min, bottom=max)
-        painter.drawText(5, 12, f"{self.y_min:.1f}")  # Top = min
-        painter.drawText(5, height - 12, f"{self.y_max:.1f}")  # Bottom = max
+        # Y limits labels
+        painter.drawText(5, 12, f"{self.y_max:.1f}")
+        painter.drawText(5, height - 12, f"{self.y_min:.1f}")
         
         painter.end()
 
@@ -389,11 +377,11 @@ class StageControlTab(QtWidgets.QWidget):
         y_slider_layout.setContentsMargins(0, 0, 0, 0)
         y_slider_layout.setSpacing(4)
         
-        # Y min label at top (since slider is reversed, top = min)
-        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
-        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_min_label)
+        # Y max label at top
+        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
+        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_max_label)
         
         self.y_spin = QtWidgets.QDoubleSpinBox()
         self.y_spin.setRange(-1e6, 1e6)
@@ -411,11 +399,11 @@ class StageControlTab(QtWidgets.QWidget):
         y_slider_layout.addWidget(self.y_spin)
         y_slider_layout.addWidget(self.y_slider)
         
-        # Y max label at bottom (since slider is reversed, bottom = max)
-        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
-        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_max_label)
+        # Y min label at bottom
+        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
+        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
+        y_slider_layout.addWidget(y_min_label)
         
         position_layout.addWidget(y_slider_container, 1, 0, 1, 1)
         
