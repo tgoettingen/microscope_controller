@@ -1,0 +1,99 @@
+{
+  "stage": {
+    "type": "StandaStageXY",
+    "name": "standa_stage_xy",
+    "com_x": "com4",
+    "com_y": "com3",
+    "scaling": {
+      "x_scale": 102950,
+      "x_offset": 0.0,
+      "y_scale": 102950,
+      "y_offset": 0.0
+    },
+    "range": {
+      "x_min": -17.0,
+      "x_max": 57.0,
+      "y_min": 7.0,
+      "y_max": 81.0
+    },
+    "motors": {
+      "x": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      },
+      "y": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
+    }
+  },
+  "focus": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    },
+    "motors": {
+      "z": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
+    }
+  },
+  "camera": {
+    "type": "simulated"
+  },
+  "light": {
+    "type": "simulated",
+    "scaling": {
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  },
+  "filter_wheel": {
+    "type": "simulated"
+  },
+  "detector": [
+    {
+      "type": "ComPort",
+      "name": "vm11",
+      "port": "COM11",
+      "baudrate": 115200,
+      "format": "int24",
+      "mode": 1,
+      "read_timeout": 0.1,
+      "reader_hz": 1000.0,
+      "ring_buffer_size": 8192,
+      "frame_length": 10,
+      "frame_header": "0A01",
+      "frame_trailer": "010A",
+      "overflow_policy": "overwrite",
+      "scale": 1.0,
+      "offset": 0.0
+    },
+    {
+      "type": "ComPort",
+      "name": "vm13",
+      "port": "COM13",
+      "baudrate": 115200,
+      "format": "int24",
+      "mode": 1,
+      "read_timeout": 0.1,
+      "reader_hz": 1000.0,
+      "ring_buffer_size": 8192,
+      "frame_length": 10,
+      "frame_header": "0A01",
+      "frame_trailer": "010A",
+      "overflow_policy": "overwrite",
+      "scale": 1.0,
+      "offset": 0.0
+    }
+  ],
+  "excitation": {
+    "type": "ExcitationDevice",
+    "name": "switching",
+    "port": "COM16",
+    "channel": 0,
+    "simulate": false
+  }
+}
