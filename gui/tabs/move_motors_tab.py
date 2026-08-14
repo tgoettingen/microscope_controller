@@ -325,12 +325,19 @@ class StageControlTab(QtWidgets.QWidget):
         layout.setSpacing(8)  # Reduced spacing
         layout.setContentsMargins(8, 8, 8, 8)  # Reduced margins
         
+        # Device status indicator
+        self.device_status_label = QtWidgets.QLabel("⚠ No devices loaded")
+        self.device_status_label.setStyleSheet("background-color: #FFF3E0; color: #E65100; padding: 6px; border-radius: 4px; font-weight: bold;")
+        self.device_status_label.setWordWrap(True)
+        layout.addWidget(self.device_status_label)
+        
         # Live mode switch
         control_row = QtWidgets.QHBoxLayout()
         self.live_switch = QtWidgets.QCheckBox("Live Mode")
         self.live_switch.setChecked(False)  # Default: OFF
         self.live_switch.setStyleSheet("QCheckBox { font-weight: bold; padding: 4px; }")
         self.live_switch.toggled.connect(self._on_live_mode_toggled)
+        self.live_switch.setEnabled(False)  # Disabled until devices are loaded
         control_row.addWidget(self.live_switch)
         control_row.addStretch()
         layout.addLayout(control_row)
@@ -536,17 +543,27 @@ class StageControlTab(QtWidgets.QWidget):
         """Handle live mode toggle."""
         self._is_live_mode = checked
         
+        # Check if devices are available
+        has_devices = self.stage is not None or self.focus is not None
+        
         if checked:
             # Live mode: enable auto-refresh, hide move button
-            self.position_timer.start(500)
-            self.move_btn.setEnabled(False)
-            self.move_btn.setText("Live Active")
-            self.refresh_btn.setEnabled(False)
+            if has_devices:
+                self.position_timer.start(500)
+                self.move_btn.setEnabled(False)
+                self.move_btn.setText("Live Active")
+                self.refresh_btn.setEnabled(False)
+            else:
+                # No devices, disable live mode
+                self.live_switch.setChecked(False)
+                QtWidgets.QMessageBox.warning(self, "No Devices", 
+                    "Cannot enable Live Mode without loaded devices.")
         else:
             # Normal mode: disable auto-refresh, show move button
             self.position_timer.stop()
-            self.move_btn.setEnabled(True)
-            self.move_btn.setText("Move")
+            if has_devices:
+                self.move_btn.setEnabled(True)
+                self.move_btn.setText("Move")
             self.refresh_btn.setEnabled(True)
     
     def _on_drag_started(self, x, y):
@@ -882,6 +899,12 @@ class StageControlTab(QtWidgets.QWidget):
     def _move_to_position(self):
         """Move stage and focus to the specified positions using real units."""
         try:
+            # Check if devices are available
+            if self.stage is None and self.focus is None:
+                QtWidgets.QMessageBox.warning(self, "No Devices", 
+                    "No stage or focus devices available. Please load hardware configuration first.")
+                return
+            
             x_real = self.x_spin.value()
             y_real = self.y_spin.value()
             z_real = self.z_spin.value()
@@ -984,14 +1007,37 @@ class StageControlTab(QtWidgets.QWidget):
     def set_stage(self, stage: StageXY):
         """Set the stage device and refresh position."""
         self.stage = stage
+        self._update_device_status()
         # Immediately refresh position after loading hardware
         self._refresh_position()
     
     def set_focus(self, focus: FocusZ):
         """Set the focus device and refresh position."""
         self.focus = focus
+        self._update_device_status()
         # Immediately refresh position after loading hardware
         self._refresh_position()
+    
+    def _update_device_status(self):
+        """Update device status indicator and enable/disable controls."""
+        has_stage = self.stage is not None
+        has_focus = self.focus is not None
+        
+        if has_stage or has_focus:
+            devices = []
+            if has_stage:
+                devices.append("Stage")
+            if has_focus:
+                devices.append("Focus")
+            self.device_status_label.setText(f"✓ Devices loaded: {', '.join(devices)}")
+            self.device_status_label.setStyleSheet("background-color: #E8F5E9; color: #2E7D32; padding: 6px; border-radius: 4px; font-weight: bold;")
+            self.live_switch.setEnabled(True)
+            self.move_btn.setEnabled(not self._is_live_mode)
+        else:
+            self.device_status_label.setText("⚠ No devices loaded")
+            self.device_status_label.setStyleSheet("background-color: #FFF3E0; color: #E65100; padding: 6px; border-radius: 4px; font-weight: bold;")
+            self.live_switch.setEnabled(False)
+            self.move_btn.setEnabled(False)
     
     def set_config_path(self, config_path: str):
         """Set the config file path and reload configuration."""

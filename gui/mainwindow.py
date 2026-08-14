@@ -2004,7 +2004,10 @@ class MainWindow(QtWidgets.QMainWindow):
       raise ValueError(f"Unknown layout kind: {kind}")
 
    def _apply_full_layout(self) -> None:
-      """Apply a deterministic 'full' layout with all panels docked and visible."""
+      """Apply a deterministic 'full' layout with all panels docked and visible.
+      
+      Supports 2-4 column layouts based on the number of available panels.
+      """
       try:
          docks = [
             getattr(self, "multi_dock", None),
@@ -2031,27 +2034,93 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                pass
 
-         # Left column: Multi‑Axis / Strip Chart / Multi View Control
-         if getattr(self, "multi_dock", None) is not None:
-            self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multi_dock)
-         if getattr(self, "demo_dock", None) is not None and getattr(self, "multi_dock", None) is not None:
-            self.splitDockWidget(self.multi_dock, self.demo_dock, QtCore.Qt.Orientation.Vertical)
-         if getattr(self, "multiviewctl_dock", None) is not None and getattr(self, "demo_dock", None) is not None:
-            self.splitDockWidget(self.demo_dock, self.multiviewctl_dock, QtCore.Qt.Orientation.Vertical)
+         # Determine number of columns based on available panel count
+         num_docks = len(docks)
+         if num_docks <= 6:
+            num_columns = 2
+         elif num_docks <= 9:
+            num_columns = 3
+         else:
+            num_columns = 4
 
-         # Right column: camera-related + live plots/controls (stacked)
-         if getattr(self, "cam_dock", None) is not None:
-            self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.cam_dock)
-         if getattr(self, "camctl_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
-            self.splitDockWidget(self.cam_dock, self.camctl_dock, QtCore.Qt.Orientation.Vertical)
-         if getattr(self, "multiview_dock", None) is not None and getattr(self, "camctl_dock", None) is not None:
-            self.splitDockWidget(self.camctl_dock, self.multiview_dock, QtCore.Qt.Orientation.Vertical)
-         if getattr(self, "detimg_dock", None) is not None and getattr(self, "multiview_dock", None) is not None:
-            self.splitDockWidget(self.multiview_dock, self.detimg_dock, QtCore.Qt.Orientation.Vertical)
-         if getattr(self, "plot_dock", None) is not None and getattr(self, "detimg_dock", None) is not None:
-            self.splitDockWidget(self.detimg_dock, self.plot_dock, QtCore.Qt.Orientation.Vertical)
-         if getattr(self, "detctl_dock", None) is not None and getattr(self, "plot_dock", None) is not None:
-            self.splitDockWidget(self.plot_dock, self.detctl_dock, QtCore.Qt.Orientation.Vertical)
+         if num_columns == 2:
+            # Traditional 2-column layout
+            # Left column: Multi‑Axis / Strip Chart / Multi View Control
+            if getattr(self, "multi_dock", None) is not None:
+               self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multi_dock)
+            if getattr(self, "demo_dock", None) is not None and getattr(self, "multi_dock", None) is not None:
+               self.splitDockWidget(self.multi_dock, self.demo_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "multiviewctl_dock", None) is not None and getattr(self, "demo_dock", None) is not None:
+               self.splitDockWidget(self.demo_dock, self.multiviewctl_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Right column: camera-related + live plots/controls (stacked)
+            if getattr(self, "cam_dock", None) is not None:
+               self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.cam_dock)
+            if getattr(self, "camctl_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
+               self.splitDockWidget(self.cam_dock, self.camctl_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "multiview_dock", None) is not None and getattr(self, "camctl_dock", None) is not None:
+               self.splitDockWidget(self.camctl_dock, self.multiview_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "detimg_dock", None) is not None and getattr(self, "multiview_dock", None) is not None:
+               self.splitDockWidget(self.multiview_dock, self.detimg_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "plot_dock", None) is not None and getattr(self, "detimg_dock", None) is not None:
+               self.splitDockWidget(self.detimg_dock, self.plot_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "detctl_dock", None) is not None and getattr(self, "plot_dock", None) is not None:
+               self.splitDockWidget(self.plot_dock, self.detctl_dock, QtCore.Qt.Orientation.Vertical)
+
+         elif num_columns == 3:
+            # 3-column layout: controls | primary images | secondary images
+            # Column 1: Multi-Axis / Strip Chart
+            if getattr(self, "multi_dock", None) is not None:
+               self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multi_dock)
+            if getattr(self, "demo_dock", None) is not None and getattr(self, "multi_dock", None) is not None:
+               self.splitDockWidget(self.multi_dock, self.demo_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Column 2: Camera / Detector Images
+            if getattr(self, "cam_dock", None) is not None:
+               self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.cam_dock)
+            if getattr(self, "detimg_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
+               self.splitDockWidget(self.cam_dock, self.detimg_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Column 3: Multi View / Controls / Plot
+            if getattr(self, "multiview_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
+               self.splitDockWidget(self.cam_dock, self.multiview_dock, QtCore.Qt.Orientation.Horizontal)
+            if getattr(self, "camctl_dock", None) is not None and getattr(self, "multiview_dock", None) is not None:
+               self.splitDockWidget(self.multiview_dock, self.camctl_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "plot_dock", None) is not None and getattr(self, "camctl_dock", None) is not None:
+               self.splitDockWidget(self.camctl_dock, self.plot_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "detctl_dock", None) is not None and getattr(self, "plot_dock", None) is not None:
+               self.splitDockWidget(self.plot_dock, self.detctl_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "multiviewctl_dock", None) is not None and getattr(self, "detctl_dock", None) is not None:
+               self.splitDockWidget(self.detctl_dock, self.multiviewctl_dock, QtCore.Qt.Orientation.Vertical)
+
+         else:  # num_columns == 4
+            # 4-column layout: primary controls | secondary controls | primary images | secondary images
+            # Column 1: Multi-Axis / Strip Chart
+            if getattr(self, "multi_dock", None) is not None:
+               self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.multi_dock)
+            if getattr(self, "demo_dock", None) is not None and getattr(self, "multi_dock", None) is not None:
+               self.splitDockWidget(self.multi_dock, self.demo_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Column 2: Multi View Control / Camera Control / Detector Control
+            if getattr(self, "multiviewctl_dock", None) is not None and getattr(self, "multi_dock", None) is not None:
+               self.splitDockWidget(self.multi_dock, self.multiviewctl_dock, QtCore.Qt.Orientation.Horizontal)
+            if getattr(self, "camctl_dock", None) is not None and getattr(self, "multiviewctl_dock", None) is not None:
+               self.splitDockWidget(self.multiviewctl_dock, self.camctl_dock, QtCore.Qt.Orientation.Vertical)
+            if getattr(self, "detctl_dock", None) is not None and getattr(self, "camctl_dock", None) is not None:
+               self.splitDockWidget(self.camctl_dock, self.detctl_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Column 3: Camera / Detector Images
+            if getattr(self, "cam_dock", None) is not None and getattr(self, "multiviewctl_dock", None) is not None:
+               self.splitDockWidget(self.multiviewctl_dock, self.cam_dock, QtCore.Qt.Orientation.Horizontal)
+            if getattr(self, "detimg_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
+               self.splitDockWidget(self.cam_dock, self.detimg_dock, QtCore.Qt.Orientation.Vertical)
+
+            # Column 4: Multi View / Plot
+            if getattr(self, "multiview_dock", None) is not None and getattr(self, "cam_dock", None) is not None:
+               self.splitDockWidget(self.cam_dock, self.multiview_dock, QtCore.Qt.Orientation.Horizontal)
+            if getattr(self, "plot_dock", None) is not None and getattr(self, "multiview_dock", None) is not None:
+               self.splitDockWidget(self.multiview_dock, self.plot_dock, QtCore.Qt.Orientation.Vertical)
+
       except Exception:
          pass
 
@@ -2062,6 +2131,7 @@ class MainWindow(QtWidgets.QMainWindow):
       - Plot prefers a full-width horizontal dock at the top.
       - Control panels are stacked so they stay compact.
       - Image/preview panels go to the right.
+      - Supports 2-4 column layouts based on visible panel count.
       """
       try:
          dock_order = [
@@ -2110,6 +2180,15 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
 
+         # Determine number of columns based on visible panel count
+         num_visible = len(visible_docks)
+         if num_visible <= 4:
+            num_columns = 2
+         elif num_visible <= 7:
+            num_columns = 3
+         else:
+            num_columns = 4
+
          # Prefer Plot full-width at the top.
          plot = visible_docks.get("plot")
          if plot is not None:
@@ -2118,79 +2197,275 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                pass
 
-         # Right side: image/preview docks stacked.
-         right_stack = [
-            visible_docks.get("camera"),
-            visible_docks.get("detimg"),
-            visible_docks.get("multiview"),
-         ]
-         right_stack = [d for d in right_stack if d is not None]
-         if right_stack:
-            try:
-               self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, right_stack[0])
-            except Exception:
-               pass
-            for d in right_stack[1:]:
+         # Define column assignments based on column count
+         if num_columns == 2:
+            # Traditional 2-column layout
+            # Right side: image/preview docks stacked.
+            right_stack = [
+               visible_docks.get("camera"),
+               visible_docks.get("detimg"),
+               visible_docks.get("multiview"),
+            ]
+            right_stack = [d for d in right_stack if d is not None]
+            if right_stack:
                try:
-                  self.splitDockWidget(right_stack[0], d, QtCore.Qt.Orientation.Vertical)
-                  right_stack[0] = d
+                  self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, right_stack[0])
                except Exception:
                   pass
+               for d in right_stack[1:]:
+                  try:
+                     self.splitDockWidget(right_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     right_stack[0] = d
+                  except Exception:
+                     pass
 
-         # Left side: stack controls & configuration docks to stay compact.
-         left_stack = [
-            visible_docks.get("multiaxis"),
-            visible_docks.get("demo"),
-            visible_docks.get("multiviewctl"),
-            visible_docks.get("camctl"),
-            visible_docks.get("detctl"),
-         ]
-         left_stack = [d for d in left_stack if d is not None]
-         if left_stack:
-            try:
-               self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, left_stack[0])
-            except Exception:
-               pass
-            for d in left_stack[1:]:
+            # Left side: stack controls & configuration docks to stay compact.
+            left_stack = [
+               visible_docks.get("multiaxis"),
+               visible_docks.get("demo"),
+               visible_docks.get("multiviewctl"),
+               visible_docks.get("camctl"),
+               visible_docks.get("detctl"),
+            ]
+            left_stack = [d for d in left_stack if d is not None]
+            if left_stack:
                try:
-                  self.splitDockWidget(left_stack[0], d, QtCore.Qt.Orientation.Vertical)
-                  left_stack[0] = d
+                  self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, left_stack[0])
                except Exception:
                   pass
+               for d in left_stack[1:]:
+                  try:
+                     self.splitDockWidget(left_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     left_stack[0] = d
+                  except Exception:
+                     pass
 
-         # Size heuristics: keep controls compact and give images more width.
-         try:
-            # Plot: prefer not to steal the whole window height.
-            if plot is not None:
-               self.resizeDocks([plot], [260], QtCore.Qt.Orientation.Vertical)
-         except Exception:
-            pass
+            # Size heuristics for 2-column layout
+            try:
+               if plot is not None:
+                  self.resizeDocks([plot], [260], QtCore.Qt.Orientation.Vertical)
+            except Exception:
+               pass
 
-         try:
-            # Make the left (controls) column narrow, right (images) column wide.
-            left_anchor = None
-            for k in ("multiaxis", "demo", "multiviewctl", "camctl", "detctl"):
-               if k in visible_docks:
-                  left_anchor = visible_docks[k]
-                  break
+            try:
+               left_anchor = None
+               for k in ("multiaxis", "demo", "multiviewctl", "camctl", "detctl"):
+                  if k in visible_docks:
+                     left_anchor = visible_docks[k]
+                     break
 
-            right_anchor = None
-            for k in ("detimg", "camera", "multiview"):
-               if k in visible_docks:
-                  right_anchor = visible_docks[k]
-                  break
+               right_anchor = None
+               for k in ("detimg", "camera", "multiview"):
+                  if k in visible_docks:
+                     right_anchor = visible_docks[k]
+                     break
 
-            if left_anchor is not None and right_anchor is not None:
-               # ~320px control column, rest for images
-               self.resizeDocks([left_anchor, right_anchor], [320, 1000], QtCore.Qt.Orientation.Horizontal)
-         except Exception:
-            pass
+               if left_anchor is not None and right_anchor is not None:
+                  self.resizeDocks([left_anchor, right_anchor], [320, 1000], QtCore.Qt.Orientation.Horizontal)
+            except Exception:
+               pass
 
-         # Keep Multi‑Axis dock compact vertically so its lists scroll.
+         elif num_columns == 3:
+            # 3-column layout: controls | primary images | secondary images
+            col1_stack = [
+               visible_docks.get("multiaxis"),
+               visible_docks.get("demo"),
+            ]
+            col1_stack = [d for d in col1_stack if d is not None]
+            
+            col2_stack = [
+               visible_docks.get("camera"),
+               visible_docks.get("detimg"),
+            ]
+            col2_stack = [d for d in col2_stack if d is not None]
+            
+            col3_stack = [
+               visible_docks.get("multiview"),
+               visible_docks.get("multiviewctl"),
+               visible_docks.get("camctl"),
+               visible_docks.get("detctl"),
+            ]
+            col3_stack = [d for d in col3_stack if d is not None]
+
+            # Create column 1 (left)
+            if col1_stack:
+               try:
+                  self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, col1_stack[0])
+               except Exception:
+                  pass
+               for d in col1_stack[1:]:
+                  try:
+                     self.splitDockWidget(col1_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col1_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Create column 2 (center)
+            if col2_stack:
+               try:
+                  self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, col2_stack[0])
+               except Exception:
+                  pass
+               for d in col2_stack[1:]:
+                  try:
+                     self.splitDockWidget(col2_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col2_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Create column 3 (right) by splitting from column 2
+            if col3_stack and col2_stack:
+               try:
+                  self.splitDockWidget(col2_stack[0], col3_stack[0], QtCore.Qt.Orientation.Horizontal)
+               except Exception:
+                  pass
+               for d in col3_stack[1:]:
+                  try:
+                     self.splitDockWidget(col3_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col3_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Size heuristics for 3-column layout
+            try:
+               if plot is not None:
+                  self.resizeDocks([plot], [260], QtCore.Qt.Orientation.Vertical)
+            except Exception:
+               pass
+
+            try:
+               anchors = []
+               for k in ("multiaxis", "demo"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               for k in ("camera", "detimg"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               for k in ("multiview", "multiviewctl"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               
+               if len(anchors) == 3:
+                  self.resizeDocks(anchors, [280, 400, 400], QtCore.Qt.Orientation.Horizontal)
+            except Exception:
+               pass
+
+         else:  # num_columns == 4
+            # 4-column layout: primary controls | secondary controls | primary images | secondary images
+            col1_stack = [
+               visible_docks.get("multiaxis"),
+               visible_docks.get("demo"),
+            ]
+            col1_stack = [d for d in col1_stack if d is not None]
+            
+            col2_stack = [
+               visible_docks.get("multiviewctl"),
+               visible_docks.get("camctl"),
+               visible_docks.get("detctl"),
+            ]
+            col2_stack = [d for d in col2_stack if d is not None]
+            
+            col3_stack = [
+               visible_docks.get("camera"),
+               visible_docks.get("detimg"),
+            ]
+            col3_stack = [d for d in col3_stack if d is not None]
+            
+            col4_stack = [
+               visible_docks.get("multiview"),
+            ]
+            col4_stack = [d for d in col4_stack if d is not None]
+
+            # Create column 1 (leftmost)
+            if col1_stack:
+               try:
+                  self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, col1_stack[0])
+               except Exception:
+                  pass
+               for d in col1_stack[1:]:
+                  try:
+                     self.splitDockWidget(col1_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col1_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Create column 2
+            if col2_stack and col1_stack:
+               try:
+                  self.splitDockWidget(col1_stack[0], col2_stack[0], QtCore.Qt.Orientation.Horizontal)
+               except Exception:
+                  pass
+               for d in col2_stack[1:]:
+                  try:
+                     self.splitDockWidget(col2_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col2_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Create column 3
+            if col3_stack and col2_stack:
+               try:
+                  self.splitDockWidget(col2_stack[0], col3_stack[0], QtCore.Qt.Orientation.Horizontal)
+               except Exception:
+                  pass
+               for d in col3_stack[1:]:
+                  try:
+                     self.splitDockWidget(col3_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col3_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Create column 4 (rightmost)
+            if col4_stack and col3_stack:
+               try:
+                  self.splitDockWidget(col3_stack[0], col4_stack[0], QtCore.Qt.Orientation.Horizontal)
+               except Exception:
+                  pass
+               for d in col4_stack[1:]:
+                  try:
+                     self.splitDockWidget(col4_stack[0], d, QtCore.Qt.Orientation.Vertical)
+                     col4_stack[0] = d
+                  except Exception:
+                     pass
+
+            # Size heuristics for 4-column layout
+            try:
+               if plot is not None:
+                  self.resizeDocks([plot], [260], QtCore.Qt.Orientation.Vertical)
+            except Exception:
+               pass
+
+            try:
+               anchors = []
+               for k in ("multiaxis", "demo"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               for k in ("multiviewctl", "camctl"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               for k in ("camera", "detimg"):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               for k in ("multiview",):
+                  if k in visible_docks:
+                     anchors.append(visible_docks[k])
+                     break
+               
+               if len(anchors) == 4:
+                  self.resizeDocks(anchors, [250, 250, 350, 350], QtCore.Qt.Orientation.Horizontal)
+            except Exception:
+               pass
+
+         # Vertical sizing for control panels (common to all layouts)
          try:
             left_vertical_docks = []
             left_vertical_sizes = []
-            # Prefer the Multi‑Axis / demo / control docks to be relatively small.
             for key, size in (
                ("multiaxis", 220),
                ("demo", 200),
