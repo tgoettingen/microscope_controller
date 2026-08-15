@@ -24,8 +24,14 @@ class PositionBlockWidget(QtWidgets.QWidget):
         self.y_min = 0.0
         self.y_max = 100.0
         self._is_dragging = False
+        self.aspect_ratio = None  # Aspect ratio constraint (width/height)
         self.setMinimumSize(200, 200)
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
+    
+    def set_aspect_ratio(self, ratio):
+        """Set aspect ratio constraint. None = no constraint."""
+        self.aspect_ratio = ratio
+        self.update()  # Redraw with new aspect ratio
     
     def set_position(self, x, y):
         """Set current position in real units (green marker)."""
@@ -150,33 +156,56 @@ class PositionBlockWidget(QtWidgets.QWidget):
         width = self.width()
         height = self.height()
         
-        # Draw background
-        painter.fillRect(0, 0, width, height, QtGui.QColor(240, 240, 240))
+        # Calculate drawing area respecting aspect ratio
+        if self.aspect_ratio is not None and self.aspect_ratio > 0:
+            # Calculate dimensions that maintain aspect ratio
+            container_ratio = width / height
+            if container_ratio > self.aspect_ratio:
+                # Container is wider than desired, constrain by height
+                draw_height = height
+                draw_width = draw_height * self.aspect_ratio
+                x_offset = (width - draw_width) / 2
+                y_offset = 0
+            else:
+                # Container is taller than desired, constrain by width
+                draw_width = width
+                draw_height = draw_width / self.aspect_ratio
+                x_offset = 0
+                y_offset = (height - draw_height) / 2
+        else:
+            # No aspect ratio constraint, use full widget
+            draw_width = width
+            draw_height = height
+            x_offset = 0
+            y_offset = 0
         
-        # Draw grid
+        # Draw background for the drawing area
+        painter.fillRect(int(x_offset), int(y_offset), int(draw_width), int(draw_height), QtGui.QColor(240, 240, 240))
+        
+        # Draw grid within drawing area
         painter.setPen(QtGui.QColor(200, 200, 200))
         for i in range(1, 10):
-            x = width * i / 10
-            y = height * i / 10
-            painter.drawLine(int(x), 0, int(x), height)
-            painter.drawLine(0, int(y), width, int(y))
+            grid_x = x_offset + draw_width * i / 10
+            grid_y = y_offset + draw_height * i / 10
+            painter.drawLine(int(grid_x), int(y_offset), int(grid_x), int(y_offset + draw_height))
+            painter.drawLine(int(x_offset), int(grid_y), int(x_offset + draw_width), int(grid_y))
         
-        # Draw border
+        # Draw border around drawing area
         painter.setPen(QtGui.QColor(100, 100, 100))
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawRect(0, 0, width - 1, height - 1)
+        painter.drawRect(int(x_offset), int(y_offset), int(draw_width - 1), int(draw_height - 1))
         
-        # Draw center cross
-        center_x = width / 2
-        center_y = height / 2
+        # Draw center cross within drawing area
+        center_x = x_offset + draw_width / 2
+        center_y = y_offset + draw_height / 2
         painter.setPen(QtGui.QColor(150, 150, 150))
         painter.drawLine(int(center_x) - 10, int(center_y), int(center_x) + 10, int(center_y))
         painter.drawLine(int(center_x), int(center_y) - 10, int(center_x), int(center_y) + 10)
         
         # Draw old position (gray)
         if self.old_position is not None:
-            old_x = self.old_position[0] * width
-            old_y = self.old_position[1] * height
+            old_x = x_offset + self.old_position[0] * draw_width
+            old_y = y_offset + self.old_position[1] * draw_height
             
             # Draw old position marker (gray)
             painter.setPen(QtGui.QColor(128, 128, 128))
@@ -186,13 +215,13 @@ class PositionBlockWidget(QtWidgets.QWidget):
             # Draw position lines to edges (gray)
             painter.setPen(QtGui.QColor(128, 128, 128, 100))
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawLine(int(old_x), int(old_y), int(old_x), height)
-            painter.drawLine(int(old_x), int(old_y), width, int(old_y))
+            painter.drawLine(int(old_x), int(old_y), int(old_x), int(y_offset + draw_height))
+            painter.drawLine(int(old_x), int(old_y), int(x_offset + draw_width), int(old_y))
         
         # Draw target position (red)
         if self.target_position is not None:
-            target_x = self.target_position[0] * width
-            target_y = self.target_position[1] * height
+            target_x = x_offset + self.target_position[0] * draw_width
+            target_y = y_offset + self.target_position[1] * draw_height
             
             # Draw target position marker (red)
             painter.setPen(QtGui.QColor(244, 67, 54))
@@ -202,12 +231,12 @@ class PositionBlockWidget(QtWidgets.QWidget):
             # Draw position lines to edges (red)
             painter.setPen(QtGui.QColor(244, 67, 54, 100))
             painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawLine(int(target_x), int(target_y), int(target_x), height)
-            painter.drawLine(int(target_x), int(target_y), width, int(target_y))
+            painter.drawLine(int(target_x), int(target_y), int(target_x), int(y_offset + draw_height))
+            painter.drawLine(int(target_x), int(target_y), int(x_offset + draw_width), int(target_y))
         
         # Draw current position (green)
-        cur_x = self.current_position[0] * width
-        cur_y = self.current_position[1] * height
+        cur_x = x_offset + self.current_position[0] * draw_width
+        cur_y = y_offset + self.current_position[1] * draw_height
         
         # Draw current position marker (green)
         painter.setPen(QtGui.QColor(76, 175, 80))
@@ -217,27 +246,25 @@ class PositionBlockWidget(QtWidgets.QWidget):
         # Draw position lines to edges (green)
         painter.setPen(QtGui.QColor(76, 175, 80, 100))
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawLine(int(cur_x), int(cur_y), int(cur_x), height)
-        painter.drawLine(int(cur_x), int(cur_y), width, int(cur_y))
+        painter.drawLine(int(cur_x), int(cur_y), int(cur_x), int(y_offset + draw_height))
+        painter.drawLine(int(cur_x), int(cur_y), int(x_offset + draw_width), int(cur_y))
         
         # Draw limit boundaries (highlight the actual usable area)
-        # The entire block represents the limits, so draw a subtle inner frame
-        # to indicate the boundary
         painter.setPen(QtGui.QColor(50, 50, 50, 50))
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawRect(1, 1, width - 3, height - 3)
+        painter.drawRect(int(x_offset) + 1, int(y_offset) + 1, int(draw_width - 3), int(draw_height - 3))
         
-        # Draw limit labels
+        # Draw limit labels (Y is inverted: top=min, bottom=max)
         painter.setPen(QtGui.QColor(80, 80, 80))
         painter.setFont(QtGui.QFont("Arial", 8))
         
         # X limits labels
-        painter.drawText(5, height - 5, f"{self.x_min:.1f}")
-        painter.drawText(width - 40, height - 5, f"{self.x_max:.1f}")
+        painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 5), f"{self.x_min:.1f}")
+        painter.drawText(int(x_offset + draw_width - 40), int(y_offset + draw_height - 5), f"{self.x_max:.1f}")
         
         # Y limits labels
-        painter.drawText(5, 12, f"{self.y_max:.1f}")
-        painter.drawText(5, height - 12, f"{self.y_min:.1f}")
+        painter.drawText(int(x_offset) + 5, int(y_offset + 12), f"{self.y_max:.1f}")
+        painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 12), f"{self.y_min:.1f}")
         
         painter.end()
 
@@ -254,6 +281,8 @@ class StageControlTab(QtWidgets.QWidget):
         self.config_path = config_path
         self._is_live_mode = False  # Default: live mode OFF
         self._is_dragging = False  # Track dragging state
+        self._keep_aspect_ratio = True  # Default: keep aspect ratio ON
+        self._aspect_ratio = 1.0  # Will be calculated from range
         self._load_config()
         self._build_ui()
         self._setup_position_timer()
@@ -348,6 +377,14 @@ class StageControlTab(QtWidgets.QWidget):
         self.live_switch.toggled.connect(self._on_live_mode_toggled)
         self.live_switch.setEnabled(False)  # Disabled until devices are loaded
         control_row.addWidget(self.live_switch)
+        
+        # Aspect ratio switch
+        self.aspect_ratio_switch = QtWidgets.QCheckBox("Keep Aspect Ratio")
+        self.aspect_ratio_switch.setChecked(True)  # Default: ON
+        self.aspect_ratio_switch.setStyleSheet("QCheckBox { font-weight: bold; padding: 4px; }")
+        self.aspect_ratio_switch.toggled.connect(self._on_aspect_ratio_toggled)
+        control_row.addWidget(self.aspect_ratio_switch)
+        
         control_row.addStretch()
         layout.addLayout(control_row)
         
@@ -355,8 +392,8 @@ class StageControlTab(QtWidgets.QWidget):
         position_group = QtWidgets.QGroupBox("Stage Position")
         position_group.setStyleSheet("QGroupBox { font-weight: bold; }")
         position_layout = QtWidgets.QGridLayout()
-        position_layout.setSpacing(4)
-        position_layout.setContentsMargins(8, 8, 8, 8)
+        position_layout.setSpacing(10)  # Consistent spacing
+        position_layout.setContentsMargins(10, 10, 10, 10)  # Overall padding
         
         # Get limits for labels and tooltip
         x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
@@ -364,103 +401,115 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # Position block in center (row 1, col 1)
+        # Position block in center
         self.position_block = PositionBlockWidget()
         self.position_block.set_limits(x_min, x_max, y_min, y_max)
-        self.position_block.setMinimumSize(200, 200)  # Match slider dimensions: 200x200
-        self.position_block.setMaximumSize(200, 200)  # Fixed size to match sliders
+        self.position_block.setMinimumSize(200, 200)  # Minimum size, but can grow
+        self.position_block.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
         self.position_block.position_clicked.connect(self._on_position_block_clicked)
         self.position_block.position_drag_started.connect(self._on_drag_started)
         self.position_block.position_dragged.connect(self._on_dragged)
         self.position_block.position_drag_ended.connect(self._on_drag_ended)
         position_layout.addWidget(self.position_block, 1, 1, 1, 1)
         
-        # Y slider to the left of the block (row 1, col 0) - vertical, exactly 200px height
+        # Calculate aspect ratio from range
+        x_range = (x_max - x_min) if (x_max is not None and x_min is not None) else 100.0
+        y_range = (y_max - y_min) if (y_max is not None and y_min is not None) else 100.0
+        if y_range > 0:
+            self._aspect_ratio = x_range / y_range
+        else:
+            self._aspect_ratio = 1.0
+        
+        # Set initial aspect ratio on position block
+        self.position_block.set_aspect_ratio(self._aspect_ratio if self._keep_aspect_ratio else None)
+        
+        # Y slider to the left of the block - vertical
         y_slider_container = QtWidgets.QWidget()
         y_slider_layout = QtWidgets.QVBoxLayout(y_slider_container)
-        y_slider_layout.setContentsMargins(0, 0, 0, 0)
-        y_slider_layout.setSpacing(4)
+        y_slider_layout.setContentsMargins(0, 0, 10, 0)  # 10px right margin
+        y_slider_layout.setSpacing(5)
         
-        # Y max label at top
-        y_max_label = QtWidgets.QLabel(f"{y_max:.1f}")
-        y_max_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_max_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_max_label)
+        # Y input
+        y_input = QtWidgets.QWidget()
+        y_input_layout = QtWidgets.QHBoxLayout(y_input)
+        y_input_layout.setContentsMargins(0, 0, 0, 0)
+        y_input_layout.setSpacing(2)
+        
+        y_label = QtWidgets.QLabel("Y:")
+        y_label.setStyleSheet("font-weight: bold;")
         
         self.y_spin = QtWidgets.QDoubleSpinBox()
         self.y_spin.setRange(-1e6, 1e6)
         self.y_spin.setDecimals(3)
-        self.y_spin.setSuffix(f" {self.stage_config['unit']}")
+        self.y_spin.setSuffix(" mm")
         self.y_spin.setValue(0.0)
-        self.y_spin.setMaximumWidth(100)
+        self.y_spin.setMaximumWidth(70)
         
+        y_input_layout.addWidget(y_label)
+        y_input_layout.addWidget(self.y_spin)
+        
+        y_slider_layout.addWidget(y_input)
+        
+        # Y slider - no fixed height, let it match position block
         self.y_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Vertical)
         self.y_slider.setRange(0, 1000)
         self.y_slider.setValue(0)
-        self.y_slider.setFixedHeight(200)  # Exactly 200px to match position block height
-        self.y_slider.setToolTip(f"Y range: {y_min:.1f} to {y_max:.1f} {self.stage_config['unit']}")
+        self.y_slider.setFixedWidth(25)  # Only fix width
+        self.y_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.y_slider.setToolTip(f"Y range: {y_min:.1f} to {y_max:.1f} mm")
         
-        y_slider_layout.addWidget(self.y_spin)
         y_slider_layout.addWidget(self.y_slider)
-        
-        # Y min label at bottom
-        y_min_label = QtWidgets.QLabel(f"{y_min:.1f}")
-        y_min_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        y_min_label.setStyleSheet("font-size: 9px; color: #666;")
-        y_slider_layout.addWidget(y_min_label)
         
         position_layout.addWidget(y_slider_container, 1, 0, 1, 1)
         
-        # X slider below the block (row 2, col 1) - horizontal, exactly 200px width
+        # X slider below the block - horizontal
         x_slider_container = QtWidgets.QWidget()
-        x_slider_layout = QtWidgets.QVBoxLayout(x_slider_container)
-        x_slider_layout.setContentsMargins(0, 0, 0, 0)
-        x_slider_layout.setSpacing(4)
+        x_slider_layout = QtWidgets.QHBoxLayout(x_slider_container)
+        x_slider_layout.setContentsMargins(0, 10, 0, 0)  # 10px top margin
+        x_slider_layout.setSpacing(5)
         
-        self.x_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.x_slider.setRange(0, 1000)
-        self.x_slider.setValue(0)
-        self.x_slider.setFixedWidth(200)  # Exactly 200px to match position block width
-        self.x_slider.setToolTip(f"X range: {x_min:.1f} to {x_max:.1f} {self.stage_config['unit']}")
+        # X input
+        x_input = QtWidgets.QWidget()
+        x_input_layout = QtWidgets.QHBoxLayout(x_input)
+        x_input_layout.setContentsMargins(0, 0, 0, 0)
+        x_input_layout.setSpacing(2)
         
-        # X limits labels row
-        x_limits_row = QtWidgets.QWidget()
-        x_limits_layout = QtWidgets.QHBoxLayout(x_limits_row)
-        x_limits_layout.setContentsMargins(0, 0, 0, 0)
-        x_limits_layout.setSpacing(0)
-        
-        x_min_label = QtWidgets.QLabel(f"{x_min:.1f}")
-        x_min_label.setStyleSheet("font-size: 9px; color: #666;")
-        x_limits_layout.addWidget(x_min_label)
-        
-        x_limits_layout.addStretch()
-        
-        x_max_label = QtWidgets.QLabel(f"{x_max:.1f}")
-        x_max_label.setStyleSheet("font-size: 9px; color: #666;")
-        x_limits_layout.addWidget(x_max_label)
-        
-        x_slider_layout.addWidget(self.x_slider)
-        x_slider_layout.addWidget(x_limits_row)
+        x_label = QtWidgets.QLabel("X:")
+        x_label.setStyleSheet("font-weight: bold;")
         
         self.x_spin = QtWidgets.QDoubleSpinBox()
         self.x_spin.setRange(-1e6, 1e6)
         self.x_spin.setDecimals(3)
-        self.x_spin.setSuffix(f" {self.stage_config['unit']}")
+        self.x_spin.setSuffix(" mm")
         self.x_spin.setValue(0.0)
-        self.x_spin.setMaximumWidth(100)
+        self.x_spin.setMaximumWidth(70)
         
-        x_slider_layout.addWidget(self.x_spin)
+        x_input_layout.addWidget(x_label)
+        x_input_layout.addWidget(self.x_spin)
         
-        position_layout.addWidget(x_slider_container, 2, 1, 1, 1)
+        x_slider_layout.addWidget(x_input)
         
-        # Labels for axes
-        y_label = QtWidgets.QLabel("Y:")
-        y_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        position_layout.addWidget(y_label, 0, 0, 1, 1)
+        # X slider - expand to fill available space
+        self.x_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.x_slider.setRange(0, 1000)
+        self.x_slider.setValue(0)
+        self.x_slider.setFixedHeight(25)  # Only fix height
+        self.x_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.x_slider.setToolTip(f"X range: {x_min:.1f} to {x_max:.1f} mm")
         
-        x_label = QtWidgets.QLabel("X:")
-        x_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        position_layout.addWidget(x_label, 2, 0, 1, 1)
+        x_slider_layout.addWidget(self.x_slider)
+        
+        position_layout.addWidget(x_slider_container, 2, 0, 1, 2)  # Span columns 0-1
+        
+        # Set column stretches for proper alignment
+        position_layout.setColumnStretch(0, 0)  # Y slider - fixed width
+        position_layout.setColumnStretch(1, 1)  # 2D block - can expand
+        position_layout.setColumnStretch(2, 0)  # Not used
+        
+        # Set row stretches
+        position_layout.setRowStretch(0, 0)  # Not used
+        position_layout.setRowStretch(1, 1)  # Main area - expand vertically
+        position_layout.setRowStretch(2, 0)  # X slider - fixed height
         
         position_group.setLayout(position_layout)
         layout.addWidget(position_group)
@@ -481,9 +530,9 @@ class StageControlTab(QtWidgets.QWidget):
         self.z_spin = QtWidgets.QDoubleSpinBox()
         self.z_spin.setRange(-1e6, 1e6)
         self.z_spin.setDecimals(3)
-        self.z_spin.setSuffix(f" {self.focus_config['unit']}")
+        self.z_spin.setSuffix(" mm")  # Hardcode to mm for consistency
         self.z_spin.setValue(0.0)
-        self.z_spin.setMaximumWidth(100)
+        self.z_spin.setMaximumWidth(70)
         
         self.z_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.z_slider.setRange(0, 1000)
@@ -574,6 +623,16 @@ class StageControlTab(QtWidgets.QWidget):
                 self.move_btn.setEnabled(True)
                 self.move_btn.setText("Move")
             self.refresh_btn.setEnabled(True)
+    
+    def _on_aspect_ratio_toggled(self, checked):
+        """Handle aspect ratio toggle."""
+        self._keep_aspect_ratio = checked
+        # Update position block aspect ratio
+        if hasattr(self, 'position_block'):
+            if checked:
+                self.position_block.set_aspect_ratio(self._aspect_ratio)
+            else:
+                self.position_block.set_aspect_ratio(None)  # No aspect ratio constraint
     
     def _on_drag_started(self, x, y):
         """Handle drag start in live mode."""

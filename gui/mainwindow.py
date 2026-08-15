@@ -4777,6 +4777,38 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          if self._build_devices_now():
             self.statusBar().showMessage(f"Hardware config loaded and devices opened: {path}", 5000)
+            
+            # Reload Stage Control panel if it's visible
+            if hasattr(self, 'stage_control_dock') and self.stage_control_dock.isVisible():
+               try:
+                  logger.info("Reloading Stage Control panel after hardware config change")
+                  if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+                     self.stage_control_tab.set_stage(self.stage)
+                     self.stage_control_tab.set_focus(self.focus)
+                     self.stage_control_tab.set_config_path(self._config_path)
+               except Exception as e:
+                  logger.exception("Failed to reload Stage Control panel: %s", e)
+            
+            # Reload Stage Calibration panel if it's visible
+            if hasattr(self, 'stage_calibration_dock') and self.stage_calibration_dock.isVisible():
+               try:
+                  logger.info("Reloading Stage Calibration panel after hardware config change")
+                  if hasattr(self, 'stage_calibration_tab') and self.stage_calibration_tab:
+                     self.stage_calibration_tab.set_stage(self.stage)
+                     self.stage_calibration_tab.set_config_path(self._config_path)
+               except Exception as e:
+                  logger.exception("Failed to reload Stage Calibration panel: %s", e)
+            
+            # Reload Excitation Control panel if it's visible
+            if hasattr(self, 'excitation_control_dock') and self.excitation_control_dock.isVisible():
+               try:
+                  logger.info("Reloading Excitation Control panel after hardware config change")
+                  if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
+                     self.excitation_control_tab.set_excitation(self.excitation)
+                     self.excitation_control_tab.set_config_path(self._config_path)
+               except Exception as e:
+                  logger.exception("Failed to reload Excitation Control panel: %s", e)
+            
          else:
             QtWidgets.QMessageBox.warning(
                self, "Load Hardware Config",
