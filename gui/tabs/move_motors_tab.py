@@ -925,19 +925,33 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_position_block_clicked(self, x, y):
         """Handle position block click - update sliders and spinboxes."""
-        # Update spinboxes
-        self.x_spin.blockSignals(True)
-        self.y_spin.blockSignals(True)
-        self.x_spin.setValue(x)
-        self.y_spin.setValue(y)
-        self.x_spin.blockSignals(False)
-        self.y_spin.blockSignals(False)
-        
-        # Update sliders
-        self._update_sliders_from_spinboxes()
-        
-        # Update position block target (already updated by the widget itself)
-        # No need to call set_position as widget handles the target position
+        # In live mode, clicking on position block should move the stage immediately
+        if self._is_live_mode:
+            # In live mode, directly move to the clicked position
+            # Block signals to prevent double-triggering
+            self.x_spin.blockSignals(True)
+            self.y_spin.blockSignals(True)
+            self.x_spin.setValue(x)
+            self.y_spin.setValue(y)
+            self.x_spin.blockSignals(False)
+            self.y_spin.blockSignals(False)
+            
+            # Update sliders
+            self._update_sliders_from_spinboxes()
+            
+            # Move to position
+            self._move_to_position_xy(x, y)
+        else:
+            # In normal mode, just update spinboxes and show target
+            self.x_spin.blockSignals(True)
+            self.y_spin.blockSignals(True)
+            self.x_spin.setValue(x)
+            self.y_spin.setValue(y)
+            self.x_spin.blockSignals(False)
+            self.y_spin.blockSignals(False)
+            
+            # Update sliders
+            self._update_sliders_from_spinboxes()
     
     def _setup_position_timer(self):
         """Set up automatic position reading timer (500ms interval)."""
