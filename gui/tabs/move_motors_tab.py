@@ -444,6 +444,7 @@ class StageControlTab(QtWidgets.QWidget):
         # ScaledStageXY.move_to() expects logical coordinates (real units)
         # and internally converts to steps: rx = x * scale + offset
         # So we should pass real units directly without conversion
+        print(f"[DEBUG] _real_units_to_steps: input={real_units}, scale={scale}, offset={offset}, output={real_units}")
         return real_units
         
     def _build_ui(self) -> None:
@@ -875,14 +876,24 @@ class StageControlTab(QtWidgets.QWidget):
         """Move stage to specific X,Y position in a separate thread."""
         try:
             print(f"[DEBUG] _move_to_position_xy called with: X={x}, Y={y}")
+            print(f"[DEBUG] Stage type: {type(self.stage)}")
             
-            # Convert real units to steps
-            x_steps = self._real_units_to_steps(x, self.stage_config['x_scale'], self.stage_config['x_offset'])
-            y_steps = self._real_units_to_steps(y, self.stage_config['y_scale'], self.stage_config['y_offset'])
+            # Check if we're using ScaledStageXY
+            from devices.scaled import ScaledStageXY
+            is_scaled = isinstance(self.stage, ScaledStageXY)
+            print(f"[DEBUG] Is ScaledStageXY: {is_scaled}")
             
-            print(f"[DEBUG] Converted to steps: X_steps={x_steps}, Y_steps={y_steps}")
-            print(f"[DEBUG] Stage config: x_scale={self.stage_config['x_scale']}, x_offset={self.stage_config['x_offset']}")
-            print(f"[DEBUG] Stage config: y_scale={self.stage_config['y_scale']}, y_offset={self.stage_config['y_offset']}")
+            if is_scaled:
+                # For ScaledStageXY, pass logical coordinates directly
+                # It will handle the scale/offset conversion internally
+                x_steps = x
+                y_steps = y
+                print(f"[DEBUG] Using ScaledStageXY - passing logical coordinates: X={x_steps}, Y={y_steps}")
+            else:
+                # For raw stages, convert to steps
+                x_steps = self._real_units_to_steps(x, self.stage_config['x_scale'], self.stage_config['x_offset'])
+                y_steps = self._real_units_to_steps(y, self.stage_config['y_scale'], self.stage_config['y_offset'])
+                print(f"[DEBUG] Using raw stage - converted to steps: X={x_steps}, Y={y_steps}")
             
             # Move stage in a separate thread to avoid blocking UI
             if self.stage and hasattr(self.stage, 'move_to'):
