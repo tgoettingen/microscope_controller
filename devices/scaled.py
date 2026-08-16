@@ -261,11 +261,8 @@ class ScaledStageXY:
         ry = float(y) * self.y_scale + self.y_offset
         try:
             logger.info(
-                "Stage move_to (scaled) logical=(%s,%s) raw=(%s,%s)",
-                x,
-                y,
-                rx,
-                ry,
+                "Stage move_to (scaled) logical=(%s,%s) raw=(%s,%s) scale=(x:%s,y:%s) offset=(x:%s,y:%s)",
+                x, y, rx, ry, self.x_scale, self.y_scale, self.x_offset, self.y_offset
             )
         except Exception:
             pass

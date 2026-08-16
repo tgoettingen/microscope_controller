@@ -2399,7 +2399,6 @@ class MainWindow(QtWidgets.QMainWindow):
           True if execution successful, False otherwise
       """
       if not commands:
-         logger.warning("No movement commands to execute (empty list)")
          return False
       
       logger.info(f"Executing {len(commands)} plugin movement commands")
@@ -5019,7 +5018,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      import traceback
                      traceback.print_exc()
                else:
-                  logger.debug("No movement commands to execute")
+                  pass  # No movement commands to execute
             except Exception as e:
                logger.warning(f"Failed to process data with plugins: {e}")
          

@@ -81,16 +81,19 @@ class StandaAxis(SingleAxis):
 
    def move_to(self, target: float):
       try:
-         logger.info("StandaAxis move_to (com=%s target=%s)", getattr(self, "com_port", None), target)
+         logger.info("StandaAxis move_to (com=%s target=%s, current_pos=%s)", 
+                    getattr(self, "com_port", None), target, self.pos)
       except Exception:
          pass
       # Like simulated stage, directly set the target position
       # and let the hardware handle the relative movement
       cur = self.get_position()
       delta = target - cur
+      logger.info(f"StandaAxis move_to: target={target}, current={cur}, delta={delta}")
       self.move_by(delta)
       # After move, update position to target (like simulated stage)
       self.pos = target
+      logger.info(f"StandaAxis move_to: new position={self.pos}")
 
    def get_position(self) -> float:
       if self.dev is None:
@@ -186,10 +189,12 @@ class StandaStageXY:
    def _move_x_axis(self, x: float):
       """Move X axis in a separate thread."""
       try:
+         logger.info(f"StandaStageXY _move_x_axis: Moving X to {x}, current X position: {self.x.get_position()}")
          self.x.move_to(x)
          # Store success in thread object
          import threading
          threading.current_thread().success = True
+         logger.info(f"StandaStageXY _move_x_axis: X move completed, new position: {self.x.get_position()}")
       except Exception as e:
          error_msg = str(e)
          # Handle timeout exceptions as warnings, not errors
