@@ -47,12 +47,25 @@ class StandaAxis(SingleAxis):
                self.__init__(self.com_port)
             except:
                raise RuntimeError("Axis not available")
-      self.dev.move_by(int(delta))
-      self.dev.wait_move(timeout=30.0)
+      
       try:
+         self.dev.move_by(int(delta))
+         
+         # Try to wait for move completion with timeout
+         try:
+            self.dev.wait_move(timeout=30.0)
+         except Exception as e:
+            logger.warning(f"Wait move failed for {self.com_port}: {e}")
+            # Continue anyway - move may have completed
+         
+         try:
             self.pos = self.dev.get_position()
-      except Exception:
+         except Exception as e:
+            logger.warning(f"Failed to get position after move: {e}")
             self.pos += int(delta)
+      except Exception as e:
+         logger.error(f"Failed to move axis {self.com_port}: {e}")
+         raise
 
    def move_to(self, target: float):
       try:
@@ -102,8 +115,31 @@ class StandaStageXY:
          logger.info("StandaStageXY move_to x=%s y=%s", x, y)
       except Exception:
          pass
-      self.x.move_to(x)
-      self.y.move_to(y)
+      
+      # Move X and Y with error handling
+      x_success = False
+      y_success = False
+      
+      # Try to move X axis
+      try:
+         self.x.move_to(x)
+         x_success = True
+      except Exception as e:
+         logger.warning(f"Failed to move X axis: {e}")
+      
+      # Try to move Y axis
+      try:
+         self.y.move_to(y)
+         y_success = True
+      except Exception as e:
+         logger.warning(f"Failed to move Y axis: {e}")
+      
+      # If both failed, raise exception
+      if not x_success and not y_success:
+         raise RuntimeError("Failed to move both X and Y axes")
+      
+      # Return success status
+      return x_success and y_success
 
    def move_by(self, dx: float, dy: float):
       if dx: self.x.move_by(dx)
