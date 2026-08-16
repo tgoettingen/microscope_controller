@@ -143,6 +143,7 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         
         # Configuration
         self.config = {
+            "enabled": False,  # Disable plugin by default - only enable when experiment specifies it
             "repeat_count": -1,  # Number of times to repeat the operation (-1 = infinite)
             "measurement_duration": 5.0,  # Measurement duration in seconds
             "post_move_delay": 10.0,  # Delay after moving before starting measurement (seconds)
@@ -213,6 +214,11 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
     def get_config_schema(self) -> Dict[str, Any]:
         """Return configuration schema for UI generation."""
         return {
+            "enabled": {
+                "type": "bool",
+                "default": False,
+                "description": "Enable/disable plugin (default: disabled, enable via experiment config)"
+            },
             "repeat_count": {
                 "type": "int",
                 "min": -1,

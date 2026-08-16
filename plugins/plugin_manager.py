@@ -110,6 +110,47 @@ class PluginManager:
         
         return loaded_count
     
+    def load_builtin_plugins(self) -> int:
+        """Load all built-in plugins from the builtin directory.
+        
+        Returns:
+            Number of plugins successfully loaded
+        """
+        loaded_count = 0
+        
+        # Get built-in plugin directory
+        builtin_dir = None
+        for plugin_dir in self._default_plugin_dirs:
+            if "builtin" in str(plugin_dir).lower():
+                builtin_dir = plugin_dir
+                break
+        
+        if builtin_dir is None or not builtin_dir.exists():
+            logger.warning("Built-in plugin directory not found")
+            return 0
+        
+        for plugin_file in builtin_dir.glob("*.py"):
+            # Skip files that should not be loaded as plugins
+            if plugin_file.name.startswith("_"):
+                continue
+            if plugin_file.name == "plugin_manager.py":
+                continue
+            if plugin_file.name == "base_plugin.py":
+                continue
+                
+            try:
+                plugin_name = plugin_file.stem
+                success = self.load_plugin(plugin_name, plugin_file)
+                if success:
+                    loaded_count += 1
+                    logger.info(f"Loaded built-in plugin: {plugin_name}")
+                else:
+                    logger.warning(f"Failed to load built-in plugin: {plugin_name}")
+            except Exception as e:
+                logger.warning(f"Error loading built-in plugin {plugin_file}: {e}")
+        
+        return loaded_count
+    
     def load_plugin(self, plugin_name: str, plugin_path: Optional[Path] = None) -> bool:
         """Load a plugin by name or path.
         
@@ -209,8 +250,13 @@ class PluginManager:
             if config:
                 plugin_instance.initialize(config)
             
+            # Do NOT auto-enable plugin by default
+            # Plugins should be enabled via experiment configuration or UI
+            if not hasattr(plugin_instance, 'enabled') or plugin_instance.enabled is None:
+                plugin_instance.enabled = False
+            
             self._plugins[storage_name] = plugin_instance
-            logger.info(f"Successfully loaded plugin: {storage_name}")
+            logger.info(f"Successfully loaded plugin: {storage_name} (enabled={plugin_instance.enabled})")
             return True
             
         except Exception as e:

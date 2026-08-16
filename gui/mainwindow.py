@@ -240,12 +240,47 @@ class MainWindow(QtWidgets.QMainWindow):
             custom_plugin_dir = Path(__file__).parent.parent / "plugin"
             if custom_plugin_dir.exists():
                self._plugin_manager.add_plugin_directory(custom_plugin_dir)
-            # Discover plugins
-            discovered = self._plugin_manager.discover_plugins()
-            logger.info(f"Discovered {len(discovered)} plugins")
-            # Auto-load all custom plugins
-            loaded_count = self._plugin_manager.auto_load_custom_plugins()
-            logger.info(f"Auto-loaded {loaded_count} custom plugins")
+               logger.info(f"Added custom plugin directory: {custom_plugin_dir}")
+            else:
+               logger.warning(f"Custom plugin directory not found: {custom_plugin_dir}")
+            
+            # Check if load plugins is enabled in config
+            load_plugins = False  # Default to False
+            try:
+               if isinstance(self.config, dict):
+                  load_plugins = self.config.get("load_plugins", False)
+            except Exception:
+               pass
+            
+            if load_plugins:
+               # Discover plugins
+               discovered = self._plugin_manager.discover_plugins()
+               logger.info(f"Discovered {len(discovered)} plugins")
+               
+               # Auto-load all custom plugins
+               loaded_count = self._plugin_manager.auto_load_custom_plugins()
+               logger.info(f"Auto-loaded {loaded_count} custom plugins")
+               
+               # Also load built-in plugins (from plugins/builtin directory)
+               builtin_count = self._plugin_manager.load_builtin_plugins()
+               logger.info(f"Loaded {builtin_count} built-in plugins")
+               
+               # Log all loaded plugins
+               for plugin_name, plugin in self._plugin_manager.get_all_plugins().items():
+                  logger.info(f"Available plugin: {plugin_name} (enabled={plugin.enabled})")
+            else:
+               logger.info("Plugin loading is disabled in hardware config")
+               
+               # Still discover plugins to make them available for manual loading
+               discovered = self._plugin_manager.discover_plugins()
+               logger.info(f"Discovered {len(discovered)} plugins (plugin loading disabled)")
+               
+               # Load built-in plugins only (user can manually enable them)
+               builtin_count = self._plugin_manager.load_builtin_plugins()
+               logger.info(f"Loaded {builtin_count} built-in plugins (plugin loading disabled)")
+               
+               for plugin_name, plugin in self._plugin_manager.get_all_plugins().items():
+                  logger.info(f"Available plugin: {plugin_name} (enabled={plugin.enabled})")
          except Exception as e:
             logger.warning(f"Failed to initialize plugin manager: {e}")
 
