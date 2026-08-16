@@ -128,37 +128,49 @@ class StandaStageXY:
       except Exception:
          pass
       
-      # Move X and Y with error handling
+      # Move X and Y simultaneously using separate threads for speed
+      import threading
       x_success = False
       y_success = False
       x_error = None
       y_error = None
       
-      # Try to move X axis
-      try:
-         self.x.move_to(x)
-         x_success = True
-      except Exception as e:
-         x_error = str(e)
-         # Handle timeout exceptions as warnings, not errors
-         if 'timeout' in x_error.lower() or 'SerialTimeoutException' in x_error:
-            logger.warning(f"X axis move timeout (may have completed): {e}")
-            x_success = True  # Consider as success for timeout cases
-         else:
-            logger.warning(f"Failed to move X axis: {e}")
+      # Create threads for concurrent movement
+      x_thread = threading.Thread(
+         target=self._move_x_axis,
+         args=(x,),
+         daemon=True
+      )
+      y_thread = threading.Thread(
+         target=self._move_y_axis,
+         args=(y,),
+         daemon=True
+      )
       
-      # Try to move Y axis
-      try:
-         self.y.move_to(y)
-         y_success = True
-      except Exception as e:
-         y_error = str(e)
-         # Handle timeout exceptions as warnings, not errors
-         if 'timeout' in y_error.lower() or 'SerialTimeoutException' in y_error:
-            logger.warning(f"Y axis move timeout (may have completed): {e}")
-            y_success = True  # Consider as success for timeout cases
-         else:
-            logger.warning(f"Failed to move Y axis: {e}")
+      # Start both threads simultaneously
+      x_thread.start()
+      y_thread.start()
+      
+      # Wait for both threads to complete
+      x_thread.join(timeout=35.0)  # 30s timeout + 5s buffer
+      y_thread.join(timeout=35.0)
+      
+      # Check thread results
+      x_success = getattr(x_thread, 'success', False)
+      y_success = getattr(y_thread, 'success', False)
+      x_error = getattr(x_thread, 'error', None)
+      y_error = getattr(y_thread, 'error', None)
+      
+      # Log results
+      if x_success:
+         logger.info("X axis move completed successfully")
+      elif x_error:
+         logger.warning(f"X axis move issue: {x_error}")
+         
+      if y_success:
+         logger.info("Y axis move completed successfully")
+      elif y_error:
+         logger.warning(f"Y axis move issue: {y_error}")
       
       # If both failed with non-timeout errors, raise exception
       if not x_success and not y_success:
@@ -166,6 +178,46 @@ class StandaStageXY:
       
       # Return success status
       return x_success and y_success
+   
+   def _move_x_axis(self, x: float):
+      """Move X axis in a separate thread."""
+      try:
+         self.x.move_to(x)
+         # Store success in thread object
+         import threading
+         threading.current_thread().success = True
+      except Exception as e:
+         error_msg = str(e)
+         # Handle timeout exceptions as warnings, not errors
+         if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
+            logger.warning(f"X axis move timeout (may have completed): {e}")
+            import threading
+            threading.current_thread().success = True  # Consider as success for timeout cases
+         else:
+            logger.warning(f"Failed to move X axis: {e}")
+            import threading
+            threading.current_thread().success = False
+            threading.current_thread().error = error_msg
+   
+   def _move_y_axis(self, y: float):
+      """Move Y axis in a separate thread."""
+      try:
+         self.y.move_to(y)
+         # Store success in thread object
+         import threading
+         threading.current_thread().success = True
+      except Exception as e:
+         error_msg = str(e)
+         # Handle timeout exceptions as warnings, not errors
+         if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
+            logger.warning(f"Y axis move timeout (may have completed): {e}")
+            import threading
+            threading.current_thread().success = True  # Consider as success for timeout cases
+         else:
+            logger.warning(f"Failed to move Y axis: {e}")
+            import threading
+            threading.current_thread().success = False
+            threading.current_thread().error = error_msg
 
    def move_by(self, dx: float, dy: float):
       if dx: self.x.move_by(dx)
