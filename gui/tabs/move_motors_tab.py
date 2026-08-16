@@ -875,9 +875,15 @@ class StageControlTab(QtWidgets.QWidget):
     def _move_to_position_xy(self, x, y):
         """Move stage to specific X,Y position in a separate thread."""
         try:
+            print(f"[DEBUG] _move_to_position_xy called with: X={x}, Y={y}")
+            
             # Convert real units to steps
             x_steps = self._real_units_to_steps(x, self.stage_config['x_scale'], self.stage_config['x_offset'])
             y_steps = self._real_units_to_steps(y, self.stage_config['y_scale'], self.stage_config['y_offset'])
+            
+            print(f"[DEBUG] Converted to steps: X_steps={x_steps}, Y_steps={y_steps}")
+            print(f"[DEBUG] Stage config: x_scale={self.stage_config['x_scale']}, x_offset={self.stage_config['x_offset']}")
+            print(f"[DEBUG] Stage config: y_scale={self.stage_config['y_scale']}, y_offset={self.stage_config['y_offset']}")
             
             # Move stage in a separate thread to avoid blocking UI
             if self.stage and hasattr(self.stage, 'move_to'):
@@ -898,12 +904,15 @@ class StageControlTab(QtWidgets.QWidget):
     def _move_stage_thread(self, x_steps, y_steps, x_real, y_real):
         """Thread function to move stage."""
         try:
+            print(f"[DEBUG] _move_stage_thread: Moving to steps X={x_steps}, Y={y_steps}")
             self.stage.move_to(x_steps, y_steps)
+            print(f"[DEBUG] _move_stage_thread: Move completed")
         except Exception as e:
             print(f"Error in stage movement thread: {e}")
             self._move_error.emit(str(e))
         finally:
             # Update UI using signal with target position
+            print(f"[DEBUG] _move_stage_thread: Emitting move_complete with X={x_real}, Y={y_real}")
             self._move_complete.emit(x_real, y_real)
     
     @pyqtSlot(float, float)
@@ -925,6 +934,9 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_position_block_clicked(self, x, y):
         """Handle position block click - update sliders and spinboxes."""
+        print(f"\n[DEBUG] Position block clicked: X={x}, Y={y}")
+        print(f"[DEBUG] Live mode: {self._is_live_mode}")
+        
         # In live mode, clicking on position block should move the stage immediately
         if self._is_live_mode:
             # In live mode, directly move to the clicked position
@@ -939,6 +951,7 @@ class StageControlTab(QtWidgets.QWidget):
             # Update sliders
             self._update_sliders_from_spinboxes()
             
+            print(f"[DEBUG] Calling _move_to_position_xy with: X={x}, Y={y}")
             # Move to position
             self._move_to_position_xy(x, y)
         else:
@@ -1268,6 +1281,8 @@ class StageControlTab(QtWidgets.QWidget):
     def _on_move_complete(self, x_real, y_real):
         """Handle move completion signal."""
         try:
+            print(f"[DEBUG] _on_move_complete called with: X={x_real}, Y={y_real}")
+            
             # Reset target position after successful move (in normal mode)
             if not self._is_live_mode and hasattr(self, 'position_block'):
                 self.position_block._reset_target()
@@ -1277,6 +1292,7 @@ class StageControlTab(QtWidgets.QWidget):
                 self.position_block.set_position(x_real, y_real)
             
             # Refresh position from hardware to get actual position
+            print(f"[DEBUG] Calling _refresh_position to get actual position")
             self._refresh_position()
         except Exception as e:
             print(f"Error handling move complete: {e}")
