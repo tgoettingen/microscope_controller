@@ -135,19 +135,57 @@ class StandaStageXY:
       except Exception:
          pass
       
-      # Simple sequential movement - let the caller handle threading if needed
-      # This avoids duplicate threading issues
-      try:
-         self.x.move_to(x)
-         logger.info("X axis move completed")
-      except Exception as e:
-         logger.warning(f"Failed to move X axis: {e}")
+      # Use concurrent movement for speed, but with proper error handling
+      # This is more efficient than sequential movement
+      import threading
+      x_success = False
+      y_success = False
+      x_error = None
+      y_error = None
       
-      try:
-         self.y.move_to(y)
-         logger.info("Y axis move completed")
-      except Exception as e:
-         logger.warning(f"Failed to move Y axis: {e}")
+      # Create threads for concurrent movement
+      x_thread = threading.Thread(
+         target=self._move_x_axis,
+         args=(x,),
+         daemon=True
+      )
+      y_thread = threading.Thread(
+         target=self._move_y_axis,
+         args=(y,),
+         daemon=True
+      )
+      
+      # Start both threads simultaneously
+      x_thread.start()
+      y_thread.start()
+      
+      # Wait for both threads to complete
+      x_thread.join(timeout=35.0)  # 30s timeout + 5s buffer
+      y_thread.join(timeout=35.0)
+      
+      # Check thread results
+      x_success = getattr(x_thread, 'success', False)
+      y_success = getattr(y_thread, 'success', False)
+      x_error = getattr(x_thread, 'error', None)
+      y_error = getattr(y_thread, 'error', None)
+      
+      # Log results
+      if x_success:
+         logger.info("X axis move completed successfully")
+      elif x_error:
+         logger.warning(f"X axis move issue: {x_error}")
+         
+      if y_success:
+         logger.info("Y axis move completed successfully")
+      elif y_error:
+         logger.warning(f"Y axis move issue: {y_error}")
+      
+      # If both failed with non-timeout errors, raise exception
+      if not x_success and not y_success:
+         raise RuntimeError(f"Failed to move both X and Y axes. X error: {x_error}, Y error: {y_error}")
+      
+      # Return success status
+      return x_success and y_success
    
    def _move_x_axis(self, x: float):
       """Move X axis in a separate thread."""
