@@ -4972,8 +4972,13 @@ class MainWindow(QtWidgets.QMainWindow):
                
                if all_movement_commands:
                   logger.info(f"Executing {len(all_movement_commands)} total movement commands")
-                  success = self._execute_plugin_movement_commands(all_movement_commands)
-                  logger.info(f"Movement commands execution result: {success}")
+                  try:
+                     success = self._execute_plugin_movement_commands(all_movement_commands)
+                     logger.info(f"Movement commands execution result: {success}")
+                  except Exception as e:
+                     logger.warning(f"Failed to execute plugin movement commands: {e}")
+                     import traceback
+                     traceback.print_exc()
                else:
                   logger.debug("No movement commands to execute")
             except Exception as e:

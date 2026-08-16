@@ -32,6 +32,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
         self.y_max = 100.0
         self._is_dragging = False
         self.aspect_ratio = None  # Aspect ratio constraint (width/height)
+        self.y_axis_swapped = False  # Y axis swapped flag
         self.setMinimumSize(POSITION_BLOCK_SIZE, POSITION_BLOCK_SIZE)
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
     
@@ -39,6 +40,11 @@ class PositionBlockWidget(QtWidgets.QWidget):
         """Set aspect ratio constraint. None = no constraint."""
         self.aspect_ratio = ratio
         self.update()  # Redraw with new aspect ratio
+    
+    def set_y_axis_swapped(self, swapped):
+        """Set Y axis swapped flag for label display."""
+        self.y_axis_swapped = swapped
+        self.update()  # Redraw with updated labels
     
     def set_position(self, x, y):
         """Set current position in real units (green marker)."""
@@ -261,7 +267,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawRect(int(x_offset) + 1, int(y_offset) + 1, int(draw_width - 3), int(draw_height - 3))
         
-        # Draw limit labels (Y is inverted: top=min, bottom=max)
+        # Draw limit labels (Y is inverted: top=min, bottom=max, unless swapped)
         painter.setPen(QtGui.QColor(80, 80, 80))
         painter.setFont(QtGui.QFont("Arial", 8))
         
@@ -269,9 +275,15 @@ class PositionBlockWidget(QtWidgets.QWidget):
         painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 5), f"{self.x_min:.1f}")
         painter.drawText(int(x_offset + draw_width - 40), int(y_offset + draw_height - 5), f"{self.x_max:.1f}")
         
-        # Y limits labels
-        painter.drawText(int(x_offset) + 5, int(y_offset + 12), f"{self.y_max:.1f}")
-        painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 12), f"{self.y_min:.1f}")
+        # Y limits labels - handle swapped case
+        if self.y_axis_swapped:
+            # When swapped: top=max, bottom=min (normal orientation)
+            painter.drawText(int(x_offset) + 5, int(y_offset + 12), f"{self.y_min:.1f}")
+            painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 12), f"{self.y_max:.1f}")
+        else:
+            # Default: top=max, bottom=min (inverted for typical coordinate system)
+            painter.drawText(int(x_offset) + 5, int(y_offset + 12), f"{self.y_max:.1f}")
+            painter.drawText(int(x_offset) + 5, int(y_offset + draw_height - 12), f"{self.y_min:.1f}")
         
         painter.end()
 
@@ -454,6 +466,10 @@ class StageControlTab(QtWidgets.QWidget):
         
         # Set initial aspect ratio on position block
         self.position_block.set_aspect_ratio(self._aspect_ratio if self._keep_aspect_ratio else None)
+        
+        # Set Y axis swapped flag based on configuration or default behavior
+        # Default to False (standard inverted Y where top=max, bottom=min)
+        self.position_block.set_y_axis_swapped(True)
         
         # Add position block directly to grid
         xy_grid.addWidget(self.position_block, 1, 1, 2, 1)  # Row 1-2, col 1
