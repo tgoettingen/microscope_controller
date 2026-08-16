@@ -55,7 +55,12 @@ class StandaAxis(SingleAxis):
          try:
             self.dev.wait_move(timeout=30.0)
          except Exception as e:
-            logger.warning(f"Wait move failed for {self.com_port}: {e}")
+            # Handle specific timeout exceptions
+            error_msg = str(e)
+            if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
+               logger.warning(f"Move timeout for {self.com_port} - command may have completed despite timeout")
+            else:
+               logger.warning(f"Wait move failed for {self.com_port}: {e}")
             # Continue anyway - move may have completed
          
          try:
@@ -64,8 +69,15 @@ class StandaAxis(SingleAxis):
             logger.warning(f"Failed to get position after move: {e}")
             self.pos += int(delta)
       except Exception as e:
-         logger.error(f"Failed to move axis {self.com_port}: {e}")
-         raise
+         error_msg = str(e)
+         # Handle specific timeout exceptions
+         if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
+            logger.warning(f"Move command timeout for {self.com_port} - command may have been sent")
+            # Still update position as best effort
+            self.pos += int(delta)
+         else:
+            logger.error(f"Failed to move axis {self.com_port}: {e}")
+            raise
 
    def move_to(self, target: float):
       try:
@@ -119,24 +131,38 @@ class StandaStageXY:
       # Move X and Y with error handling
       x_success = False
       y_success = False
+      x_error = None
+      y_error = None
       
       # Try to move X axis
       try:
          self.x.move_to(x)
          x_success = True
       except Exception as e:
-         logger.warning(f"Failed to move X axis: {e}")
+         x_error = str(e)
+         # Handle timeout exceptions as warnings, not errors
+         if 'timeout' in x_error.lower() or 'SerialTimeoutException' in x_error:
+            logger.warning(f"X axis move timeout (may have completed): {e}")
+            x_success = True  # Consider as success for timeout cases
+         else:
+            logger.warning(f"Failed to move X axis: {e}")
       
       # Try to move Y axis
       try:
          self.y.move_to(y)
          y_success = True
       except Exception as e:
-         logger.warning(f"Failed to move Y axis: {e}")
+         y_error = str(e)
+         # Handle timeout exceptions as warnings, not errors
+         if 'timeout' in y_error.lower() or 'SerialTimeoutException' in y_error:
+            logger.warning(f"Y axis move timeout (may have completed): {e}")
+            y_success = True  # Consider as success for timeout cases
+         else:
+            logger.warning(f"Failed to move Y axis: {e}")
       
-      # If both failed, raise exception
+      # If both failed with non-timeout errors, raise exception
       if not x_success and not y_success:
-         raise RuntimeError("Failed to move both X and Y axes")
+         raise RuntimeError(f"Failed to move both X and Y axes. X error: {x_error}, Y error: {y_error}")
       
       # Return success status
       return x_success and y_success
