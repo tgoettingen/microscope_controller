@@ -84,9 +84,13 @@ class StandaAxis(SingleAxis):
          logger.info("StandaAxis move_to (com=%s target=%s)", getattr(self, "com_port", None), target)
       except Exception:
          pass
+      # Like simulated stage, directly set the target position
+      # and let the hardware handle the relative movement
       cur = self.get_position()
       delta = target - cur
       self.move_by(delta)
+      # After move, update position to target (like simulated stage)
+      self.pos = target
 
    def get_position(self) -> float:
       if self.dev is None:
