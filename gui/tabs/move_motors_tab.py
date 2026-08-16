@@ -93,9 +93,31 @@ class PositionBlockWidget(QtWidgets.QWidget):
             width = self.width()
             height = self.height()
             
-            # Calculate normalized position from click
-            clicked_x = event.position().x() / width
-            clicked_y = event.position().y() / height
+            # Calculate drawing area respecting aspect ratio
+            if self.aspect_ratio is not None and self.aspect_ratio > 0:
+                container_ratio = width / height
+                if container_ratio > self.aspect_ratio:
+                    # Container is wider than desired, constrain by height
+                    draw_height = height
+                    draw_width = draw_height * self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+                else:
+                    # Container is taller than desired, constrain by width
+                    draw_width = width
+                    draw_height = draw_width / self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+            else:
+                # No aspect ratio constraint, use full widget
+                draw_width = width
+                draw_height = height
+                x_offset = 0
+                y_offset = 0
+            
+            # Calculate normalized position from click (relative to drawing area)
+            clicked_x = (event.position().x() - x_offset) / draw_width
+            clicked_y = (event.position().y() - y_offset) / draw_height
             
             # Clamp to valid range
             clicked_x = max(0.0, min(1.0, clicked_x))
@@ -119,9 +141,31 @@ class PositionBlockWidget(QtWidgets.QWidget):
             width = self.width()
             height = self.height()
             
-            # Calculate normalized position from drag
-            dragged_x = event.position().x() / width
-            dragged_y = event.position().y() / height
+            # Calculate drawing area respecting aspect ratio
+            if self.aspect_ratio is not None and self.aspect_ratio > 0:
+                container_ratio = width / height
+                if container_ratio > self.aspect_ratio:
+                    # Container is wider than desired, constrain by height
+                    draw_height = height
+                    draw_width = draw_height * self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+                else:
+                    # Container is taller than desired, constrain by width
+                    draw_width = width
+                    draw_height = draw_width / self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+            else:
+                # No aspect ratio constraint, use full widget
+                draw_width = width
+                draw_height = height
+                x_offset = 0
+                y_offset = 0
+            
+            # Calculate normalized position from drag (relative to drawing area)
+            dragged_x = (event.position().x() - x_offset) / draw_width
+            dragged_y = (event.position().y() - y_offset) / draw_height
             
             # Clamp to valid range
             dragged_x = max(0.0, min(1.0, dragged_x))
@@ -143,9 +187,31 @@ class PositionBlockWidget(QtWidgets.QWidget):
             width = self.width()
             height = self.height()
             
-            # Calculate normalized position from release
-            released_x = event.position().x() / width
-            released_y = event.position().y() / height
+            # Calculate drawing area respecting aspect ratio
+            if self.aspect_ratio is not None and self.aspect_ratio > 0:
+                container_ratio = width / height
+                if container_ratio > self.aspect_ratio:
+                    # Container is wider than desired, constrain by height
+                    draw_height = height
+                    draw_width = draw_height * self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+                else:
+                    # Container is taller than desired, constrain by width
+                    draw_width = width
+                    draw_height = draw_width / self.aspect_ratio
+                    x_offset = 0
+                    y_offset = 0
+            else:
+                # No aspect ratio constraint, use full widget
+                draw_width = width
+                draw_height = height
+                x_offset = 0
+                y_offset = 0
+            
+            # Calculate normalized position from release (relative to drawing area)
+            released_x = (event.position().x() - x_offset) / draw_width
+            released_y = (event.position().y() - y_offset) / draw_height
             
             # Clamp to valid range
             released_x = max(0.0, min(1.0, released_x))

@@ -224,21 +224,21 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                 "type": "float",
                 "min": 0.1,
                 "max": 60.0,
-                "default": 5.0,
+                "default": 2.0,
                 "description": "Measurement duration in seconds"
             },
             "post_move_delay": {
                 "type": "float",
                 "min": 0.0,
                 "max": 60.0,
-                "default": 5.0,
+                "default": 3.0,
                 "description": "Delay after moving before starting measurement (seconds)"
             },
             "post_decode_delay": {
                 "type": "float",
                 "min": 0.0,
                 "max": 60.0,
-                "default": 5.0,
+                "default": 3.0,
                 "description": "Delay after moving to decoded position before next cycle (seconds)"
             },
             "random_range_x": {

@@ -3360,12 +3360,16 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
                   stage_config = getattr(self.stage_control_tab, 'stage_config', {})
+                  # Get logical coordinate range (before scaling/offset)
+                  # This is what the configuration file specifies
                   stage_range = {
                      'stage_x_min': stage_config.get('x_min'),
                      'stage_x_max': stage_config.get('x_max'),
                      'stage_y_min': stage_config.get('y_min'),
                      'stage_y_max': stage_config.get('y_max'),
                   }
+                  logger.info(f"Stage logical range: X[{stage_range['stage_x_min']}, {stage_range['stage_x_max']}], Y[{stage_range['stage_y_min']}, {stage_range['stage_y_max']}]")
+                  logger.info(f"Stage scaling: x_scale={stage_config.get('x_scale')}, x_offset={stage_config.get('x_offset')}, y_scale={stage_config.get('y_scale')}, y_offset={stage_config.get('y_offset')}")
             except Exception as e:
                logger.warning(f"Failed to get stage range: {e}")
             

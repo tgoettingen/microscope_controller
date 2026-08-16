@@ -1707,6 +1707,9 @@ class LiveTab(QtWidgets.QWidget):
         pen = pg.mkPen(color=color, width=2)
         curve = self.plot_widget.plot([], [], pen=pen, name=detector_id)
         self._detector_curves[detector_id] = curve
+        
+        # Ensure the curve is visible
+        curve.setVisible(True)
 
         # Create a small control row: label (colored), visibility checkbox, stream checkbox
         row = QtWidgets.QWidget()
@@ -1947,6 +1950,8 @@ class LiveTab(QtWidgets.QWidget):
                 old_curve = self._detector_curves.get(det_id)
                 pen = old_curve.opts.get("pen") if old_curve is not None else pg.mkPen(color=(255, 255, 255), width=2)
                 self._detector_curves[det_id] = self.plot_widget.plot([], [], pen=pen, name=det_id)
+                # Ensure the new curve is visible
+                self._detector_curves[det_id].setVisible(True)
             except Exception:
                 pass
             try:
