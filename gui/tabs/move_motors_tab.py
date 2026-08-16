@@ -376,6 +376,9 @@ class StageControlTab(QtWidgets.QWidget):
         self._build_ui()
         self._setup_position_timer()
         
+        # Initialize moving flag to prevent duplicate moves
+        self._is_moving = False
+        
         # Connect signals for thread communication
         self._move_complete.connect(self._on_move_complete)
         self._move_error.connect(self._on_move_error_slot)
@@ -883,6 +886,15 @@ class StageControlTab(QtWidgets.QWidget):
             is_scaled = isinstance(self.stage, ScaledStageXY)
             print(f"[DEBUG] Is ScaledStageXY: {is_scaled}")
             
+            # Check if underlying stage is StandaStageXY (which already handles concurrent X/Y movement)
+            from devices.standa_stage import StandaStageXY
+            is_standa = False
+            if is_scaled and hasattr(self.stage, '_stage'):
+                is_standa = isinstance(self.stage._stage, StandaStageXY)
+            elif not is_scaled:
+                is_standa = isinstance(self.stage, StandaStageXY)
+            print(f"[DEBUG] Is StandaStageXY: {is_standa}")
+            
             if is_scaled:
                 # For ScaledStageXY, pass logical coordinates directly
                 # It will handle the scale/offset conversion internally
@@ -895,32 +907,44 @@ class StageControlTab(QtWidgets.QWidget):
                 y_steps = self._real_units_to_steps(y, self.stage_config['y_scale'], self.stage_config['y_offset'])
                 print(f"[DEBUG] Using raw stage - converted to steps: X={x_steps}, Y={y_steps}")
             
+            # Prevent duplicate moves by checking if already moving
+            if hasattr(self, '_is_moving') and self._is_moving:
+                print(f"[DEBUG] Already moving, ignoring duplicate move request")
+                return
+            
+            self._is_moving = True
+            
             # Move stage in a separate thread to avoid blocking UI
             if self.stage and hasattr(self.stage, 'move_to'):
                 import threading
                 move_thread = threading.Thread(
                     target=self._move_stage_thread,
-                    args=(x_steps, y_steps, x, y),
+                    args=(x_steps, y_steps, x, y, is_standa),
                     daemon=True
                 )
                 move_thread.start()
             else:
                 # Update UI even if stage not available
                 self._update_position_ui(x, y)
+                self._is_moving = False
                 
         except Exception as e:
             print(f"Error moving stage: {e}")
+            self._is_moving = False
     
-    def _move_stage_thread(self, x_steps, y_steps, x_real, y_real):
+    def _move_stage_thread(self, x_steps, y_steps, x_real, y_real, is_standa):
         """Thread function to move stage."""
         try:
-            print(f"[DEBUG] _move_stage_thread: Moving to steps X={x_steps}, Y={y_steps}")
+            print(f"[DEBUG] _move_stage_thread: Moving to steps X={x_steps}, Y={y_steps}, is_standa={is_standa}")
+            print(f"[DEBUG] _move_stage_thread: Current stage position: {self.stage.get_position()}")
             self.stage.move_to(x_steps, y_steps)
-            print(f"[DEBUG] _move_stage_thread: Move completed")
+            print(f"[DEBUG] _move_stage_thread: Move completed, new position: {self.stage.get_position()}")
         except Exception as e:
             print(f"Error in stage movement thread: {e}")
             self._move_error.emit(str(e))
         finally:
+            # Reset moving flag
+            self._is_moving = False
             # Update UI using signal with target position
             print(f"[DEBUG] _move_stage_thread: Emitting move_complete with X={x_real}, Y={y_real}")
             self._move_complete.emit(x_real, y_real)
