@@ -946,6 +946,10 @@ class StageControlTab(QtWidgets.QWidget):
         """Handle position block click - update sliders and spinboxes."""
         print(f"\n[DEBUG] Position block clicked: X={x}, Y={y}")
         print(f"[DEBUG] Live mode: {self._is_live_mode}")
+        print(f"[DEBUG] Stage config limits: x_min={self.stage_config.get('x_min')}, x_max={self.stage_config.get('x_max')}")
+        print(f"[DEBUG] Stage config limits: y_min={self.stage_config.get('y_min')}, y_max={self.stage_config.get('y_max')}")
+        print(f"[DEBUG] Position block limits: x_min={self.position_block.x_min}, x_max={self.position_block.x_max}")
+        print(f"[DEBUG] Position block limits: y_min={self.position_block.y_min}, y_max={self.position_block.y_max}")
         
         # In live mode, clicking on position block should move the stage immediately
         if self._is_live_mode:
