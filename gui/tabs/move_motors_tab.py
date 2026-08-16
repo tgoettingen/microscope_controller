@@ -1361,6 +1361,30 @@ class StageControlTab(QtWidgets.QWidget):
         print(f"DEBUG: Stage has move_to: {hasattr(stage, 'move_to')}")
         
         self.stage = stage
+        
+        # Update position block limits based on actual stage capabilities
+        try:
+            caps = stage.get_capabilities() if hasattr(stage, 'get_capabilities') else {}
+            if isinstance(caps, dict) and 'range' in caps:
+                rng = caps['range']
+                if isinstance(rng, dict):
+                    x_min = rng.get('x', (0, 100))[0] if 'x' in rng else self.stage_config.get('x_min', 0)
+                    x_max = rng.get('x', (0, 100))[1] if 'x' in rng else self.stage_config.get('x_max', 100)
+                    y_min = rng.get('y', (0, 100))[0] if 'y' in rng else self.stage_config.get('y_min', 0)
+                    y_max = rng.get('y', (0, 100))[1] if 'y' in rng else self.stage_config.get('y_max', 100)
+                    
+                    print(f"DEBUG: Updating position block limits from capabilities: X[{x_min}, {x_max}], Y[{y_min}, {y_max}]")
+                    if hasattr(self, 'position_block'):
+                        self.position_block.set_limits(x_min, x_max, y_min, y_max)
+                        # Update stage config to match actual capabilities
+                        self.stage_config['x_min'] = x_min
+                        self.stage_config['x_max'] = x_max
+                        self.stage_config['y_min'] = y_min
+                        self.stage_config['y_max'] = y_max
+                        self._update_slider_limits()
+        except Exception as e:
+            print(f"DEBUG: Failed to update position block limits: {e}")
+        
         self._update_device_status()
         # Immediately refresh position after loading hardware
         self._refresh_position()
