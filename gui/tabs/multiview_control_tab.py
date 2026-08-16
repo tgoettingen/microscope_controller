@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 from core.multiaxis import AxisConfig
 
@@ -180,3 +180,27 @@ class MultiViewControlTab(QtWidgets.QWidget):
             if isinstance(cfg, AxisConfig):
                 cfgs.append(cfg)
         return cfgs
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)

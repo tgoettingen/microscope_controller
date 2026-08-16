@@ -24,6 +24,8 @@ class LiveTab(QtWidgets.QWidget):
     stream_toggled = QtCore.pyqtSignal(str, bool)
     # emitted to post a message to the main window status bar: (message, timeout_ms)
     status_message = QtCore.pyqtSignal(str, int)
+    # emitted when plugins generate movement commands: (list of command dicts)
+    plugin_movement_commands = QtCore.pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1709,32 +1711,38 @@ class LiveTab(QtWidgets.QWidget):
         # Create a small control row: label (colored), visibility checkbox, stream checkbox
         row = QtWidgets.QWidget()
         row_layout = QtWidgets.QVBoxLayout(row)
-        row_layout.setContentsMargins(2, 2, 2, 2)
+        row_layout.setContentsMargins(1, 1, 1, 1)  # Reduced margins
         row_layout.setSpacing(1)
         top_row = QtWidgets.QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
+        top_row.setSpacing(3)  # Reduced spacing
         bottom_row = QtWidgets.QHBoxLayout()
         bottom_row.setContentsMargins(0, 0, 0, 0)
-        bottom_row.setSpacing(6)
+        bottom_row.setSpacing(3)  # Reduced spacing
         lbl = QtWidgets.QLabel(detector_id)
         r, g, b = color
-        lbl.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold;")
+        lbl.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold; font-size: 10px;")
         vis_cb = QtWidgets.QCheckBox("Show")
+        vis_cb.setStyleSheet("font-size: 9px;")
         vis_cb.setChecked(True)
         stream_cb = QtWidgets.QCheckBox("Stream")
+        stream_cb.setStyleSheet("font-size: 9px;")
         stream_cb.setChecked(False)
-        offset_cb = QtWidgets.QCheckBox("Offset")
+        offset_cb = QtWidgets.QCheckBox("Off")
+        offset_cb.setStyleSheet("font-size: 9px;")
         offset_cb.setChecked(False)
-        offset_lbl = QtWidgets.QLabel("Off=")
+        offset_lbl = QtWidgets.QLabel("=")
+        offset_lbl.setStyleSheet("font-size: 9px;")
         offset_val_lbl = QtWidgets.QLabel("0")
-        offset_val_lbl.setMinimumWidth(52)
+        offset_val_lbl.setMinimumWidth(35)  # Reduced width
+        offset_val_lbl.setStyleSheet("font-size: 9px; font-family: monospace;")
         offset_spin = QtWidgets.QDoubleSpinBox()
         offset_spin.setDecimals(6)
         offset_spin.setRange(-1e12, 1e12)
         offset_spin.setSingleStep(0.1)
         offset_spin.setValue(0.0)
-        offset_spin.setMaximumWidth(110)
+        offset_spin.setMaximumWidth(70)  # Reduced width
+        offset_spin.setStyleSheet("font-size: 9px;")
         top_row.addWidget(lbl)
         top_row.addWidget(vis_cb)
         top_row.addWidget(stream_cb)
@@ -3418,6 +3426,10 @@ class LiveTab(QtWidgets.QWidget):
         """Append a multi-axis sample for a specific detector id."""
         self.multi_coords.setdefault(detector_id, []).append((state.copy(), value))
         self._multi_dirty = True
+        
+        # Process with plugins if available
+        self._process_with_plugins(detector_id, state, value)
+        
         # update Z slider range if Z present — O(1) per sample using a tracked set
         if "Z" in state:
             z_val = state["Z"]
@@ -3425,6 +3437,52 @@ class LiveTab(QtWidgets.QWidget):
                 self._z_values_set.add(z_val)
                 self._z_values = sorted(self._z_values_set)
                 self.z_slider.setMaximum(max(0, len(self._z_values) - 1))
+    
+    def _process_with_plugins(self, detector_id: str, state: dict, value: float):
+        """Process detector data with loaded plugins."""
+        try:
+            # Try to get plugin manager from main window
+            from plugins.plugin_manager import get_plugin_manager
+            plugin_manager = get_plugin_manager()
+            
+            if not plugin_manager or not plugin_manager.get_all_plugins():
+                return
+            
+            # Create plugin data container
+            from plugins.base_plugin import PluginData
+            import numpy as np
+            
+            # Collect current detector data
+            detector_data = {}
+            for det_id in self.multi_coords.keys():
+                if self.multi_coords[det_id]:
+                    latest_state, latest_value = self.multi_coords[det_id][-1]
+                    detector_data[det_id] = np.array([latest_value])
+            
+            # Create timestamps array
+            timestamps = np.array([state.get("timestamp", 0)])
+            
+            plugin_data = PluginData(
+                detector_data=detector_data,
+                positions=state,
+                timestamps=timestamps,
+                detector_id=detector_id,
+                detector_ids=list(self.multi_coords.keys())
+            )
+            
+            # Process with enabled plugins
+            results = plugin_manager.process_data_with_plugins(plugin_data)
+            
+            # Check for movement commands
+            movement_commands = plugin_manager.get_movement_commands(plugin_data)
+            
+            if movement_commands:
+                # Emit signal for main window to handle movement
+                self.plugin_movement_commands.emit(movement_commands)
+                
+        except Exception as e:
+            # Silently fail to avoid disrupting main data flow
+            pass
 
     # -----------------------------
     # periodic plot update
@@ -4225,3 +4283,27 @@ class LiveTab(QtWidgets.QWidget):
             self.detector_image_panel.set_overlay_image(rgb8)
         except Exception:
             pass
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)

@@ -62,6 +62,15 @@ from core.multiaxis import (
    ChannelAxis, DetectorAxis, RoundAxis, ExcitationAxis,
 )
 
+# Plugin system imports
+try:
+   from plugins.plugin_manager import get_plugin_manager
+   from plugins.base_plugin import PluginData
+   PLUGINS_AVAILABLE = True
+except Exception:
+   PLUGINS_AVAILABLE = False
+   logger.warning("Plugin system not available")
+
 try:
    from tabs.experiment_tab import ExperimentTab
    from tabs.live_tab import LiveTab
@@ -217,6 +226,29 @@ class MainWindow(QtWidgets.QMainWindow):
       # Multi-view camera capture toggle (do not read Qt widgets from worker threads)
       self._multiview_capture_enabled: bool = True
 
+      # Plugin system
+      self._plugin_manager = None
+      if PLUGINS_AVAILABLE:
+         try:
+            self._plugin_manager = get_plugin_manager()
+            # Load default plugin directories
+            from pathlib import Path
+            plugin_dir = Path(__file__).parent.parent / "plugins"
+            if plugin_dir.exists():
+               self._plugin_manager.add_plugin_directory(plugin_dir)
+            # Load custom plugin directory
+            custom_plugin_dir = Path(__file__).parent.parent / "plugin"
+            if custom_plugin_dir.exists():
+               self._plugin_manager.add_plugin_directory(custom_plugin_dir)
+            # Discover plugins
+            discovered = self._plugin_manager.discover_plugins()
+            logger.info(f"Discovered {len(discovered)} plugins")
+            # Auto-load all custom plugins
+            loaded_count = self._plugin_manager.auto_load_custom_plugins()
+            logger.info(f"Auto-loaded {loaded_count} custom plugins")
+         except Exception as e:
+            logger.warning(f"Failed to initialize plugin manager: {e}")
+
       # Layout persistence
       # - "original" layout: a deterministic "full" dock arrangement shipped in code
       # - "default" layout: auto-saved on every exit (and can be explicitly saved)
@@ -231,6 +263,47 @@ class MainWindow(QtWidgets.QMainWindow):
       
       # Update window title with loaded filenames
       self._update_window_title()
+      
+      # Try to build devices eagerly on startup and reload visible panels
+      try:
+         if self._build_devices_now():
+            logger.info("Devices built successfully on startup")
+            self._reload_visible_panels_after_init()
+      except Exception as e:
+         logger.warning("Failed to build devices on startup: %s", e)
+      
+   def _reload_visible_panels_after_init(self):
+      """Reload visible panels after initialization with existing devices (if already built)."""
+      try:
+         # Only reload if devices are already built
+         if not self.devices_built or self.devices_released:
+            logger.info("Devices not built yet, skipping panel reload after init")
+            return
+         
+         # Reload Stage Control panel if visible
+         if hasattr(self, 'stage_control_dock') and self.stage_control_dock.isVisible():
+            if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+               logger.info("Reloading Stage Control panel after initialization")
+               self.stage_control_tab.set_stage(self.stage)
+               self.stage_control_tab.set_focus(self.focus)
+               self.stage_control_tab.set_config_path(self._config_path)
+         
+         # Reload Stage Calibration panel if visible
+         if hasattr(self, 'stage_calibration_dock') and self.stage_calibration_dock.isVisible():
+            if hasattr(self, 'stage_calibration_tab') and self.stage_calibration_tab:
+               logger.info("Reloading Stage Calibration panel after initialization")
+               self.stage_calibration_tab.set_stage(self.stage)
+               self.stage_calibration_tab.set_config_path(self._config_path)
+         
+         # Reload Excitation Control panel if visible
+         if hasattr(self, 'excitation_control_dock') and self.excitation_control_dock.isVisible():
+            if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
+               logger.info("Reloading Excitation Control panel after initialization")
+               self.excitation_control_tab.set_excitation(self.excitation)
+               self.excitation_control_tab.set_config_path(self._config_path)
+               
+      except Exception as e:
+         logger.exception("Failed to reload visible panels after initialization: %s", e)
 
    def _update_window_title(self):
       """Update window title to show config and experiment filenames."""
@@ -1169,6 +1242,10 @@ class MainWindow(QtWidgets.QMainWindow):
       # connect load/save status messages to status bar
       self.live_tab.status_message.connect(lambda msg, ms: self.statusBar().showMessage(msg, ms))
       try:
+         self.live_tab.plugin_movement_commands.connect(self._execute_plugin_movement_commands)
+      except Exception:
+         pass
+      try:
          self._measurement_status_label = QtWidgets.QLabel(self)
          self._measurement_status_label.setMinimumWidth(180)
          self.statusBar().addPermanentWidget(self._measurement_status_label)
@@ -1380,6 +1457,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.excitation_control_dock = QtWidgets.QDockWidget("Excitation Control", self)
             self.excitation_control_dock.setObjectName("dock_excitation_control")
             self.excitation_control_dock.setWidget(self.excitation_control_tab)
+            try:
+               self.excitation_control_dock.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
+               self.excitation_control_dock.setMaximumHeight(200)  # Keep it compact
+            except Exception:
+               pass
             self.excitation_control_dock.setAllowedAreas(
                QtCore.Qt.DockWidgetArea.LeftDockWidgetArea |
                QtCore.Qt.DockWidgetArea.RightDockWidgetArea |
@@ -2094,11 +2176,300 @@ class MainWindow(QtWidgets.QMainWindow):
          logger.exception("Error creating View menu: %s", e)
          pass
 
+      # --- Tools menu ---
+      tools_menu = menubar.addMenu("&Tools")
+      
+      add_plugins_action = QAction("Add Plugins…", self)
+      add_plugins_action.triggered.connect(self._add_plugins)
+      tools_menu.addAction(add_plugins_action)
+      
+      manage_plugins_action = QAction("Manage Plugins…", self)
+      manage_plugins_action.triggered.connect(self._manage_plugins)
+      tools_menu.addAction(manage_plugins_action)
+      
+      tools_menu.addSeparator()
+      
+      plugin_info_action = QAction("Plugin Info…", self)
+      plugin_info_action.triggered.connect(self._show_plugin_info)
+      tools_menu.addAction(plugin_info_action)
+
       # Help should be the last menu on the menubar.
       help_menu = menubar.addMenu("&Help")
       about_action = QAction("About", self)
       about_action.triggered.connect(self._show_about)
       help_menu.addAction(about_action)
+   
+   def _add_plugins(self):
+      """Add plugins dialog."""
+      if not PLUGINS_AVAILABLE or self._plugin_manager is None:
+         QtWidgets.QMessageBox.warning(self, "Plugins Not Available", 
+            "Plugin system is not available.")
+         return
+      
+      file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+         self,
+         "Load Plugin",
+         str(Path.home()),
+         "Python Files (*.py);;All Files (*)"
+      )
+      
+      if not file_path:
+         return
+      
+      plugin_name = Path(file_path).stem
+      success = self._plugin_manager.load_plugin(plugin_name, Path(file_path))
+      
+      if success:
+         QtWidgets.QMessageBox.information(self, "Plugin Loaded", 
+            f"Successfully loaded plugin: {plugin_name}")
+      else:
+         QtWidgets.QMessageBox.warning(self, "Plugin Load Failed", 
+            f"Failed to load plugin: {plugin_name}")
+   
+   def _manage_plugins(self):
+      """Manage loaded plugins dialog."""
+      if not PLUGINS_AVAILABLE or self._plugin_manager is None:
+         QtWidgets.QMessageBox.warning(self, "Plugins Not Available", 
+            "Plugin system is not available.")
+         return
+      
+      # Create plugin management dialog
+      dialog = QtWidgets.QDialog(self)
+      dialog.setWindowTitle("Manage Plugins")
+      dialog.setMinimumSize(500, 400)
+      
+      layout = QtWidgets.QVBoxLayout(dialog)
+      
+      # Plugin list
+      plugin_list = QtWidgets.QListWidget()
+      plugins = self._plugin_manager.get_all_plugin_info()
+      
+      for plugin_name, info in plugins.items():
+         item = QtWidgets.QListWidgetItem(f"{plugin_name} ({info.get('version', 'N/A')})")
+         item.setData(QtCore.Qt.ItemDataRole.UserRole, plugin_name)
+         
+         # Add enabled/disabled indicator
+         status = "✓" if info.get('enabled', False) else "✗"
+         item.setText(f"{status} {item.text()}")
+         
+         plugin_list.addItem(item)
+      
+      layout.addWidget(plugin_list)
+      
+      # Buttons
+      button_layout = QtWidgets.QHBoxLayout()
+      
+      enable_btn = QtWidgets.QPushButton("Enable Selected")
+      disable_btn = QtWidgets.QPushButton("Disable Selected")
+      configure_btn = QtWidgets.QPushButton("Configure Selected")
+      remove_btn = QtWidgets.QPushButton("Remove Selected")
+      close_btn = QtWidgets.QPushButton("Close")
+      
+      button_layout.addWidget(enable_btn)
+      button_layout.addWidget(disable_btn)
+      button_layout.addWidget(configure_btn)
+      button_layout.addWidget(remove_btn)
+      button_layout.addStretch()
+      button_layout.addWidget(close_btn)
+      
+      layout.addLayout(button_layout)
+      
+      # Define refresh function first
+      def _refresh_plugin_list(list_widget):
+         list_widget.clear()
+         plugins = self._plugin_manager.get_all_plugin_info()
+         for plugin_name, info in plugins.items():
+            item = QtWidgets.QListWidgetItem(f"{plugin_name} ({info.get('version', 'N/A')})")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, plugin_name)
+            status = "✓" if info.get('enabled', False) else "✗"
+            item.setText(f"{status} {item.text()}")
+            list_widget.addItem(item)
+      
+      # Button connections
+      def enable_selected():
+         current_item = plugin_list.currentItem()
+         if current_item:
+            plugin_name = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            self._plugin_manager.enable_plugin(plugin_name)
+            _refresh_plugin_list(plugin_list)
+      
+      def disable_selected():
+         current_item = plugin_list.currentItem()
+         if current_item:
+            plugin_name = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            self._plugin_manager.disable_plugin(plugin_name)
+            _refresh_plugin_list(plugin_list)
+      
+      def configure_selected():
+         current_item = plugin_list.currentItem()
+         if current_item:
+            plugin_name = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            # Show configuration dialog (simplified)
+            QtWidgets.QMessageBox.information(self, "Configure Plugin", 
+               f"Configuration dialog for {plugin_name} would appear here.")
+      
+      def remove_selected():
+         current_item = plugin_list.currentItem()
+         if current_item:
+            plugin_name = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            reply = QtWidgets.QMessageBox.question(self, "Remove Plugin", 
+               f"Are you sure you want to remove plugin: {plugin_name}?",
+               QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+            
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+               self._plugin_manager.unload_plugin(plugin_name)
+               _refresh_plugin_list(plugin_list)
+      
+      enable_btn.clicked.connect(enable_selected)
+      disable_btn.clicked.connect(disable_selected)
+      configure_btn.clicked.connect(configure_selected)
+      remove_btn.clicked.connect(remove_selected)
+      close_btn.clicked.connect(dialog.accept)
+      
+      dialog.exec()
+   
+   def _show_plugin_info(self):
+      """Show information about loaded plugins."""
+      if not PLUGINS_AVAILABLE or self._plugin_manager is None:
+         QtWidgets.QMessageBox.warning(self, "Plugins Not Available", 
+            "Plugin system is not available.")
+         return
+      
+      plugins = self._plugin_manager.get_all_plugin_info()
+      
+      if not plugins:
+         QtWidgets.QMessageBox.information(self, "Plugin Info", "No plugins loaded.")
+         return
+      
+      info_text = "Loaded Plugins:\n\n"
+      for plugin_name, info in plugins.items():
+         info_text += f"Name: {info.get('name', plugin_name)}\n"
+         info_text += f"Version: {info.get('version', 'N/A')}\n"
+         info_text += f"Description: {info.get('description', 'No description')}\n"
+         info_text += f"Author: {info.get('author', 'Unknown')}\n"
+         info_text += f"Enabled: {info.get('enabled', False)}\n"
+         info_text += f"Required Detectors: {', '.join(info.get('required_detectors', []))}\n"
+         info_text += f"Required Axes: {', '.join(info.get('required_axes', []))}\n"
+         info_text += "-" * 40 + "\n"
+      
+      QtWidgets.QMessageBox.information(self, "Plugin Information", info_text)
+   
+   def _execute_plugin_movement_commands(self, commands: list) -> bool:
+      """Execute movement commands from plugins.
+      
+      Args:
+          commands: List of movement command dictionaries
+          
+      Returns:
+          True if execution successful, False otherwise
+      """
+      if not commands:
+         logger.warning("No movement commands to execute (empty list)")
+         return False
+      
+      logger.info(f"Executing {len(commands)} plugin movement commands")
+      
+      try:
+         # Collect target positions for all axes
+         target_x = None
+         target_y = None
+         target_z = None
+         
+         # Get current positions first
+         current_x = 0.0
+         current_y = 0.0
+         current_z = 0.0
+         
+         try:
+            if self.stage and hasattr(self.stage, 'get_position'):
+               pos = self.stage.get_position()
+               current_x = pos[0] if len(pos) > 0 else 0.0
+               current_y = pos[1] if len(pos) > 1 else 0.0
+               logger.info(f"Current stage position: X={current_x:.3f}, Y={current_y:.3f}")
+         except Exception as e:
+            logger.warning(f"Failed to get current stage position: {e}")
+         
+         try:
+            if self.focus and hasattr(self.focus, 'get_position'):
+               current_z = self.focus.get_position()
+               logger.info(f"Current focus position: Z={current_z:.3f}")
+         except Exception as e:
+            logger.warning(f"Failed to get current focus position: {e}")
+         
+         # Process commands to determine target positions
+         for cmd in commands:
+            axis = cmd.get("axis", "").lower()
+            position = cmd.get("position", 0.0)
+            relative = cmd.get("relative", False)
+            
+            logger.info(f"Processing command: axis={axis}, position={position:.3f}, relative={relative}")
+            
+            if axis == "x":
+               if relative:
+                  target_x = current_x + position
+                  logger.info(f"  Target X (relative): {target_x:.3f}")
+               else:
+                  target_x = position
+                  logger.info(f"  Target X (absolute): {target_x:.3f}")
+            
+            elif axis == "y":
+               if relative:
+                  target_y = current_y + position
+                  logger.info(f"  Target Y (relative): {target_y:.3f}")
+               else:
+                  target_y = position
+                  logger.info(f"  Target Y (absolute): {target_y:.3f}")
+            
+            elif axis == "z":
+               if relative:
+                  target_z = current_z + position
+                  logger.info(f"  Target Z (relative): {target_z:.3f}")
+               else:
+                  target_z = position
+                  logger.info(f"  Target Z (absolute): {target_z:.3f}")
+         
+         # Execute movements
+         # For X and Y, move together if both are specified
+         if target_x is not None or target_y is not None:
+            if self.stage and hasattr(self.stage, 'move_to'):
+               # Use current position if not specified
+               final_x = target_x if target_x is not None else current_x
+               final_y = target_y if target_y is not None else current_y
+               
+               logger.info(f"Calling stage.move_to(X={final_x:.3f}, Y={final_y:.3f})")
+               
+               # Convert to steps if needed
+               try:
+                  from gui.tabs.move_motors_tab import StageControlTab
+                  # This conversion logic should match what's in move_motors_tab
+                  # For now, just call move_to directly
+                  self.stage.move_to(final_x, final_y)
+                  logger.info(f"Plugin moved stage to X={final_x:.3f}, Y={final_y:.3f}")
+               except Exception as e:
+                  logger.warning(f"Failed to move stage: {e}")
+                  import traceback
+                  traceback.print_exc()
+            else:
+               logger.warning("Stage not available or does not have move_to method")
+         
+         # For Z, move separately
+         if target_z is not None:
+            if self.focus and hasattr(self.focus, 'move_to'):
+               try:
+                  logger.info(f"Calling focus.move_to(Z={target_z:.3f})")
+                  self.focus.move_to(target_z)
+                  logger.info(f"Plugin moved Z axis to {target_z:.3f}")
+               except Exception as e:
+                  logger.warning(f"Failed to move Z axis: {e}")
+                  import traceback
+                  traceback.print_exc()
+            else:
+               logger.warning("Focus not available or does not have move_to method")
+         
+         return True
+      except Exception as e:
+         logger.exception(f"Error executing plugin movement commands: {e}")
+         return False
    
    def _reset_layout_to_default(self):
       """Reset the current layout to the last-saved default layout (if any)."""
@@ -2981,6 +3352,32 @@ class MainWindow(QtWidgets.QMainWindow):
       # IMPORTANT: detector scaling comes from the device config JSON.
       # Do not override it from the demo/experiment UI.
 
+      # Notify plugins that experiment is starting
+      if PLUGINS_AVAILABLE and self._plugin_manager:
+         try:
+            # Get stage range from stage control tab if available
+            stage_range = {}
+            try:
+               if hasattr(self, 'stage_control_tab') and self.stage_control_tab:
+                  stage_config = getattr(self.stage_control_tab, 'stage_config', {})
+                  stage_range = {
+                     'stage_x_min': stage_config.get('x_min'),
+                     'stage_x_max': stage_config.get('x_max'),
+                     'stage_y_min': stage_config.get('y_min'),
+                     'stage_y_max': stage_config.get('y_max'),
+                  }
+            except Exception as e:
+               logger.warning(f"Failed to get stage range: {e}")
+            
+            for plugin_name, plugin in self._plugin_manager.get_all_plugins().items():
+               if plugin.enabled:
+                  # Update plugin config with stage range
+                  if stage_range:
+                     plugin.config.update(stage_range)
+                  plugin.on_experiment_start(cfg)
+         except Exception as e:
+            logger.warning(f"Failed to notify plugins of experiment start: {e}")
+
       self.orch = Orchestrator(
             camera=cam,
             stage=stage,
@@ -3279,6 +3676,15 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
                self._set_measurement_state("Finished", kind="Strip Chart")
+               
+               # Notify plugins that experiment has ended
+               if PLUGINS_AVAILABLE and self._plugin_manager:
+                  try:
+                     for plugin_name, plugin in self._plugin_manager.get_all_plugins().items():
+                        if plugin.enabled:
+                           plugin.on_experiment_end({})
+                  except Exception as e:
+                     logger.warning(f"Failed to notify plugins of experiment end: {e}")
             except Exception:
                try:
                   timer.stop()
@@ -4518,6 +4924,61 @@ class MainWindow(QtWidgets.QMainWindow):
             gui_meta = dict(meta) if isinstance(meta, dict) else {}
          except Exception:
             gui_meta = {}
+         
+         # Process with plugins before forwarding to live tab
+         if PLUGINS_AVAILABLE and self._plugin_manager:
+            try:
+               from plugins.base_plugin import PluginData
+               
+               # Create plugin data container
+               detector_data = {det_id: np.array([float(value)])}
+               plugin_data = PluginData(
+                  detector_data=detector_data,
+                  positions=meta if isinstance(meta, dict) else {},
+                  timestamps=np.array([timestamp]),
+                  detector_ids=[det_id]
+               )
+               
+               # Process with enabled plugins
+               results = self._plugin_manager.process_data_with_plugins(plugin_data)
+               
+               # Check for movement commands from plugin results
+               all_movement_commands = []
+               for plugin_name, result in results.items():
+                  if result.move_commands:
+                     all_movement_commands.extend(result.move_commands)
+                     logger.info(f"Plugin {plugin_name} generated {len(result.move_commands)} movement commands from result")
+                     for cmd in result.move_commands:
+                        logger.info(f"  Command: axis={cmd.get('axis')}, position={cmd.get('position')}, relative={cmd.get('relative')}")
+               
+               # Special handling: if a plugin is in decoding phase, process it again to ensure we capture movement commands
+               # This is needed because plugins transition phases immediately after generating commands
+               for plugin_name, plugin in self._plugin_manager._plugins.items():
+                  if hasattr(plugin, '_current_phase') and plugin._current_phase == "decoding":
+                     logger.info(f"Plugin {plugin_name} is in decoding phase, processing again to capture movement commands")
+                     plugin_result = plugin.process_data(plugin_data)
+                     if plugin_result.move_commands:
+                        all_movement_commands.extend(plugin_result.move_commands)
+                        logger.info(f"Plugin {plugin_name} generated {len(plugin_result.move_commands)} movement commands from second call")
+                        for cmd in plugin_result.move_commands:
+                           logger.info(f"  Command: axis={cmd.get('axis')}, position={cmd.get('position')}, relative={cmd.get('relative')}")
+               
+               # Also check get_movement_commands for backward compatibility
+               movement_commands = self._plugin_manager.get_movement_commands(plugin_data)
+               
+               if movement_commands:
+                  logger.info(f"Plugin generated {len(movement_commands)} movement commands from get_movement_commands")
+                  all_movement_commands.extend(movement_commands)
+               
+               if all_movement_commands:
+                  logger.info(f"Executing {len(all_movement_commands)} total movement commands")
+                  success = self._execute_plugin_movement_commands(all_movement_commands)
+                  logger.info(f"Movement commands execution result: {success}")
+               else:
+                  logger.debug("No movement commands to execute")
+            except Exception as e:
+               logger.warning(f"Failed to process data with plugins: {e}")
+         
          QtCore.QMetaObject.invokeMethod(
                self.live_tab,
                "add_detector_sample_qt_meta",
@@ -4632,6 +5093,19 @@ class MainWindow(QtWidgets.QMainWindow):
                "detector_offset": demo_cfg["det_offset"]
          }
       }
+      
+      # Add plugin information if available
+      if PLUGINS_AVAILABLE and self._plugin_manager:
+         try:
+            plugin_configs = self._plugin_manager._plugin_configs
+            enabled_plugins = [name for name, plugin in self._plugin_manager.get_all_plugins().items() if plugin.enabled]
+            
+            data["plugins"] = {
+               "configs": plugin_configs,
+               "enabled": enabled_plugins
+            }
+         except Exception as e:
+            logger.warning(f"Failed to save plugin information: {e}")
 
       with open(path, "w") as f:
          json.dump(data, f, indent=2)
@@ -4903,6 +5377,28 @@ class MainWindow(QtWidgets.QMainWindow):
                self.live_tab.register_detector(det_id)
          except Exception:
             pass
+         
+         # --- Restore Plugins ---
+         if "plugins" in data and PLUGINS_AVAILABLE and self._plugin_manager:
+            try:
+               plugin_data = data["plugins"]
+               plugin_configs = plugin_data.get("configs", {})
+               enabled_plugins = plugin_data.get("enabled", [])
+               
+               # Load plugin configurations
+               for plugin_name, config in plugin_configs.items():
+                  self._plugin_manager.configure_plugin(plugin_name, config)
+               
+               # Set enabled state
+               for plugin_name in self._plugin_manager.get_all_plugins().keys():
+                  if plugin_name in enabled_plugins:
+                     self._plugin_manager.enable_plugin(plugin_name)
+                  else:
+                     self._plugin_manager.disable_plugin(plugin_name)
+               
+               logger.info(f"Restored {len(enabled_plugins)} plugins from experiment")
+            except Exception as e:
+               logger.warning(f"Failed to restore plugin information: {e}")
       except Exception:
          pass
    def _save_layout(self, kind: str = "default", notify: bool = False) -> None:

@@ -5,6 +5,13 @@ from devices.base import StageXY, FocusZ
 import json
 from pathlib import Path
 
+# Constants for sizing
+POSITION_BLOCK_SIZE = 250  # Size of the 2D position visualization widget
+SLIDER_RANGE = 1000  # Normalized slider range
+AUTO_REFRESH_INTERVAL_MS = 500  # Live mode refresh interval in milliseconds
+SLIDER_RANGE = 1000  # Normalized slider range
+AUTO_REFRESH_INTERVAL_MS = 500  # Auto-refresh interval in milliseconds
+
 
 class PositionBlockWidget(QtWidgets.QWidget):
     """2D position visualization widget with click interaction and color-coded positions."""
@@ -25,7 +32,7 @@ class PositionBlockWidget(QtWidgets.QWidget):
         self.y_max = 100.0
         self._is_dragging = False
         self.aspect_ratio = None  # Aspect ratio constraint (width/height)
-        self.setMinimumSize(200, 200)
+        self.setMinimumSize(POSITION_BLOCK_SIZE, POSITION_BLOCK_SIZE)
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
     
     def set_aspect_ratio(self, ratio):
@@ -164,14 +171,14 @@ class PositionBlockWidget(QtWidgets.QWidget):
                 # Container is wider than desired, constrain by height
                 draw_height = height
                 draw_width = draw_height * self.aspect_ratio
-                x_offset = (width - draw_width) / 2
+                x_offset = 0  # No centering - draw from left
                 y_offset = 0
             else:
                 # Container is taller than desired, constrain by width
                 draw_width = width
                 draw_height = draw_width / self.aspect_ratio
                 x_offset = 0
-                y_offset = (height - draw_height) / 2
+                y_offset = 0  # No centering - draw from top
         else:
             # No aspect ratio constraint, use full widget
             draw_width = width
@@ -283,6 +290,7 @@ class StageControlTab(QtWidgets.QWidget):
         self._is_dragging = False  # Track dragging state
         self._keep_aspect_ratio = True  # Default: keep aspect ratio ON
         self._aspect_ratio = 1.0  # Will be calculated from range
+        self._xy_width = POSITION_BLOCK_SIZE  # Dynamic width for XY controls
         self._load_config()
         self._build_ui()
         self._setup_position_timer()
@@ -344,8 +352,6 @@ class StageControlTab(QtWidgets.QWidget):
         # Stage get_position() returns real units (mm), not actual steps
         # No conversion needed, just apply offset
         real_units = steps + offset
-        print(f"DEBUG: Steps {steps} -> Real units {real_units} (scale={scale} steps/unit, offset={offset})")
-        print(f"DEBUG: NOTE: Stage get_position() returns real units, not actual steps")
         return real_units
     
     def _real_units_to_steps(self, real_units: float, scale: float, offset: float) -> float:
@@ -354,8 +360,6 @@ class StageControlTab(QtWidgets.QWidget):
         # and internally converts to steps: rx = x * scale + offset
         # So we pass real units directly
         steps = real_units - offset
-        print(f"DEBUG: Real units {real_units} -> Logical coordinates {steps} (scale={scale} steps/unit, offset={offset})")
-        print(f"DEBUG: NOTE: ScaledStageXY will convert to steps internally: steps = logical * scale")
         return steps
         
     def _build_ui(self) -> None:
@@ -388,29 +392,32 @@ class StageControlTab(QtWidgets.QWidget):
         control_row.addStretch()
         layout.addLayout(control_row)
         
-        # 2D Position visualization with sliders around it
-        position_group = QtWidgets.QGroupBox("Stage Position")
-        position_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        position_layout = QtWidgets.QGridLayout()
-        position_layout.setSpacing(10)  # Consistent spacing
-        position_layout.setContentsMargins(10, 10, 10, 10)  # Overall padding
+        # Main controls layout - XY on left, Z on right
+        main_controls_layout = QtWidgets.QHBoxLayout()
+        main_controls_layout.setObjectName("main_controls_layout")
+        main_controls_layout.setSpacing(10)
+        
+        # XY Position section - use layout directly, no GroupBox
+        xy_container = QtWidgets.QWidget()
+        xy_layout = QtWidgets.QVBoxLayout(xy_container)
+        xy_layout.setSpacing(2)
+        xy_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # XY label
+        xy_label = QtWidgets.QLabel("XY Position")
+        xy_label.setStyleSheet("font-weight: bold; font-size: 11px;")
+        xy_layout.addWidget(xy_label)
+        
+        # XY controls grid
+        xy_grid = QtWidgets.QGridLayout()
+        xy_grid.setSpacing(0)
+        xy_grid.setContentsMargins(0, 0, 0, 0)
         
         # Get limits for labels and tooltip
         x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
         x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
-        
-        # Position block in center
-        self.position_block = PositionBlockWidget()
-        self.position_block.set_limits(x_min, x_max, y_min, y_max)
-        self.position_block.setMinimumSize(200, 200)  # Minimum size, but can grow
-        self.position_block.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-        self.position_block.position_clicked.connect(self._on_position_block_clicked)
-        self.position_block.position_drag_started.connect(self._on_drag_started)
-        self.position_block.position_dragged.connect(self._on_dragged)
-        self.position_block.position_drag_ended.connect(self._on_drag_ended)
-        position_layout.addWidget(self.position_block, 1, 1, 1, 1)
         
         # Calculate aspect ratio from range
         x_range = (x_max - x_min) if (x_max is not None and x_min is not None) else 100.0
@@ -420,165 +427,196 @@ class StageControlTab(QtWidgets.QWidget):
         else:
             self._aspect_ratio = 1.0
         
+        # Calculate initial width based on aspect ratio
+        base_size = POSITION_BLOCK_SIZE
+        if self._keep_aspect_ratio and self._aspect_ratio is not None:
+            if self._aspect_ratio > 1.2:
+                self._xy_width = int(base_size * 1.2)
+            elif self._aspect_ratio < 0.8:
+                self._xy_width = int(base_size * 0.8)
+            else:
+                self._xy_width = base_size
+        else:
+            self._xy_width = base_size
+        
+        # Ensure minimum width
+        self._xy_width = max(150, self._xy_width)
+        
+        # Position block - place directly in grid, no container
+        self.position_block = PositionBlockWidget()
+        self.position_block.set_limits(x_min, x_max, y_min, y_max)
+        self.position_block.setFixedSize(self._xy_width, POSITION_BLOCK_SIZE)
+        self.position_block.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.position_block.position_clicked.connect(self._on_position_block_clicked)
+        self.position_block.position_drag_started.connect(self._on_drag_started)
+        self.position_block.position_dragged.connect(self._on_dragged)
+        self.position_block.position_drag_ended.connect(self._on_drag_ended)
+        
         # Set initial aspect ratio on position block
         self.position_block.set_aspect_ratio(self._aspect_ratio if self._keep_aspect_ratio else None)
         
-        # Y slider to the left of the block - vertical
-        y_slider_container = QtWidgets.QWidget()
-        y_slider_layout = QtWidgets.QVBoxLayout(y_slider_container)
-        y_slider_layout.setContentsMargins(0, 0, 10, 0)  # 10px right margin
-        y_slider_layout.setSpacing(5)
+        # Add position block directly to grid
+        xy_grid.addWidget(self.position_block, 1, 1, 2, 1)  # Row 1-2, col 1
         
-        # Y input
-        y_input = QtWidgets.QWidget()
-        y_input_layout = QtWidgets.QHBoxLayout(y_input)
-        y_input_layout.setContentsMargins(0, 0, 0, 0)
-        y_input_layout.setSpacing(2)
+        # Print initial sizes
+        print(f"Initial setup:")
+        print(f"Position Block setFixedSize: {self._xy_width}x{POSITION_BLOCK_SIZE}")
+        print(f"X slider setFixedWidth: {self._xy_width}")
+        print("-" * 50)
         
+        # Row 0: Y label (col 0) and Y spinbox (col 1)
         y_label = QtWidgets.QLabel("Y:")
-        y_label.setStyleSheet("font-weight: bold;")
+        y_label.setStyleSheet("font-weight: bold; font-size: 10px;")
+        xy_grid.addWidget(y_label, 0, 0, 1, 1)
         
         self.y_spin = QtWidgets.QDoubleSpinBox()
         self.y_spin.setRange(-1e6, 1e6)
         self.y_spin.setDecimals(3)
         self.y_spin.setSuffix(" mm")
         self.y_spin.setValue(0.0)
-        self.y_spin.setMaximumWidth(70)
+        self.y_spin.setMaximumWidth(120)
+        self.y_spin.setStyleSheet("font-size: 10px;")
+        xy_grid.addWidget(self.y_spin, 0, 1, 1, 1)
         
-        y_input_layout.addWidget(y_label)
-        y_input_layout.addWidget(self.y_spin)
+        self.current_y_label = QtWidgets.QLabel("-")
+        self.current_y_label.setStyleSheet("font-family: monospace; font-weight: bold; font-size: 9px; color: #666;")
+        self.current_y_label.setFixedWidth(50)
+        xy_grid.addWidget(self.current_y_label, 0, 2, 1, 1)
         
-        y_slider_layout.addWidget(y_input)
-        
-        # Y slider - no fixed height, let it match position block
+        # Row 1-2: Y slider (col 0, span 2 rows) - vertical, aligned with 2D block height
         self.y_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Vertical)
-        self.y_slider.setRange(0, 1000)
+        self.y_slider.setRange(0, SLIDER_RANGE)
         self.y_slider.setValue(0)
-        self.y_slider.setFixedWidth(25)  # Only fix width
+        self.y_slider.setFixedWidth(20)
         self.y_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
         self.y_slider.setToolTip(f"Y range: {y_min:.1f} to {y_max:.1f} mm")
+        xy_grid.addWidget(self.y_slider, 1, 0, 2, 1)  # Row 1-2, col 0, span 2 rows
         
-        y_slider_layout.addWidget(self.y_slider)
+        # Row 3: X slider (col 1) - wrap in container to enforce fixed width
+        self.x_slider_container = QtWidgets.QWidget()
+        self.x_slider_container.setFixedWidth(self._xy_width)
+        self.x_slider_container.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        x_slider_layout = QtWidgets.QHBoxLayout(self.x_slider_container)
+        x_slider_layout.setContentsMargins(0, 0, 0, 0)
+        x_slider_layout.setSpacing(0)
         
-        position_layout.addWidget(y_slider_container, 1, 0, 1, 1)
+        self.x_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.x_slider.setRange(0, SLIDER_RANGE)
+        self.x_slider.setValue(0)
+        self.x_slider.setFixedHeight(20)
+        self.x_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        self.x_slider.setToolTip(f"X range: {x_min:.1f} to {x_max:.1f} mm")
+        x_slider_layout.addWidget(self.x_slider)
         
-        # X slider below the block - horizontal
-        x_slider_container = QtWidgets.QWidget()
-        x_slider_layout = QtWidgets.QHBoxLayout(x_slider_container)
-        x_slider_layout.setContentsMargins(0, 10, 0, 0)  # 10px top margin
-        x_slider_layout.setSpacing(5)
+        xy_grid.addWidget(self.x_slider_container, 3, 1, 1, 1)
         
-        # X input
-        x_input = QtWidgets.QWidget()
-        x_input_layout = QtWidgets.QHBoxLayout(x_input)
-        x_input_layout.setContentsMargins(0, 0, 0, 0)
-        x_input_layout.setSpacing(2)
-        
+        # Row 4: X label (col 0) and X spinbox (col 1)
         x_label = QtWidgets.QLabel("X:")
-        x_label.setStyleSheet("font-weight: bold;")
+        x_label.setStyleSheet("font-weight: bold; font-size: 10px;")
+        xy_grid.addWidget(x_label, 4, 0, 1, 1)
         
         self.x_spin = QtWidgets.QDoubleSpinBox()
         self.x_spin.setRange(-1e6, 1e6)
         self.x_spin.setDecimals(3)
         self.x_spin.setSuffix(" mm")
         self.x_spin.setValue(0.0)
-        self.x_spin.setMaximumWidth(70)
+        self.x_spin.setMaximumWidth(120)
+        self.x_spin.setStyleSheet("font-size: 10px;")
+        xy_grid.addWidget(self.x_spin, 4, 1, 1, 1)
         
-        x_input_layout.addWidget(x_label)
-        x_input_layout.addWidget(self.x_spin)
+        self.current_x_label = QtWidgets.QLabel("-")
+        self.current_x_label.setStyleSheet("font-family: monospace; font-weight: bold; font-size: 9px; color: #666;")
+        self.current_x_label.setFixedWidth(50)
+        xy_grid.addWidget(self.current_x_label, 4, 2, 1, 1)
         
-        x_slider_layout.addWidget(x_input)
-        
-        # X slider - expand to fill available space
-        self.x_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.x_slider.setRange(0, 1000)
-        self.x_slider.setValue(0)
-        self.x_slider.setFixedHeight(25)  # Only fix height
-        self.x_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.x_slider.setToolTip(f"X range: {x_min:.1f} to {x_max:.1f} mm")
-        
-        x_slider_layout.addWidget(self.x_slider)
-        
-        position_layout.addWidget(x_slider_container, 2, 0, 1, 2)  # Span columns 0-1
-        
-        # Set column stretches for proper alignment
-        position_layout.setColumnStretch(0, 0)  # Y slider - fixed width
-        position_layout.setColumnStretch(1, 1)  # 2D block - can expand
-        position_layout.setColumnStretch(2, 0)  # Not used
+        # Set column stretches - fixed 3-column layout
+        xy_grid.setColumnStretch(0, 0)  # Labels - fixed width
+        xy_grid.setColumnStretch(1, 0)  # Spinboxes/slider - fixed width (controlled by setFixedWidth)
+        xy_grid.setColumnStretch(2, 0)  # Current values - fixed width
         
         # Set row stretches
-        position_layout.setRowStretch(0, 0)  # Not used
-        position_layout.setRowStretch(1, 1)  # Main area - expand vertically
-        position_layout.setRowStretch(2, 0)  # X slider - fixed height
+        xy_grid.setRowStretch(0, 0)  # Y label/spinbox - fixed height
+        xy_grid.setRowStretch(1, 1)  # Y slider + 2D block - expand vertically
+        xy_grid.setRowStretch(2, 1)  # 2D block (span) - expand vertically
+        xy_grid.setRowStretch(3, 0)  # X slider - fixed height
+        xy_grid.setRowStretch(4, 0)  # X label/spinbox - fixed height
         
-        position_group.setLayout(position_layout)
-        layout.addWidget(position_group)
+        xy_layout.addLayout(xy_grid)
+        main_controls_layout.addWidget(xy_container)
         
-        # Focus Z control in compact form
-        focus_group = QtWidgets.QGroupBox("Focus Position")
-        focus_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        focus_layout = QtWidgets.QFormLayout()
-        focus_layout.setSpacing(4)
-        focus_layout.setContentsMargins(8, 8, 8, 8)
+        # Store reference to xy container for later updates
+        self.xy_container = xy_container
         
-        # Z position with slider
-        z_container = QtWidgets.QWidget()
-        z_layout = QtWidgets.QHBoxLayout(z_container)
-        z_layout.setContentsMargins(0, 0, 0, 0)
-        z_layout.setSpacing(4)
+        # Right side: Z Focus control with vertical slider
+        z_group = QtWidgets.QGroupBox("Z Focus")
+        z_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        z_layout = QtWidgets.QVBoxLayout()
+        z_layout.setSpacing(5)
+        z_layout.setContentsMargins(8, 8, 8, 8)
+        
+        # Z controls container
+        z_controls = QtWidgets.QWidget()
+        z_controls_layout = QtWidgets.QHBoxLayout(z_controls)
+        z_controls_layout.setContentsMargins(0, 0, 0, 0)
+        z_controls_layout.setSpacing(3)
+        
+        # Z label and spinbox
+        z_label = QtWidgets.QLabel("Z:")
+        z_label.setStyleSheet("font-weight: bold; font-size: 10px;")
         
         self.z_spin = QtWidgets.QDoubleSpinBox()
         self.z_spin.setRange(-1e6, 1e6)
         self.z_spin.setDecimals(3)
-        self.z_spin.setSuffix(" mm")  # Hardcode to mm for consistency
+        self.z_spin.setSuffix(" mm")
         self.z_spin.setValue(0.0)
-        self.z_spin.setMaximumWidth(70)
+        self.z_spin.setMaximumWidth(60)
+        self.z_spin.setStyleSheet("font-size: 10px;")
         
-        self.z_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.z_slider.setRange(0, 1000)
+        z_controls_layout.addWidget(z_label)
+        z_controls_layout.addWidget(self.z_spin)
+        
+        z_layout.addWidget(z_controls)
+        
+        # Z current position label
+        self.current_z_label = QtWidgets.QLabel("Z: -")
+        self.current_z_label.setStyleSheet("font-family: monospace; font-weight: bold; font-size: 9px; color: #666;")
+        self.current_z_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        z_layout.addWidget(self.current_z_label)
+        
+        # Z slider - vertical
+        self.z_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Vertical)
+        self.z_slider.setRange(0, SLIDER_RANGE)
         self.z_slider.setValue(0)
-        self.z_slider.setMinimumWidth(300)  # 3x longer than default
-        
-        z_layout.addWidget(self.z_spin)
+        self.z_slider.setFixedWidth(20)
+        self.z_slider.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
         z_layout.addWidget(self.z_slider)
         
-        focus_layout.addRow("Z:", z_container)
+        z_group.setLayout(z_layout)
+        z_group.setMaximumWidth(100)  # Keep Z controls compact
+        main_controls_layout.addWidget(z_group)
         
-        focus_group.setLayout(focus_layout)
-        layout.addWidget(focus_group)
+        layout.addLayout(main_controls_layout)
         
-        # Move button - compact
+        # Action buttons row - compact
+        action_layout = QtWidgets.QHBoxLayout()
+        action_layout.setSpacing(5)
+        
         self.move_btn = QtWidgets.QPushButton("Move")
-        self.move_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 6px;")
-        self.move_btn.setMaximumHeight(30)
-        layout.addWidget(self.move_btn)
+        self.move_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 4px;")
+        self.move_btn.setMaximumHeight(25)
+        self.move_btn.setMaximumWidth(60)
         
-        # Current position display - all in one line
-        pos_group = QtWidgets.QGroupBox("Current Position")
-        pos_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        pos_layout = QtWidgets.QHBoxLayout()
-        pos_layout.setSpacing(8)
-        pos_layout.setContentsMargins(8, 8, 8, 8)
-        
-        self.current_x_label = QtWidgets.QLabel("X: -")
-        self.current_x_label.setStyleSheet("font-family: monospace; font-weight: bold;")
-        self.current_y_label = QtWidgets.QLabel("Y: -")
-        self.current_y_label.setStyleSheet("font-family: monospace; font-weight: bold;")
-        self.current_z_label = QtWidgets.QLabel("Z: -")
-        self.current_z_label.setStyleSheet("font-family: monospace; font-weight: bold;")
-        
-        pos_layout.addWidget(self.current_x_label)
-        pos_layout.addWidget(self.current_y_label)
-        pos_layout.addWidget(self.current_z_label)
-        pos_layout.addStretch()
-        
-        pos_group.setLayout(pos_layout)
-        layout.addWidget(pos_group)
-        
-        # Refresh button - compact
-        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.refresh_btn = QtWidgets.QPushButton("⟳")
+        self.refresh_btn.setStyleSheet("padding: 4px; font-size: 12px;")
+        self.refresh_btn.setMaximumWidth(30)
         self.refresh_btn.setMaximumHeight(25)
-        layout.addWidget(self.refresh_btn)
+        self.refresh_btn.setToolTip("Refresh Position")
+        
+        action_layout.addWidget(self.move_btn)
+        action_layout.addWidget(self.refresh_btn)
+        action_layout.addStretch()
+        
+        layout.addLayout(action_layout)
         
         layout.addStretch(1)
         
@@ -597,6 +635,16 @@ class StageControlTab(QtWidgets.QWidget):
         # Set slider limits based on config
         self._update_slider_limits()
     
+    def _update_position_display(self):
+        """Update the inline position labels with current values."""
+        x_val = self.x_spin.value()
+        y_val = self.y_spin.value()
+        z_val = self.z_spin.value()
+        
+        self.current_x_label.setText(f"{x_val:.1f}")
+        self.current_y_label.setText(f"{y_val:.1f}")
+        self.current_z_label.setText(f"{z_val:.1f}")
+    
     def _on_live_mode_toggled(self, checked):
         """Handle live mode toggle."""
         self._is_live_mode = checked
@@ -607,7 +655,7 @@ class StageControlTab(QtWidgets.QWidget):
         if checked:
             # Live mode: enable auto-refresh, hide move button
             if has_devices:
-                self.position_timer.start(500)
+                self.position_timer.start(AUTO_REFRESH_INTERVAL_MS)
                 self.move_btn.setEnabled(False)
                 self.move_btn.setText("Live Active")
                 self.refresh_btn.setEnabled(False)
@@ -633,6 +681,67 @@ class StageControlTab(QtWidgets.QWidget):
                 self.position_block.set_aspect_ratio(self._aspect_ratio)
             else:
                 self.position_block.set_aspect_ratio(None)  # No aspect ratio constraint
+        
+        # Recalculate and update size based on aspect ratio
+        base_size = POSITION_BLOCK_SIZE
+        if self._keep_aspect_ratio and self._aspect_ratio is not None:
+            if self._aspect_ratio > 1.2:
+                # Wide: increase width
+                new_width = int(base_size * 1.2)
+                new_height = base_size
+            elif self._aspect_ratio < 0.8:
+                # Narrow: decrease width
+                new_width = int(base_size * 0.8)
+                new_height = base_size
+            else:
+                # Square: keep base size
+                new_width = base_size
+                new_height = base_size
+        else:
+            # No aspect ratio: keep base size
+            new_width = base_size
+            new_height = base_size
+        
+        # Update position block size
+        self.position_block.setFixedSize(new_width, new_height)
+        self._xy_width = new_width
+        
+        # Update X slider container width if it exists
+        if hasattr(self, 'x_slider_container'):
+            print(f"Updating X slider container width from {self.x_slider_container.width()} to {self._xy_width}")
+            self.x_slider_container.setFixedWidth(self._xy_width)
+            self.x_slider_container.updateGeometry()
+        
+        # Trigger layout update
+        self.position_block.updateGeometry()
+        self.xy_container.updateGeometry()
+        
+        # Force UI to process layout changes
+        QtWidgets.QApplication.processEvents()
+        
+        # Print info including actual rendered sizes and margins
+        print(f"Aspect Ratio Toggled: {checked}")
+        print(f"Aspect Ratio Value: {self._aspect_ratio:.2f}")
+        print(f"Position Block setFixedSize: {new_width}x{new_height}")
+        print(f"Position Block actual size: {self.position_block.width()}x{self.position_block.height()}")
+        pb_layout = self.position_block.layout()
+        if pb_layout:
+            margins = pb_layout.contentsMargins()
+            print(f"Position Block layout margins: left={margins.left()}, top={margins.top()}, right={margins.right()}, bottom={margins.bottom()}")
+        else:
+            print(f"Position Block has no layout")
+        print(f"X slider setFixedWidth: {self._xy_width}")
+        print(f"X slider actual size: {self.x_slider.width()}x{self.x_slider.height()}")
+        if hasattr(self, 'x_slider_container'):
+            print(f"X slider container setFixedWidth: {self._xy_width}")
+            print(f"X slider container actual size: {self.x_slider_container.width()}x{self.x_slider_container.height()}")
+        xs_layout = self.x_slider.layout()
+        if xs_layout:
+            margins = xs_layout.contentsMargins()
+            print(f"X slider layout margins: left={margins.left()}, top={margins.top()}, right={margins.right()}, bottom={margins.bottom()}")
+        else:
+            print(f"X slider has no layout")
+        print("-" * 50)
     
     def _on_drag_started(self, x, y):
         """Handle drag start in live mode."""
@@ -743,9 +852,9 @@ class StageControlTab(QtWidgets.QWidget):
                 z_steps = float(self.focus.get_position()) if self.focus.get_position() is not None else 0.0
                 z_real = self._steps_to_real_units(z_steps, self.focus_config['scale'], self.focus_config['offset'])
                 
-            self.current_x_label.setText(f"X: {x_real:.3f} {self.stage_config['unit']}")
-            self.current_y_label.setText(f"Y: {y_real:.3f} {self.stage_config['unit']}")
-            self.current_z_label.setText(f"Z: {z_real:.3f} {self.focus_config['unit']}")
+            self.current_x_label.setText(f"{x_real:.1f}")
+            self.current_y_label.setText(f"{y_real:.1f}")
+            self.current_z_label.setText(f"{z_real:.1f}")
             
             # Update position block visualization
             self.position_block.set_position(x_real, y_real)
@@ -784,12 +893,12 @@ class StageControlTab(QtWidgets.QWidget):
         
         # Y slider limits - use 0-1000 range normalized
         self.y_spin.setRange(y_min, y_max)
-        self.y_slider.setRange(0, 1000)  # Normalized 0-1000 range
+        self.y_slider.setRange(0, SLIDER_RANGE)  # Normalized range
         
-        # Z slider limits - use 0-1000 range normalized
+        # Z slider limits - use normalized range
         if self.focus_config['min'] is not None and self.focus_config['max'] is not None:
             self.z_spin.setRange(self.focus_config['min'], self.focus_config['max'])
-            self.z_slider.setRange(0, 1000)  # Normalized 0-1000 range
+            self.z_slider.setRange(0, SLIDER_RANGE)  # Normalized range
         
         # Sync position block limits with slider limits
         if hasattr(self, 'position_block'):
@@ -801,8 +910,8 @@ class StageControlTab(QtWidgets.QWidget):
         x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
         x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
         
-        # Convert to normalized 0-1000 range
-        x_norm = int(((value - x_min) / (x_max - x_min)) * 1000) if x_max > x_min else 500
+        # Convert to normalized range
+        x_norm = int(((value - x_min) / (x_max - x_min)) * SLIDER_RANGE) if x_max > x_min else SLIDER_RANGE // 2
         
         self.x_slider.blockSignals(True)
         self.x_slider.setValue(x_norm)
@@ -827,12 +936,15 @@ class StageControlTab(QtWidgets.QWidget):
         x_min = self.stage_config['x_min'] if self.stage_config['x_min'] is not None else 0.0
         x_max = self.stage_config['x_max'] if self.stage_config['x_max'] is not None else 100.0
         
-        # Convert from normalized 0-1000 range to real units
-        x_real = x_min + (value / 1000.0) * (x_max - x_min)
+        # Convert from normalized range to real units
+        x_real = x_min + (value / SLIDER_RANGE) * (x_max - x_min)
         
         self.x_spin.blockSignals(True)
         self.x_spin.setValue(x_real)
         self.x_spin.blockSignals(False)
+        
+        # Update inline position labels
+        self._update_position_display()
         
         # Update position block target if in normal mode
         if not self._is_live_mode:
@@ -847,6 +959,9 @@ class StageControlTab(QtWidgets.QWidget):
             self.position_block.target_position = (x_norm, y_norm)
             self.position_block.update()
         
+        # Update inline position labels
+        self._update_position_display()
+        
         # In live mode, move stage immediately
         if self._is_live_mode:
             self._move_to_position_xy(self.x_spin.value(), self.y_spin.value())
@@ -857,9 +972,9 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # Convert to normalized 0-1000 range (reversed for Y axis)
-        y_norm = int(((value - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
-        y_norm_reversed = 1000 - y_norm  # Reverse for Y axis (up is positive)
+        # Convert to normalized range (reversed for Y axis)
+        y_norm = int(((value - y_min) / (y_max - y_min)) * SLIDER_RANGE) if y_max > y_min else SLIDER_RANGE // 2
+        y_norm_reversed = SLIDER_RANGE - y_norm  # Reverse for Y axis
         
         self.y_slider.blockSignals(True)
         self.y_slider.setValue(y_norm_reversed)
@@ -884,13 +999,16 @@ class StageControlTab(QtWidgets.QWidget):
         y_min = self.stage_config['y_min'] if self.stage_config['y_min'] is not None else 0.0
         y_max = self.stage_config['y_max'] if self.stage_config['y_max'] is not None else 100.0
         
-        # Convert from normalized 0-1000 range to real units (reversed for Y axis)
-        y_norm_reversed = 1000 - value  # Reverse back from slider direction
-        y_real = y_min + (y_norm_reversed / 1000.0) * (y_max - y_min)
+        # Convert from normalized range to real units (reversed for Y axis)
+        y_norm_reversed = SLIDER_RANGE - value  # Reverse back from slider direction
+        y_real = y_min + (y_norm_reversed / SLIDER_RANGE) * (y_max - y_min)
         
         self.y_spin.blockSignals(True)
         self.y_spin.setValue(y_real)
         self.y_spin.blockSignals(False)
+        
+        # Update inline position labels
+        self._update_position_display()
         
         # Update position block target if in normal mode
         if not self._is_live_mode:
@@ -915,8 +1033,8 @@ class StageControlTab(QtWidgets.QWidget):
         z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
         z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
         
-        # Convert to normalized 0-1000 range
-        z_norm = int(((value - z_min) / (z_max - z_min)) * 1000) if z_max > z_min else 500
+        # Convert to normalized range
+        z_norm = int(((value - z_min) / (z_max - z_min)) * SLIDER_RANGE) if z_max > z_min else SLIDER_RANGE // 2
         
         self.z_slider.blockSignals(True)
         self.z_slider.setValue(z_norm)
@@ -928,12 +1046,15 @@ class StageControlTab(QtWidgets.QWidget):
         z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
         z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
         
-        # Convert from normalized 0-1000 range to real units
-        z_real = z_min + (value / 1000.0) * (z_max - z_min)
+        # Convert from normalized range to real units
+        z_real = z_min + (value / SLIDER_RANGE) * (z_max - z_min)
         
         self.z_spin.blockSignals(True)
         self.z_spin.setValue(z_real)
         self.z_spin.blockSignals(False)
+        
+        # Update inline position labels
+        self._update_position_display()
     
     def _update_sliders_from_spinboxes(self):
         """Update sliders from current spinbox values using normalized coordinates."""
@@ -949,11 +1070,11 @@ class StageControlTab(QtWidgets.QWidget):
         z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
         z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
         
-        # Convert to normalized 0-1000 range
-        x_norm = int(((x_val - x_min) / (x_max - x_min)) * 1000) if x_max > x_min else 500
-        y_norm = int(((y_val - y_min) / (y_max - y_min)) * 1000) if y_max > y_min else 500
-        y_norm_reversed = 1000 - y_norm  # Reverse for Y axis (up is positive)
-        z_norm = int(((z_val - z_min) / (z_max - z_min)) * 1000) if z_max > z_min else 500
+        # Convert to normalized range
+        x_norm = int(((x_val - x_min) / (x_max - x_min)) * SLIDER_RANGE) if x_max > x_min else SLIDER_RANGE // 2
+        y_norm = int(((y_val - y_min) / (y_max - y_min)) * SLIDER_RANGE) if y_max > y_min else SLIDER_RANGE // 2
+        y_norm_reversed = SLIDER_RANGE - y_norm  # Reverse for Y axis
+        z_norm = int(((z_val - z_min) / (z_max - z_min)) * SLIDER_RANGE) if z_max > z_min else SLIDER_RANGE // 2
         
         self.x_slider.blockSignals(True)
         self.y_slider.blockSignals(True)
@@ -1071,9 +1192,9 @@ class StageControlTab(QtWidgets.QWidget):
                 z_real = self._steps_to_real_units(z_steps, self.focus_config['scale'], self.focus_config['offset'])
                 print(f"DEBUG: Focus position real: Z={z_real}")
                 
-            self.current_x_label.setText(f"X: {x_real:.3f} {self.stage_config['unit']}")
-            self.current_y_label.setText(f"Y: {y_real:.3f} {self.stage_config['unit']}")
-            self.current_z_label.setText(f"Z: {z_real:.3f} {self.focus_config['unit']}")
+            self.current_x_label.setText(f"{x_real:.1f}")
+            self.current_y_label.setText(f"{y_real:.1f}")
+            self.current_z_label.setText(f"{z_real:.1f}")
             
             # Update position block visualization
             self.position_block.set_position(x_real, y_real)
@@ -1097,9 +1218,9 @@ class StageControlTab(QtWidgets.QWidget):
             print(f"DEBUG: Refresh error: {e}")
             import traceback
             traceback.print_exc()
-            self.current_x_label.setText("Error")
-            self.current_y_label.setText("Error")
-            self.current_z_label.setText("Error")
+            self.current_x_label.setText("Err")
+            self.current_y_label.setText("Err")
+            self.current_z_label.setText("Err")
     
     def set_stage(self, stage: StageXY):
         """Set the stage device and refresh position."""
@@ -1148,6 +1269,30 @@ class StageControlTab(QtWidgets.QWidget):
         self._update_slider_limits()
         # Refresh position after config reload to ensure display is correct
         self._refresh_position()
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)
     
     def cleanup(self):
         """Clean up resources when widget is destroyed."""

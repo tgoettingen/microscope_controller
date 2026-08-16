@@ -1,4 +1,4 @@
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 from core.multiaxis import AxisConfig
 
@@ -34,46 +34,78 @@ class MultiAxisTab(QtWidgets.QWidget):
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(4)  # Reduced spacing
+        layout.setContentsMargins(4, 4, 4, 4)  # Reduced margins
 
-        # Detector selection area (main detectors available in the system)
-        layout.addWidget(QtWidgets.QLabel("Available Detectors:"))
+        # Detector selection area (main detectors available in the system) - compact
+        det_label = QtWidgets.QLabel("Detectors:")
+        det_label.setStyleSheet("font-weight: bold; font-size: 11px;")
+        layout.addWidget(det_label)
+        
         self.detector_list = QtWidgets.QListWidget()
         self.detector_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.detector_list.setMaximumHeight(120)  # Limit height to be more compact
         layout.addWidget(self.detector_list)
 
+        # Defined axes - compact
+        axis_label = QtWidgets.QLabel("Axes:")
+        axis_label.setStyleSheet("font-weight: bold; font-size: 11px;")
+        layout.addWidget(axis_label)
+        
         self.axis_list = QtWidgets.QListWidget()
         self.axis_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
         self.axis_list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
-        layout.addWidget(QtWidgets.QLabel("Defined Axes:"))
+        self.axis_list.setMaximumHeight(100)  # Limit height
         layout.addWidget(self.axis_list)
 
-        # Default X-axis selector for runs
+        # Default X-axis selector for runs - compact row
         xsel_layout = QtWidgets.QHBoxLayout()
-        xsel_layout.addWidget(QtWidgets.QLabel("Default X Axis:"))
+        xsel_layout.setSpacing(4)
+        xsel_layout.addWidget(QtWidgets.QLabel("X Axis:"))
         self.default_xaxis_combo = QtWidgets.QComboBox()
         self.default_xaxis_combo.addItem("Index")
+        self.default_xaxis_combo.setMaximumWidth(80)
         self.default_xaxis_combo.currentTextChanged.connect(
             lambda text: self.xaxis_changed.emit(text)
         )
         xsel_layout.addWidget(self.default_xaxis_combo)
+        xsel_layout.addStretch()
         layout.addLayout(xsel_layout)
 
-        # Buttons for axis management: add/group/remove.
-        # (Editing is available by double-clicking an axis in the list.)
+        # Buttons for axis management - compact row
         btns = QtWidgets.QHBoxLayout()
-        self.add_axis_btn = QtWidgets.QPushButton("Add Axis")
-        self.group_axis_btn = QtWidgets.QPushButton("Group")
-        self.remove_axis_btn = QtWidgets.QPushButton("Remove Selected")
+        btns.setSpacing(3)
+        
+        self.add_axis_btn = QtWidgets.QPushButton("+")
+        self.add_axis_btn.setMaximumWidth(30)
+        self.add_axis_btn.setToolTip("Add Axis")
+        self.group_axis_btn = QtWidgets.QPushButton("Grp")
+        self.group_axis_btn.setMaximumWidth(35)
+        self.group_axis_btn.setToolTip("Group Axes")
+        self.remove_axis_btn = QtWidgets.QPushButton("-")
+        self.remove_axis_btn.setMaximumWidth(30)
+        self.remove_axis_btn.setToolTip("Remove Selected")
+        
         btns.addWidget(self.add_axis_btn)
         btns.addWidget(self.group_axis_btn)
         btns.addWidget(self.remove_axis_btn)
+        btns.addStretch()
         layout.addLayout(btns)
 
+        # Run buttons - compact row
         run_btns = QtWidgets.QHBoxLayout()
-        self.start_btn = QtWidgets.QPushButton("Run Multi‑Axis")
+        run_btns.setSpacing(3)
+        
+        self.start_btn = QtWidgets.QPushButton("Run")
+        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 4px;")
+        self.start_btn.setMaximumWidth(50)
         self.stop_btn = QtWidgets.QPushButton("Stop")
+        self.stop_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 4px;")
+        self.stop_btn.setMaximumWidth(50)
+        
         run_btns.addWidget(self.start_btn)
         run_btns.addWidget(self.stop_btn)
+        run_btns.addStretch()
         layout.addLayout(run_btns)
 
         layout.addStretch(1)
@@ -119,25 +151,30 @@ class MultiAxisTab(QtWidgets.QWidget):
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
                 row = QtWidgets.QWidget()
                 row_layout = QtWidgets.QHBoxLayout(row)
-                row_layout.setContentsMargins(4, 2, 4, 2)
-                row_layout.setSpacing(6)
+                row_layout.setContentsMargins(2, 1, 2, 1)  # Reduced margins
+                row_layout.setSpacing(3)  # Reduced spacing
 
                 sel_cb = QtWidgets.QCheckBox(str(d))
+                sel_cb.setStyleSheet("font-size: 10px;")  # Smaller font
                 # Default to selected when there was no prior selection so a
                 # fresh run records every detector (matches the historical
                 # "no selection means all" behaviour). Preserve an explicit
                 # prior selection otherwise.
                 sel_cb.setChecked(d in previously_checked if previously_checked else True)
-                offset_cb = QtWidgets.QCheckBox("Offset")
+                offset_cb = QtWidgets.QCheckBox("Off")
+                offset_cb.setStyleSheet("font-size: 9px;")  # Smaller font, shorter text
                 offset_cb.setChecked(bool(previous_offset_enabled.get(d, False)))
-                offset_label = QtWidgets.QLabel("Off=")
+                offset_label = QtWidgets.QLabel("=")
+                offset_label.setStyleSheet("font-size: 9px;")
                 offset_value_label = QtWidgets.QLabel("0")
-                offset_value_label.setMinimumWidth(52)
+                offset_value_label.setMinimumWidth(35)  # Reduced width
+                offset_value_label.setStyleSheet("font-size: 9px; font-family: monospace;")
                 offset_spin = QtWidgets.QDoubleSpinBox()
                 offset_spin.setDecimals(6)
                 offset_spin.setRange(-1e12, 1e12)
                 offset_spin.setSingleStep(0.1)
-                offset_spin.setMaximumWidth(110)
+                offset_spin.setMaximumWidth(70)  # Reduced width
+                offset_spin.setStyleSheet("font-size: 9px;")
                 offset_val = float(previous_offsets.get(d, 0.0))
                 offset_spin.setValue(offset_val)
                 offset_value_label.setText(f"{offset_val:.4g}")
@@ -541,3 +578,27 @@ class MultiAxisTab(QtWidgets.QWidget):
                     pass
 
         QtCore.QTimer.singleShot(0, _do_update)
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)

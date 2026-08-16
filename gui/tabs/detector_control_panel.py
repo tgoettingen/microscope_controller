@@ -1,4 +1,4 @@
-from PyQt6 import QtWidgets
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 
 class DetectorControlPanel(QtWidgets.QWidget):
@@ -7,8 +7,9 @@ class DetectorControlPanel(QtWidgets.QWidget):
         super().__init__(parent)
         # Keep this panel compact even when placed in a tall dock.
         # The content can scroll instead of forcing the dock to grow.
-        self._max_panel_height = 320
+        self._max_panel_height = 200  # Reduced from 320 to 200 for more compact layout
         self.group = QtWidgets.QGroupBox("Detectors")
+        self.group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 11px; }")
         # Foldable/collapsible panel
         try:
             self.group.setCheckable(True)
@@ -19,9 +20,9 @@ class DetectorControlPanel(QtWidgets.QWidget):
         # Put controls inside an inner widget so we can hide/show them
         self._content = QtWidgets.QWidget()
         self.vlayout = QtWidgets.QVBoxLayout(self._content)
-        self.vlayout.setContentsMargins(4, 4, 4, 4)
+        self.vlayout.setContentsMargins(2, 2, 2, 2)  # Reduced margins
         try:
-            self.vlayout.setSpacing(2)
+            self.vlayout.setSpacing(1)  # Reduced spacing
         except Exception:
             pass
 
@@ -35,7 +36,8 @@ class DetectorControlPanel(QtWidgets.QWidget):
         self._scroll.setWidget(self._content)
 
         g_layout = QtWidgets.QVBoxLayout(self.group)
-        g_layout.setContentsMargins(6, 12, 6, 6)
+        g_layout.setContentsMargins(4, 8, 4, 4)  # Reduced margins
+        g_layout.setSpacing(2)
         g_layout.addWidget(self._scroll)
 
         try:
@@ -45,6 +47,7 @@ class DetectorControlPanel(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
         layout.addWidget(self.group)
 
         # Size policy: prefer not to expand vertically.
@@ -66,3 +69,27 @@ class DetectorControlPanel(QtWidgets.QWidget):
             self.adjustSize()
         except Exception:
             pass
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)

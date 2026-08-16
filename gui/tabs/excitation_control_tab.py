@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 from devices.base import ExcitationSource
 
 
@@ -16,65 +16,75 @@ class ExcitationControlTab(QtWidgets.QWidget):
         
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(4)  # Reduced spacing
+        layout.setContentsMargins(4, 4, 4, 4)  # Reduced margins
         
-        # Device selector
-        device_layout = QtWidgets.QHBoxLayout()
-        device_layout.addWidget(QtWidgets.QLabel("Device:"))
+        # Compact device and channel selector row
+        selector_layout = QtWidgets.QHBoxLayout()
+        selector_layout.setSpacing(4)
+        
+        selector_layout.addWidget(QtWidgets.QLabel("Device:"))
         self.device_combo = QtWidgets.QComboBox()
+        self.device_combo.setMaximumWidth(120)
         for i, device in enumerate(self.excitation_devices):
             device_name = getattr(device, 'name', f"Device {i}")
             device_type = type(device).__name__
             self.device_combo.addItem(f"{device_name} ({device_type})", device)
-        device_layout.addWidget(self.device_combo)
-        layout.addLayout(device_layout)
+        selector_layout.addWidget(self.device_combo)
         
-        # Channel control
-        channel_group = QtWidgets.QGroupBox("Channel Control")
-        channel_layout = QtWidgets.QFormLayout()
-        
+        selector_layout.addWidget(QtWidgets.QLabel("Ch:"))
         self.channel_combo = QtWidgets.QComboBox()
+        self.channel_combo.setMaximumWidth(80)
         for i in range(8):
-            self.channel_combo.addItem(f"Channel {i}", i)
-        channel_layout.addRow("Channel:", self.channel_combo)
-        channel_group.setLayout(channel_layout)
-        layout.addWidget(channel_group)
+            self.channel_combo.addItem(f"{i}", i)
+        selector_layout.addWidget(self.channel_combo)
         
-        # ON/OFF buttons
+        selector_layout.addStretch()
+        layout.addLayout(selector_layout)
+        
+        # Compact button row
         button_layout = QtWidgets.QHBoxLayout()
-        self.on_btn = QtWidgets.QPushButton("Turn ON")
-        self.on_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
-        self.off_btn = QtWidgets.QPushButton("Turn OFF")
-        self.off_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
+        button_layout.setSpacing(4)
+        
+        self.on_btn = QtWidgets.QPushButton("ON")
+        self.on_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 4px;")
+        self.on_btn.setMaximumWidth(50)
+        self.off_btn = QtWidgets.QPushButton("OFF")
+        self.off_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 4px;")
+        self.off_btn.setMaximumWidth(50)
+        
+        self.all_off_btn = QtWidgets.QPushButton("All OFF")
+        self.all_off_btn.setStyleSheet("background-color: #FF9800; color: white; padding: 4px;")
+        self.all_off_btn.setMaximumWidth(70)
+        
         button_layout.addWidget(self.on_btn)
         button_layout.addWidget(self.off_btn)
+        button_layout.addWidget(self.all_off_btn)
+        button_layout.addStretch()
         layout.addLayout(button_layout)
         
-        # All OFF button
-        self.all_off_btn = QtWidgets.QPushButton("Turn All Channels OFF")
-        self.all_off_btn.setStyleSheet("background-color: #FF9800; color: white; padding: 8px;")
-        layout.addWidget(self.all_off_btn)
-        
-        # Status display
-        status_group = QtWidgets.QGroupBox("Status")
-        status_layout = QtWidgets.QFormLayout()
+        # Compact status display (single line)
+        status_layout = QtWidgets.QHBoxLayout()
+        status_layout.setSpacing(8)
         
         self.device_name_label = QtWidgets.QLabel("-")
-        self.device_type_label = QtWidgets.QLabel("-")
-        self.current_channel_label = QtWidgets.QLabel("-")
+        self.device_name_label.setStyleSheet("font-size: 10px;")
         self.device_state_label = QtWidgets.QLabel("-")
-        self.device_state_label.setStyleSheet("font-weight: bold;")
+        self.device_state_label.setStyleSheet("font-weight: bold; font-size: 11px;")
         
-        status_layout.addRow("Device:", self.device_name_label)
-        status_layout.addRow("Type:", self.device_type_label)
-        status_layout.addRow("Current Channel:", self.current_channel_label)
-        status_layout.addRow("State:", self.device_state_label)
+        status_layout.addWidget(QtWidgets.QLabel("Status:"))
+        status_layout.addWidget(self.device_name_label)
+        status_layout.addWidget(self.device_state_label)
+        status_layout.addStretch()
         
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
+        # Small refresh button
+        self.refresh_btn = QtWidgets.QPushButton("⟳")
+        self.refresh_btn.setStyleSheet("padding: 2px; font-size: 10px;")
+        self.refresh_btn.setMaximumWidth(25)
+        self.refresh_btn.setToolTip("Refresh Status")
+        status_layout.addWidget(self.refresh_btn)
         
-        # Refresh button
-        self.refresh_btn = QtWidgets.QPushButton("Refresh Status")
-        layout.addWidget(self.refresh_btn)
+        layout.addLayout(status_layout)
         
         layout.addStretch(1)
         
@@ -96,10 +106,6 @@ class ExcitationControlTab(QtWidgets.QWidget):
             return
         
         device = self.device_combo.currentData()
-        
-        # Update status display
-        self.device_name_label.setText(device.name)
-        self.device_type_label.setText(type(device).__name__)
         
         # Update channel combo
         self.channel_combo.blockSignals(True)
@@ -156,21 +162,24 @@ class ExcitationControlTab(QtWidgets.QWidget):
         """Refresh the status display."""
         device = self._get_current_device()
         if device:
+            # Update device name label
+            device_name = getattr(device, 'name', 'Unknown')
             if hasattr(device, 'get_channel'):
                 channel = device.get_channel()
-                self.current_channel_label.setText(f"Channel {channel}")
+                self.device_name_label.setText(f"{device_name} (Ch {channel})")
             else:
-                self.current_channel_label.setText("N/A")
+                self.device_name_label.setText(device_name)
             
+            # Update state label
             if hasattr(device, 'is_on'):
                 is_on = device.is_on()
                 self.device_state_label.setText("ON" if is_on else "OFF")
                 self.device_state_label.setStyleSheet(
-                    "color: green; font-weight: bold;" if is_on else "color: red; font-weight: bold;"
+                    "color: green; font-weight: bold; font-size: 11px;" if is_on else "color: red; font-weight: bold; font-size: 11px;"
                 )
             else:
-                self.device_state_label.setText("Unknown")
-                self.device_state_label.setStyleSheet("color: gray;")
+                self.device_state_label.setText("?")
+                self.device_state_label.setStyleSheet("color: gray; font-size: 11px;")
     
     def _get_current_device(self):
         """Get the currently selected device."""
@@ -188,3 +197,27 @@ class ExcitationControlTab(QtWidgets.QWidget):
             self.device_combo.addItem(f"{device_name} ({device_type})", device)
         if self.device_combo.count() > 0:
             self.device_combo.setCurrentIndex(0)
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events - Ctrl+H hides panel, Ctrl+R reloads panel (hide and show)."""
+        if event.key() == QtCore.Qt.Key.Key_H and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Hide panel when Ctrl+H is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+        elif event.key() == QtCore.Qt.Key.Key_R and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Reload panel (hide and show) when Ctrl+R is pressed
+            parent_dock = self.parent()
+            while parent_dock and not isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock = parent_dock.parent()
+            
+            if parent_dock and isinstance(parent_dock, QtWidgets.QDockWidget):
+                parent_dock.setVisible(False)
+                parent_dock.setVisible(True)
+                parent_dock.raise_()
+        else:
+            # Pass other key events to parent
+            super().keyPressEvent(event)
