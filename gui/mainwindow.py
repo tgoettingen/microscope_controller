@@ -78,6 +78,7 @@ try:
    from tabs.camera_control_tab import CameraControlTab
    from tabs.multiview_camera_tab import MultiViewCameraTab
    from tabs.multiview_control_tab import MultiViewControlTab
+   from tabs.plugin_panel import PluginPanel
 except Exception:
    from gui.tabs.experiment_tab import ExperimentTab
    from gui.tabs.live_tab import LiveTab
@@ -85,6 +86,7 @@ except Exception:
    from gui.tabs.camera_control_tab import CameraControlTab
    from gui.tabs.multiview_camera_tab import MultiViewCameraTab
    from gui.tabs.multiview_control_tab import MultiViewControlTab
+   from gui.tabs.plugin_panel import PluginPanel
 
 # ── Saving toggle ────────────────────────────────────────────────────────────
 # Set to False to completely disable HDF5/CSV saving (useful for debugging UI).
@@ -1556,6 +1558,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stage_calibration_tab = None
             self.stage_calibration_dock = None
             logger.warning("Stage Calibration dock could not be created - StageCalibrationTab import failed")
+      
+      # Create Plugin Panel dock
+      try:
+         self.plugin_tab = PluginPanel(self)
+         self.plugin_tab.set_parent_window(self)
+         self.plugin_dock = QtWidgets.QDockWidget("Plugins", self)
+         self.plugin_dock.setWidget(self.plugin_tab)
+         self.plugin_dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea | QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
+         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.plugin_dock)
+         self.plugin_dock.setVisible(False)  # Hidden by default
+         logger.info("Plugin dock created successfully")
+      except Exception as e:
+         self.plugin_tab = None
+         self.plugin_dock = None
+         logger.warning("Plugin dock could not be created: %s", e)
 
          # connect view change signals so docks can be shown/hidden as view changes
          try:
@@ -2297,12 +2314,14 @@ class MainWindow(QtWidgets.QMainWindow):
       enable_btn = QtWidgets.QPushButton("Enable Selected")
       disable_btn = QtWidgets.QPushButton("Disable Selected")
       configure_btn = QtWidgets.QPushButton("Configure Selected")
+      run_btn = QtWidgets.QPushButton("Run Selected")
       remove_btn = QtWidgets.QPushButton("Remove Selected")
       close_btn = QtWidgets.QPushButton("Close")
       
       button_layout.addWidget(enable_btn)
       button_layout.addWidget(disable_btn)
       button_layout.addWidget(configure_btn)
+      button_layout.addWidget(run_btn)
       button_layout.addWidget(remove_btn)
       button_layout.addStretch()
       button_layout.addWidget(close_btn)
@@ -2355,13 +2374,187 @@ class MainWindow(QtWidgets.QMainWindow):
                self._plugin_manager.unload_plugin(plugin_name)
                _refresh_plugin_list(plugin_list)
       
+      def run_selected():
+         current_item = plugin_list.currentItem()
+         if current_item:
+            plugin_name = current_item.data(QtCore.Qt.ItemDataRole.UserRole)
+            self._run_plugin_on_last_scan_data(plugin_name)
+      
       enable_btn.clicked.connect(enable_selected)
       disable_btn.clicked.connect(disable_selected)
       configure_btn.clicked.connect(configure_selected)
+      run_btn.clicked.connect(run_selected)
       remove_btn.clicked.connect(remove_selected)
       close_btn.clicked.connect(dialog.accept)
       
       dialog.exec()
+   
+   def _run_plugin_on_last_scan_data(self, plugin_name: str):
+      """Run a plugin on the last multi-axis scan data."""
+      if not PLUGINS_AVAILABLE or self._plugin_manager is None:
+         QtWidgets.QMessageBox.warning(self, "Plugins Not Available", 
+            "Plugin system is not available.")
+         return
+      
+      # Get the plugin
+      plugin = self._plugin_manager.get_plugin(plugin_name)
+      if not plugin:
+         QtWidgets.QMessageBox.warning(self, "Plugin Not Found", 
+            f"Plugin '{plugin_name}' is not loaded.")
+         return
+      
+      # Get multi-axis scan data from live tab
+      try:
+         if not hasattr(self, 'live_tab') or self.live_tab is None:
+            QtWidgets.QMessageBox.warning(self, "Live Tab Not Available", 
+               "Live tab is not available to get scan data.")
+            return
+         
+         scan_data = self.live_tab.get_multiaxis_scan_data()
+         
+         # Debug: Show what scan data was retrieved
+         print(f"[MainWindow] Retrieved scan data: {scan_data is not None}")
+         if scan_data:
+            print(f"[MainWindow] Scan data keys: {list(scan_data.keys())}")
+            print(f"[MainWindow] Detector IDs: {scan_data.get('detector_ids', [])}")
+            print(f"[MainWindow] Detector data keys: {list(scan_data.get('detector_data', {}).keys())}")
+            print(f"[MainWindow] Number of positions: {len(scan_data.get('positions', []))}")
+            print(f"[MainWindow] Scan dimensions: {scan_data.get('scan_dimensions')}")
+         
+         if not scan_data or not scan_data.get('detector_data'):
+            QtWidgets.QMessageBox.information(self, "No Scan Data", 
+               "No multi-axis scan data available. Run a multi-axis scan first.")
+            return
+         
+         # Create PluginData object
+         from plugins.base_plugin import PluginData
+         import numpy as np
+         
+         plugin_data = PluginData(
+            detector_data={k: np.array(v) for k, v in scan_data['detector_data'].items()},
+            positions={},
+            timestamps=np.array(scan_data['timestamps']),
+            detector_ids=scan_data['detector_ids']
+         )
+         
+         # Check if this is the multi-axis scan decoder and use its manual execution method
+         if plugin_name == 'multiaxis_scan_decoder' and hasattr(plugin, 'manual_execute_with_data'):
+            # Load plugin config from file if it exists
+            from pathlib import Path
+            config_file = Path.cwd() / 'plugin' / 'multiaxis_scan_decoder_config.json'
+            if config_file.exists():
+               try:
+                  import json
+                  with open(config_file) as f:
+                     config = json.load(f)
+                  # Re-initialize plugin with the config
+                  plugin.initialize(config)
+                  print(f"[MainWindow] Loaded plugin config from {config_file}")
+               except Exception as e:
+                  print(f"[MainWindow] Failed to load plugin config: {e}")
+            
+            success = plugin.manual_execute_with_data(
+               scan_data['detector_data'],
+               scan_data['positions'],
+               scan_data.get('scan_dimensions')
+            )
+            
+            if success:
+               # Register plugin with detector image panel for tooltips
+               if hasattr(self, 'live_tab') and hasattr(self.live_tab, 'detector_image_panel'):
+                  self.live_tab.detector_image_panel.register_decoder_plugin(plugin_name, plugin)
+               
+               QtWidgets.QMessageBox.information(self, "Plugin Execution Result", 
+                  f"Plugin '{plugin_name}' executed successfully.\n\n"
+                  f"Decoded data generated with shape: {plugin._decoded_data.shape if plugin._decoded_data is not None else 'N/A'}")
+            else:
+               QtWidgets.QMessageBox.warning(self, "Plugin Execution Failed", 
+                  f"Plugin '{plugin_name}' execution failed.")
+            return
+         
+         # Check if this is the clickable decoder and use its manual execution method
+         if plugin_name == 'clickable_decoder' and hasattr(plugin, 'manual_execute_with_data'):
+            # Load plugin config from file if it exists
+            from pathlib import Path
+            config_file = Path.cwd() / 'plugin' / 'clickable_decoder_config.json'
+            if config_file.exists():
+               try:
+                  import json
+                  with open(config_file) as f:
+                     config = json.load(f)
+                  # Re-initialize plugin with the config
+                  plugin.initialize(config)
+                  print(f"[MainWindow] Loaded plugin config from {config_file}")
+               except Exception as e:
+                  print(f"[MainWindow] Failed to load plugin config: {e}")
+            
+            success = plugin.manual_execute_with_data(
+               scan_data['detector_data'],
+               scan_data['positions'],
+               scan_data.get('scan_dimensions')
+            )
+            
+            if success:
+               # Register plugin with detector image panel for tooltips
+               if hasattr(self, 'live_tab') and hasattr(self.live_tab, 'detector_image_panel'):
+                  self.live_tab.detector_image_panel.register_decoder_plugin(plugin_name, plugin)
+               
+               QtWidgets.QMessageBox.information(self, "Plugin Execution Result", 
+                  f"Plugin '{plugin_name}' executed successfully.\n\n"
+                  f"Decoded data generated with shape: {plugin._decoded_data.shape if plugin._decoded_data is not None else 'N/A'}")
+            else:
+               QtWidgets.QMessageBox.warning(self, "Plugin Execution Failed", 
+                  f"Plugin '{plugin_name}' execution failed.")
+            return
+            
+            if success:
+               QtWidgets.QMessageBox.information(self, "Plugin Execution Result", 
+                  f"Plugin '{plugin_name}' executed successfully.\n\n"
+                  f"Decoded data generated with shape: {plugin._decoded_data.shape if plugin._decoded_data is not None else 'N/A'}")
+            else:
+               QtWidgets.QMessageBox.warning(self, "Plugin Execution Failed", 
+                  f"Plugin '{plugin_name}' execution failed.")
+            return
+         
+         # For other plugins, use the standard experiment lifecycle
+         # Add position history for multi-axis scan decoder
+         if hasattr(plugin, '_position_history'):
+            plugin._position_history = scan_data['positions']
+         
+         # Add scan dimensions info
+         if hasattr(plugin, '_scan_dimensions'):
+            plugin._scan_dimensions = scan_data.get('scan_dimensions')
+         
+         # Manually trigger experiment start for plugins that need it
+         if hasattr(plugin, 'on_experiment_start'):
+            plugin.on_experiment_start({})
+         
+         # Process the data with the plugin
+         result = plugin.process_data(plugin_data)
+         
+         # Manually trigger experiment end for plugins that need it
+         if hasattr(plugin, 'on_experiment_end'):
+            plugin.on_experiment_end({}, result)
+         
+         # Show result
+         if result.success:
+            message = f"Plugin '{plugin_name}' executed successfully.\n\n"
+            message += f"Message: {result.message}\n"
+            
+            if result.extracted_features:
+               message += f"\nExtracted Features:\n"
+               for key, value in result.extracted_features.items():
+                  message += f"  {key}: {value}\n"
+            
+            QtWidgets.QMessageBox.information(self, "Plugin Execution Result", message)
+         else:
+            QtWidgets.QMessageBox.warning(self, "Plugin Execution Failed", 
+               f"Plugin '{plugin_name}' execution failed:\n{result.message}")
+         
+      except Exception as e:
+         QtWidgets.QMessageBox.critical(self, "Plugin Execution Error", 
+            f"Error running plugin '{plugin_name}':\n{str(e)}")
+         logger.exception(f"Error running plugin {plugin_name} on scan data")
    
    def _show_plugin_info(self):
       """Show information about loaded plugins."""
@@ -3144,6 +3337,20 @@ class MainWindow(QtWidgets.QMainWindow):
                logger.info("Added Excitation Control to View menu")
             except Exception as e:
                logger.error("Failed to add Excitation Control to View menu: %s", e)
+         
+         # Plugins
+         if hasattr(self, 'plugin_dock') and self.plugin_dock is not None:
+            try:
+               plugin_act = QAction("Plugins", self, checkable=True)
+               plugin_act.setChecked(False)
+               plugin_act.triggered.connect(lambda checked: self._toggle_plugin_dock(checked))
+               view_menu.addAction(plugin_act)
+               if not hasattr(self, '_view_dock_actions'):
+                  self._view_dock_actions = {}
+               self._view_dock_actions["plugin"] = plugin_act
+               logger.info("Added Plugins to View menu")
+            except Exception as e:
+               logger.error("Failed to add Plugins to View menu: %s", e)
          else:
             logger.warning("Excitation Control dock not available for View menu")
          
@@ -3225,6 +3432,19 @@ class MainWindow(QtWidgets.QMainWindow):
          if self.excitation is None:
             logger.warning("No excitation devices available for excitation control panel")
             QtWidgets.QMessageBox.warning(self, "No Excitation Devices", "No excitation device available.")
+   
+   def _toggle_plugin_dock(self, checked: bool):
+      """Toggle Plugin dock visibility."""
+      if self.plugin_dock is not None:
+         self.plugin_dock.setVisible(checked)
+         if checked:
+            # Refresh plugins when showing
+            if self.plugin_tab is not None:
+               self.plugin_tab._refresh_plugins()
+      
+      # Update view menu action
+      if hasattr(self, '_view_dock_actions') and 'plugin' in self._view_dock_actions:
+         self._view_dock_actions['plugin'].setChecked(checked)
             return False
          
          # Update the tab with devices

@@ -1927,6 +1927,79 @@ class LiveTab(QtWidgets.QWidget):
         except Exception:
             pass
         # Clear any run-scoped x-axis preference so strip-chart mode is unaffected.
+
+    def get_multiaxis_scan_data(self):
+        """Get the current multi-axis scan data for plugin processing.
+        
+        Returns:
+            dict: Multi-axis scan data in format suitable for plugins
+                  {
+                      'detector_data': {det_id: [values]},
+                      'positions': [{'x': x, 'y': y, 'z': z}, ...],
+                      'timestamps': [timestamps],
+                      'detector_ids': [det_ids],
+                      'scan_dimensions': {'dim_x': int, 'dim_y': int}
+                  }
+        """
+        print(f"[LiveTab] get_multiaxis_scan_data called")
+        print(f"[LiveTab] multi_coords keys: {list(self.multi_coords.keys())}")
+        print(f"[LiveTab] multi_coords empty: {not self.multi_coords}")
+        
+        if not self.multi_coords:
+            print("[LiveTab] No multi_coords data available")
+            return None
+        
+        scan_data = {
+            'detector_data': {},
+            'positions': [],
+            'timestamps': [],
+            'detector_ids': list(self.multi_coords.keys()),
+            'scan_dimensions': None
+        }
+        
+        # Collect all unique positions to determine scan dimensions
+        all_x_positions = set()
+        all_y_positions = set()
+        
+        # Use the first detector as reference for positions and timestamps
+        first_det_id = list(self.multi_coords.keys())[0] if self.multi_coords else None
+        
+        for det_id, coord_list in self.multi_coords.items():
+            values = []
+            
+            for state, value in coord_list:
+                # Extract position information
+                x = state.get('X', 0)
+                y = state.get('Y', 0)
+                z = state.get('Z', 0)
+                
+                all_x_positions.add(x)
+                all_y_positions.add(y)
+                
+                values.append(float(value))
+            
+            scan_data['detector_data'][det_id] = values
+        
+        # Extract positions and timestamps from the first detector
+        if first_det_id and first_det_id in self.multi_coords:
+            coord_list = self.multi_coords[first_det_id]
+            for i, (state, value) in enumerate(coord_list):
+                x = state.get('X', 0)
+                y = state.get('Y', 0)
+                z = state.get('Z', 0)
+                scan_data['positions'].append({'x': x, 'y': y, 'z': z})
+                scan_data['timestamps'].append(i)  # Use index as timestamp
+        
+        # Determine scan dimensions
+        if all_x_positions and all_y_positions:
+            scan_data['scan_dimensions'] = {
+                'dim_x': len(all_x_positions),
+                'dim_y': len(all_y_positions),
+                'x_positions': sorted(all_x_positions),
+                'y_positions': sorted(all_y_positions)
+            }
+        
+        return scan_data
         self._preferred_plot_xaxis = None
         # refresh x-axis choices
         self._refresh_xaxis_options()
@@ -3432,6 +3505,18 @@ class LiveTab(QtWidgets.QWidget):
         self.multi_coords.setdefault(detector_id, []).append((state.copy(), value))
         self._multi_dirty = True
         
+        # Update detector image panel with scan data for tooltips
+        if hasattr(self, 'detector_image_panel') and self.detector_image_panel:
+            # Extract position for tooltip
+            position = (state.get('X', 0), state.get('Y', 0), state.get('Z', 0))
+            # Append to existing scan data instead of replacing
+            self.detector_image_panel.append_scan_data(detector_id, position, value)
+            
+            # Update scan dimensions for coordinate mapping
+            scan_dims = self._get_scan_dimensions_from_coords()
+            if scan_dims:
+                self.detector_image_panel.set_scan_dimensions(scan_dims)
+        
         # Process with plugins if available
         self._process_with_plugins(detector_id, state, value)
         
@@ -3442,6 +3527,43 @@ class LiveTab(QtWidgets.QWidget):
                 self._z_values_set.add(z_val)
                 self._z_values = sorted(self._z_values_set)
                 self.z_slider.setMaximum(max(0, len(self._z_values) - 1))
+    
+    def _get_scan_dimensions_from_coords(self) -> dict:
+        """Extract scan dimensions from multi_coords data.
+        
+        Returns:
+            dict: Scan dimensions with x_positions, y_positions, dim_x, dim_y
+        """
+        if not self.multi_coords:
+            return None
+        
+        try:
+            # Collect all unique positions
+            all_x_positions = set()
+            all_y_positions = set()
+            
+            for coord_list in self.multi_coords.values():
+                for state, value in coord_list:
+                    x = state.get('X', 0)
+                    y = state.get('Y', 0)
+                    all_x_positions.add(x)
+                    all_y_positions.add(y)
+            
+            if not all_x_positions or not all_y_positions:
+                return None
+            
+            x_positions = sorted(all_x_positions)
+            y_positions = sorted(all_y_positions)
+            
+            return {
+                'x_positions': x_positions,
+                'y_positions': y_positions,
+                'dim_x': len(x_positions),
+                'dim_y': len(y_positions)
+            }
+        except Exception as e:
+            print(f"[LiveTab] Error extracting scan dimensions: {e}")
+            return None
     
     def _process_with_plugins(self, detector_id: str, state: dict, value: float):
         """Process detector data with loaded plugins."""

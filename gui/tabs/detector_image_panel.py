@@ -2,7 +2,64 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6.QtWidgets import QToolTip
+from PyQt6.QtCore import QEvent, QObject
 import pyqtgraph as pg
+
+
+class DetectorClickFilter(QObject):
+    """Event filter to capture mouse clicks on detector images."""
+    
+    def __init__(self, detector_id: str, img_view, panel):
+        super().__init__()
+        self.detector_id = detector_id
+        self.img_view = img_view
+        self.panel = panel
+    
+    def eventFilter(self, obj, event):
+        """Filter events to catch mouse clicks and releases."""
+        try:
+            event_type = event.type()
+            
+            if event_type == QEvent.Type.MouseButtonPress:
+                if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                    print(f"[DetectorClickFilter] ✓ Left mouse button press detected on {self.detector_id}")
+                    # Get position in widget coordinates
+                    pos = event.pos()
+                    # Convert to scene coordinates
+                    scene_pos = self.img_view.mapToScene(pos)
+                    print(f"[DetectorClickFilter] Widget pos: {pos}, Scene pos: {scene_pos}")
+                    # Create a simple position object with scenePos attribute
+                    class SimpleClickEvent:
+                        def __init__(self, scene_pos):
+                            self.scenePos = lambda: scene_pos
+                        def pos(self):
+                            return scene_pos
+                    click_event = SimpleClickEvent(scene_pos)
+                    # Call the panel's click handler
+                    self.panel._on_detector_clicked(self.detector_id, self.img_view, click_event)
+                    return True  # Event was handled
+            
+            elif event_type == QEvent.Type.MouseButtonRelease:
+                if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                    print(f"[DetectorClickFilter] ✓ Left mouse button release detected on {self.detector_id}")
+                    # Call the panel's release handler
+                    self.panel._on_detector_released()
+                    return True  # Event was handled
+            
+            elif event_type == QEvent.Type.MouseMove:
+                if self.panel._mouse_button_pressed:
+                    # Update tooltip position while button is held
+                    pos = event.pos()
+                    scene_pos = self.img_view.mapToScene(pos)
+                    self.panel._update_tooltip_position(scene_pos)
+                    return True  # Event was handled
+        except Exception as e:
+            print(f"[DetectorClickFilter] Error in event filter: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return False  # Let other events pass through
 
 
 class DetectorImagePanel(QtWidgets.QWidget):
@@ -60,6 +117,42 @@ class DetectorImagePanel(QtWidgets.QWidget):
             self._overlay_color_mode = "fixed"
         if self._overlay_color_mode not in ("fixed", "cmap"):
             self._overlay_color_mode = "fixed"
+        
+        # Multi-axis scan data storage for tooltips
+        self._scan_data = {}  # detector_id -> list of (position, value) tuples
+        self._decoded_plugins = {}  # Store references to decoder plugins for tooltip values
+        self._scan_dimensions = None  # Store scan dimensions for coordinate mapping
+        
+        # Tooltip display options
+        self._show_other_detectors = True  # Show values from other detectors
+        self._show_plugin_values = True  # Show decoded values from plugins
+        
+        # Load tooltip setting from settings
+        try:
+            tooltip_setting = self._settings.value("tooltip_enabled", True)
+            self._tooltip_enabled = bool(tooltip_setting)
+        except Exception:
+            self._tooltip_enabled = True  # Enable tooltips by default
+        
+        # Load other detectors display setting
+        try:
+            other_detectors_setting = self._settings.value("show_other_detectors", True)
+            self._show_other_detectors = bool(other_detectors_setting)
+        except Exception:
+            self._show_other_detectors = True
+        
+        # Load plugin values display setting
+        try:
+            plugin_values_setting = self._settings.value("show_plugin_values", True)
+            self._show_plugin_values = bool(plugin_values_setting)
+        except Exception:
+            self._show_plugin_values = True
+        
+        # Mouse button state tracking for persistent tooltips
+        self._mouse_button_pressed = False
+        self._current_tooltip_detector = None
+        self._current_tooltip_position = None
+        self._tooltip_label = None  # Persistent tooltip label
 
         # --- top controls ---
         self.overlay_cb = QtWidgets.QCheckBox("Overlay (false color)")
@@ -221,12 +314,61 @@ class DetectorImagePanel(QtWidgets.QWidget):
         """Show right-click menu for a detector image view."""
         try:
             menu = QtWidgets.QMenu(self)
+            
+            # Add reset image view action
             reset_action = menu.addAction("Reset Image View")
+            
+            # Add separator
+            menu.addSeparator()
+            
+            # Add tooltip toggle action
+            tooltip_action = menu.addAction("Enable Click Tooltips")
+            tooltip_action.setCheckable(True)
+            tooltip_action.setChecked(self._tooltip_enabled)
+            
+            # Add separator
+            menu.addSeparator()
+            
+            # Add show other detectors toggle
+            other_detectors_action = menu.addAction("Show Other Detectors")
+            other_detectors_action.setCheckable(True)
+            other_detectors_action.setChecked(self._show_other_detectors)
+            
+            # Add show plugin values toggle
+            plugin_values_action = menu.addAction("Show Plugin Values")
+            plugin_values_action.setCheckable(True)
+            plugin_values_action.setChecked(self._show_plugin_values)
+            
+            # Execute menu
             chosen = menu.exec(img_view.mapToGlobal(pos))
+            
             if chosen == reset_action:
                 self._reset_image_view(img_view)
-        except Exception:
-            pass
+            elif chosen == tooltip_action:
+                self._tooltip_enabled = tooltip_action.isChecked()
+                print(f"[DetectorImagePanel] Tooltips {'enabled' if self._tooltip_enabled else 'disabled'}")
+                
+                # Hide existing tooltip if disabling
+                if not self._tooltip_enabled:
+                    self._hide_tooltip()
+                
+                # Save setting
+                self._settings.setValue("tooltip_enabled", self._tooltip_enabled)
+                
+            elif chosen == other_detectors_action:
+                self._show_other_detectors = other_detectors_action.isChecked()
+                print(f"[DetectorImagePanel] Other detectors display {'enabled' if self._show_other_detectors else 'disabled'}")
+                # Save setting
+                self._settings.setValue("show_other_detectors", self._show_other_detectors)
+                
+            elif chosen == plugin_values_action:
+                self._show_plugin_values = plugin_values_action.isChecked()
+                print(f"[DetectorImagePanel] Plugin values display {'enabled' if self._show_plugin_values else 'disabled'}")
+                # Save setting
+                self._settings.setValue("show_plugin_values", self._show_plugin_values)
+                
+        except Exception as e:
+            print(f"[DetectorImagePanel] Error showing context menu: {e}")
 
     def _show_overlay_context_menu(self, pos) -> None:
         """Show right-click menu for the overlay image view."""
@@ -238,6 +380,395 @@ class DetectorImagePanel(QtWidgets.QWidget):
                 self._reset_image_view(self.overlay_view)
         except Exception:
             pass
+    
+    def _on_detector_clicked(self, detector_id: str, img_view: pg.ImageView, pos) -> None:
+        """Handle click on detector image to show tooltip with scan information."""
+        print(f"[DetectorImagePanel] Click detected on detector: {detector_id}")
+        print(f"[DetectorImagePanel] Click position type: {type(pos)}")
+        print(f"[DetectorImagePanel] Click position: {pos}")
+        print(f"[DetectorImagePanel] Tooltip enabled: {self._tooltip_enabled}")
+        
+        if not self._tooltip_enabled:
+            print("[DetectorImagePanel] Tooltips are disabled, skipping")
+            return
+        
+        # Mark mouse button as pressed
+        self._mouse_button_pressed = True
+        self._current_tooltip_detector = detector_id
+        self._current_tooltip_position = pos
+        
+        try:
+            # Extract scene position from MouseClickEvent if needed
+            if hasattr(pos, 'scenePos'):
+                scene_pos = pos.scenePos()
+                print(f"[DetectorImagePanel] Extracted scenePos: {scene_pos}")
+            else:
+                scene_pos = pos
+                print(f"[DetectorImagePanel] Using pos directly as scene_pos")
+            
+            # Get click position in image coordinates
+            mouse_point = img_view.getView().mapSceneToView(scene_pos)
+            view_x, view_y = mouse_point.x(), mouse_point.y()
+            print(f"[DetectorImagePanel] View coordinates: X={view_x:.2f}, Y={view_y:.2f}")
+            
+            # Get the image item's bounds to map to array indices
+            array_x, array_y = view_x, view_y  # Default fallback
+            scan_x, scan_y = view_x, view_y  # Default fallback
+            
+            try:
+                image_item = img_view.getImageItem()
+                if image_item is not None:
+                    # Get the image's bounding rect in view coordinates
+                    image_rect = image_item.boundingRect()
+                    print(f"[DetectorImagePanel] Image bounding rect: {image_rect}")
+                    
+                    # Map view coordinates to image-relative coordinates
+                    img_x = view_x - image_rect.x()
+                    img_y = view_y - image_rect.y()
+                    
+                    # Get image dimensions
+                    image = image_item.image
+                    if image is not None:
+                        if not isinstance(image, np.ndarray):
+                            image = np.asarray(image)
+                        height, width = image.shape[:2]
+                        
+                        # Normalize to array indices
+                        img_x_norm = img_x / image_rect.width() if image_rect.width() > 0 else 0
+                        img_y_norm = img_y / image_rect.height() if image_rect.height() > 0 else 0
+                        
+                        # Convert to array indices
+                        array_x = img_x_norm * (width - 1)
+                        array_y = img_y_norm * (height - 1)
+                        
+                        print(f"[DetectorImagePanel] Array indices: X={array_x:.2f}, Y={array_y:.2f}")
+                        
+                        # Convert array indices to scan coordinates
+                        scan_x, scan_y = self._image_coords_to_scan_coords(array_x, array_y)
+                        print(f"[DetectorImagePanel] Converted to scan coordinates: X={scan_x:.2f}, Y={scan_y:.2f}")
+            except Exception as e:
+                print(f"[DetectorImagePanel] Error mapping coordinates: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Use scan coordinates for data lookup
+            x, y = scan_x, scan_y
+            
+            # Use array indices for image value extraction
+            x_idx = int(round(array_x))
+            y_idx = int(round(array_y))
+            
+            # Try to get image data
+            try:
+                image_item = img_view.getImageItem()
+                print(f"[DetectorImagePanel] Image item: {image_item}")
+                if image_item is None:
+                    print("[DetectorImagePanel] No image item found")
+                    return
+                
+                image = image_item.image
+                print(f"[DetectorImagePanel] Image data: {image}")
+                if image is None:
+                    print("[DetectorImagePanel] No image data found")
+                    return
+                
+                # Convert to array if needed
+                if not isinstance(image, np.ndarray):
+                    image = np.asarray(image)
+                
+                print(f"[DetectorImagePanel] Image shape: {image.shape}, dtype: {image.dtype}")
+                
+                # Use array indices computed earlier from image coordinates
+                height, width = image.shape[:2]
+                
+                print(f"[DetectorImagePanel] Using array indices: x_idx={x_idx}, y_idx={y_idx}")
+                print(f"[DetectorImagePanel] Image dimensions: height={height}, width={width}")
+                
+                # Clamp to valid range
+                x_idx = max(0, min(width - 1, x_idx))
+                y_idx = max(0, min(height - 1, y_idx))
+                print(f"[DetectorImagePanel] Clamped indices: x_idx={x_idx}, y_idx={y_idx}")
+                
+                # Get value at this position
+                if image.ndim == 2:
+                    value = image[y_idx, x_idx]
+                elif image.ndim == 3:
+                    value = image[y_idx, x_idx, 0]  # Take first channel
+                else:
+                    value = 0
+                
+                print(f"[DetectorImagePanel] Extracted value: {value:.6f}")
+                
+                # Build tooltip information
+                tooltip_lines = [
+                    f"<b>Detector:</b> {detector_id}",
+                    f"<b>Position:</b> X={array_x:.1f}, Y={array_y:.1f} (pixel: {x_idx}, {y_idx})",
+                    f"<b>Value:</b> {value:.6f}"
+                ]
+                
+                # For live detector images, only show the pixel value
+                # Don't show accumulated scan data "closest points" - that's confusing
+                print(f"[DetectorImagePanel] Tooltip for live detector image at pixel ({x_idx}, {y_idx})")
+                
+                # Show other detector values if enabled and data is available
+                if self._show_other_detectors and self._scan_data:
+                    other_detectors = [d for d in self._scan_data.keys() if d != detector_id]
+                    if other_detectors:
+                        tooltip_lines.append("<b>Other Detectors:</b>")
+                        for other_det in other_detectors[:3]:  # Show up to 3 other detectors
+                            if other_det in self._scan_data and self._scan_data[other_det]:
+                                # Find closest scan point based on the clicked position
+                                if self._scan_data[other_det]:
+                                    closest = min(self._scan_data[other_det], 
+                                               key=lambda p: abs(p[0][0] - x) + abs(p[0][1] - y))
+                                    closest_pos, closest_val = closest
+                                    tooltip_lines.append(f"  {other_det}: {closest_val:.6f}")
+                                    print(f"[DetectorImagePanel] Other detector {other_det}: {closest_val:.6f}")
+                
+                # Show decoded values if enabled and plugins are registered
+                if self._show_plugin_values and self._decoded_plugins:
+                    tooltip_lines.append("<b>Decoded Values:</b>")
+                    print(f"[DetectorImagePanel] Processing {len(self._decoded_plugins)} decoder plugins")
+                    for plugin_name, plugin in self._decoded_plugins.items():
+                        try:
+                            # Get decoded value at this position
+                            # Use scan coordinates (x, y) for decoder plugins
+                            print(f"[DetectorImagePanel] Querying {plugin_name} at scan coordinates ({x:.1f}, {y:.1f})")
+                            decoded_value, success = plugin.get_decoded_value_at_position(x, y)
+                            if success:
+                                tooltip_lines.append(f"  {plugin_name}: {decoded_value:.6f}")
+                                print(f"[DetectorImagePanel] ✓ Decoded value from {plugin_name} at ({x:.1f}, {y:.1f}): {decoded_value:.6f}")
+                            else:
+                                print(f"[DetectorImagePanel] ✗ Failed to get decoded value from {plugin_name} at ({x:.1f}, {y:.1f})")
+                        except Exception as e:
+                            print(f"[DetectorImagePanel] ✗ Error getting decoded value from {plugin_name}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                
+                # Add decoded values from registered decoder plugins
+                if self._decoded_plugins:
+                    tooltip_lines.append("<b>Decoded Values:</b>")
+                    print(f"[DetectorImagePanel] Processing {len(self._decoded_plugins)} decoder plugins")
+                    for plugin_name, plugin in self._decoded_plugins.items():
+                        try:
+                            # Get decoded value at this position
+                            # Use scan coordinates (x, y) for decoder plugins
+                            print(f"[DetectorImagePanel] Querying {plugin_name} at scan coordinates ({x:.1f}, {y:.1f})")
+                            decoded_value, success = plugin.get_decoded_value_at_position(x, y)
+                            if success:
+                                tooltip_lines.append(f"  {plugin_name}: {decoded_value:.6f}")
+                                print(f"[DetectorImagePanel] ✓ Decoded value from {plugin_name} at ({x:.1f}, {y:.1f}): {decoded_value:.6f}")
+                            else:
+                                print(f"[DetectorImagePanel] ✗ Failed to get decoded value from {plugin_name} at ({x:.1f}, {y:.1f})")
+                        except Exception as e:
+                            print(f"[DetectorImagePanel] ✗ Error getting decoded value from {plugin_name}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                else:
+                    print(f"[DetectorImagePanel] No decoder plugins registered")
+                
+                tooltip_text = "<br>".join(tooltip_lines)
+                print(f"[DetectorImagePanel] Tooltip text length: {len(tooltip_text)}")
+                
+                # Create or update persistent tooltip label
+                if self._tooltip_label is None:
+                    self._tooltip_label = QtWidgets.QLabel()
+                    self._tooltip_label.setStyleSheet("""
+                        QLabel {
+                            background-color: rgba(0, 0, 0, 220);
+                            color: white;
+                            padding: 8px 12px;
+                            border-radius: 6px;
+                            font-size: 10pt;
+                            border: 1px solid rgba(255, 255, 255, 150);
+                        }
+                    """)
+                    self._tooltip_label.setWindowFlags(QtCore.Qt.WindowType.ToolTip | QtCore.Qt.WindowType.FramelessWindowHint)
+                    self._tooltip_label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentForMouseEvents)
+                
+                self._tooltip_label.setText(tooltip_text)
+                self._tooltip_label.adjustSize()
+                
+                # Show tooltip at mouse position
+                global_pos = img_view.mapToGlobal(scene_pos.toPoint())
+                self._tooltip_label.move(global_pos.x(), global_pos.y())
+                self._tooltip_label.show()
+                self._tooltip_label.raise_()
+                
+                print("[DetectorImagePanel] Persistent tooltip displayed successfully")
+                
+            except Exception as e:
+                print(f"[DetectorImagePanel] Error processing image data: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to simple tooltip using persistent label
+                simple_tooltip = f"<b>Detector:</b> {detector_id}<br><b>Position:</b> X={x:.1f}, Y={y:.1f}"
+                if self._tooltip_label is None:
+                    self._tooltip_label = QtWidgets.QLabel()
+                    self._tooltip_label.setStyleSheet("""
+                        QLabel {
+                            background-color: rgba(0, 0, 0, 220);
+                            color: white;
+                            padding: 8px 12px;
+                            border-radius: 6px;
+                            font-size: 10pt;
+                            border: 1px solid rgba(255, 255, 255, 150);
+                        }
+                    """)
+                    self._tooltip_label.setWindowFlags(QtCore.Qt.WindowType.ToolTip | QtCore.Qt.WindowType.FramelessWindowHint)
+                    self._tooltip_label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentForMouseEvents)
+                
+                self._tooltip_label.setText(simple_tooltip)
+                self._tooltip_label.adjustSize()
+                global_pos = img_view.mapToGlobal(scene_pos.toPoint())
+                self._tooltip_label.move(global_pos.x(), global_pos.y())
+                self._tooltip_label.show()
+                self._tooltip_label.raise_()
+                
+        except Exception as e:
+            print(f"[DetectorImagePanel] Error in click handler: {e}")
+            import traceback
+            traceback.print_exc()
+            # Hide tooltip on error
+            self._hide_tooltip()
+            self._mouse_button_pressed = False
+    
+    def set_scan_data(self, detector_id: str, scan_data: list) -> None:
+        """Store multi-axis scan data for a detector.
+        
+        Args:
+            detector_id: The detector identifier
+            scan_data: List of (position_tuple, value) tuples where position_tuple contains (x, y, z)
+        """
+        self._scan_data[detector_id] = scan_data
+    
+    def append_scan_data(self, detector_id: str, position: tuple, value: float) -> None:
+        """Append a single scan data point for a detector.
+        
+        Args:
+            detector_id: The detector identifier
+            position: Position tuple (x, y, z)
+            value: The detector value at this position
+        """
+        if detector_id not in self._scan_data:
+            self._scan_data[detector_id] = []
+        self._scan_data[detector_id].append((position, value))
+    
+    def clear_scan_data(self) -> None:
+        """Clear all stored scan data."""
+        self._scan_data.clear()
+        self._scan_dimensions = None
+    
+    def set_scan_dimensions(self, scan_dimensions: dict) -> None:
+        """Store scan dimensions for coordinate mapping.
+        
+        Args:
+            scan_dimensions: Dictionary with 'x_positions', 'y_positions', 'dim_x', 'dim_y'
+        """
+        self._scan_dimensions = scan_dimensions
+        print(f"[DetectorImagePanel] Scan dimensions set: {scan_dimensions}")
+    
+    def _image_coords_to_scan_coords(self, img_x: float, img_y: float) -> tuple:
+        """Convert image coordinates to scan coordinates.
+        
+        Args:
+            img_x: X coordinate in image space (array indices)
+            img_y: Y coordinate in image space (array indices)
+            
+        Returns:
+            Tuple of (scan_x, scan_y) in actual scan position units
+        """
+        if self._scan_dimensions is None:
+            return img_x, img_y
+        
+        try:
+            x_positions = self._scan_dimensions.get('x_positions', [])
+            y_positions = self._scan_dimensions.get('y_positions', [])
+            dim_x = self._scan_dimensions.get('dim_x', len(x_positions))
+            dim_y = self._scan_dimensions.get('dim_y', len(y_positions))
+            
+            if not x_positions or not y_positions:
+                return img_x, img_y
+            
+            # Map image coordinates to scan coordinates
+            x_min = min(x_positions)
+            x_max = max(x_positions)
+            y_min = min(y_positions)
+            y_max = max(y_positions)
+            
+            # Normalize image coordinates to [0, 1]
+            x_norm = img_x / (dim_x - 1) if dim_x > 1 else 0
+            y_norm = img_y / (dim_y - 1) if dim_y > 1 else 0
+            
+            # Map to scan coordinate range
+            scan_x = x_min + x_norm * (x_max - x_min)
+            scan_y = y_min + y_norm * (y_max - y_min)
+            
+            return scan_x, scan_y
+            
+        except Exception as e:
+            print(f"[DetectorImagePanel] Error converting coordinates: {e}")
+            return img_x, img_y
+    
+    def enable_tooltips(self, enabled: bool) -> None:
+        """Enable or disable click tooltips."""
+        self._tooltip_enabled = enabled
+    
+    def register_decoder_plugin(self, plugin_name: str, plugin) -> None:
+        """Register a decoder plugin to provide decoded values for tooltips.
+        
+        Args:
+            plugin_name: Name of the decoder plugin
+            plugin: The plugin instance with get_decoded_value_at_position method
+        """
+        self._decoded_plugins[plugin_name] = plugin
+        print(f"[DetectorImagePanel] Registered decoder plugin: {plugin_name}")
+    
+    def unregister_decoder_plugin(self, plugin_name: str) -> None:
+        """Unregister a decoder plugin."""
+        if plugin_name in self._decoded_plugins:
+            del self._decoded_plugins[plugin_name]
+            print(f"[DetectorImagePanel] Unregistered decoder plugin: {plugin_name}")
+    
+    def _on_detector_released(self) -> None:
+        """Handle mouse button release to hide tooltip."""
+        print("[DetectorImagePanel] Mouse button released - hiding tooltip")
+        self._mouse_button_pressed = False
+        self._current_tooltip_detector = None
+        self._current_tooltip_position = None
+        
+        self._hide_tooltip()
+    
+    def _hide_tooltip(self) -> None:
+        """Hide the tooltip if it's currently visible."""
+        # Hide Qt tooltip
+        QtWidgets.QToolTip.hideText()
+        
+        # Hide persistent tooltip label if exists
+        if self._tooltip_label is not None:
+            self._tooltip_label.hide()
+            self._tooltip_label = None
+    
+    def _update_tooltip_position(self, scene_pos) -> None:
+        """Update tooltip position while mouse button is held."""
+        if not self._mouse_button_pressed or self._current_tooltip_detector is None:
+            return
+        
+        try:
+            # Get the detector and image view
+            detector_id = self._current_tooltip_detector
+            if detector_id not in self._detector_views:
+                return
+            
+            img_view = self._detector_views[detector_id]
+            
+            # Update the persistent tooltip label position
+            if self._tooltip_label is not None:
+                global_pos = img_view.mapToGlobal(scene_pos.toPoint())
+                self._tooltip_label.move(global_pos.x(), global_pos.y())
+            
+        except Exception as e:
+            print(f"[DetectorImagePanel] Error updating tooltip position: {e}")
 
     # -----------------
     # public helpers
@@ -271,6 +802,57 @@ class DetectorImagePanel(QtWidgets.QWidget):
             )
         except Exception:
             pass
+        
+        # Also enable context menu on the container widget
+        try:
+            container.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            container.customContextMenuRequested.connect(
+                lambda pos, did=detector_id, iv=img_view: self._show_detector_context_menu(did, iv, pos)
+            )
+        except Exception:
+            pass
+        
+        # Add click handler for tooltips using multiple approaches
+        print(f"[DetectorImagePanel] Setting up click handlers for {detector_id}")
+        
+        # Method 1: Scene click signal with proper position extraction
+        try:
+            def on_scene_clicked(pos, did=detector_id, iv=img_view):
+                print(f"[DetectorImagePanel] Scene clicked, pos type: {type(pos)}")
+                # Extract scene position from MouseClickEvent
+                if hasattr(pos, 'scenePos'):
+                    scene_pos = pos.scenePos()
+                else:
+                    scene_pos = pos
+                self._on_detector_clicked(did, iv, scene_pos)
+            
+            img_view.scene().sigMouseClicked.connect(on_scene_clicked)
+            print(f"[DetectorImagePanel] ✓ Connected scene.sigMouseClicked for {detector_id}")
+        except Exception as e:
+            print(f"[DetectorImagePanel] ✗ Failed scene.sigMouseClicked: {e}")
+        
+        # Method 2: View scene click signal with proper position extraction
+        try:
+            def on_view_clicked(pos, did=detector_id, iv=img_view):
+                print(f"[DetectorImagePanel] View clicked, pos type: {type(pos)}")
+                # Extract scene position from MouseClickEvent
+                if hasattr(pos, 'scenePos'):
+                    scene_pos = pos.scenePos()
+                else:
+                    scene_pos = pos
+                self._on_detector_clicked(did, iv, scene_pos)
+            
+            img_view.getView().scene().sigMouseClicked.connect(on_view_clicked)
+            print(f"[DetectorImagePanel] ✓ Connected view.scene.sigMouseClicked for {detector_id}")
+        except Exception as e:
+            print(f"[DetectorImagePanel] ✗ Failed view.scene.sigMouseClicked: {e}")
+        
+        # Method 3: Install event filter on the ImageView
+        try:
+            img_view.installEventFilter(DetectorClickFilter(detector_id, img_view, self))
+            print(f"[DetectorImagePanel] ✓ Installed event filter for {detector_id}")
+        except Exception as e:
+            print(f"[DetectorImagePanel] ✗ Failed event filter: {e}")
 
         # Load per-detector preferred colormap if present; otherwise use default.
         desired = self._default_gradient

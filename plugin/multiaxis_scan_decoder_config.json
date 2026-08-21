@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "channel1_name": "detector1",
+  "channel2_name": "detector2", 
+  "decoder_factor": 1.0,
+  "display_window_title": "Multi-Axis Scan Decoder Data",
+  "auto_show_display": true,
+  "colormap": "viridis"
+}

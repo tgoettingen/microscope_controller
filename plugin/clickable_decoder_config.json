@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "decoder_formula": "mean",
+  "custom_formula": "A + B",
+  "channel_names": [],
+  "decoder_factor": 1.0,
+  "display_window_title": "Clickable Decoder Display",
+  "auto_show_display": true,
+  "colormap": "plasma",
+  "tooltip_channels": "all"
+}

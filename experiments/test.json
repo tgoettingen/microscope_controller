@@ -6,7 +6,7 @@
     "z_start": 90.0,
     "z_end": 110.0,
     "z_step": 10.0,
-    "output_dir": "C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
+    "output_dir": "/Users/haisenta/_private/source/microscope_controller/microscope_controller/C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
     "det_scale": 1.0,
     "det_offset": 0.0
   },
@@ -15,12 +15,30 @@
       {
         "axis_type": "X",
         "params": {
-          "start": 0.0,
+          "start": 100.0,
           "end": 1000.0,
           "step": 100.0,
-          "wait": 0.05,
+          "wait": 0.0,
           "motors": [],
           "motor_mode": "sequential",
+          "motor_modes": {},
+          "sync_timeout": 5.0,
+          "sync_poll": 0.01,
+          "sync_tol": 0.001,
+          "pre_pos": 100.0,
+          "post_pos": 100.0
+        }
+      },
+      {
+        "axis_type": "Y",
+        "params": {
+          "start": 0.0,
+          "end": 1000.0,
+          "step": 200.0,
+          "wait": 0.0,
+          "motors": [],
+          "motor_mode": "sequential",
+          "motor_modes": {},
           "sync_timeout": 5.0,
           "sync_poll": 0.01,
           "sync_tol": 0.001,
@@ -29,29 +47,31 @@
         }
       },
       {
-        "axis_type": "Y",
+        "axis_type": "Detector",
         "params": {
-          "start": 0.0,
-          "end": 1000.0,
-          "step": 100.0,
-          "wait": 0.05,
-          "motors": [],
-          "motor_mode": "sequential",
-          "sync_timeout": 5.0,
-          "sync_poll": 0.01,
-          "sync_tol": 0.001,
-          "pre_pos": null,
-          "post_pos": null
+          "wait": 0.0,
+          "detector": "detector1"
+        }
+      },
+      {
+        "axis_type": "Detector",
+        "params": {
+          "wait": 0.0,
+          "detector": "detector2"
         }
       }
     ],
-    "detectors": [
-      "vm2"
-    ]
+    "detectors": []
   },
-  "output_dir": "C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
+  "output_dir": "/Users/haisenta/_private/source/microscope_controller/microscope_controller/C:\\Users\\TaH30021\\Documents\\source\\ht\\mscontrol\\microscope_controller\\data",
   "devices": {
     "detector_scale": 1.0,
     "detector_offset": 0.0
+  },
+  "plugins": {
+    "configs": {},
+    "enabled": [
+      "multiaxis_scan_decoder"
+    ]
   }
 }
