@@ -1,3 +1,10 @@
+"""
+Minimal Detector Control Panel - Provides detector control widgets in a compact layout.
+
+This is a simplified version that only provides the control layout,
+relying on DetectorImagePanel for advanced features like tooltips and overlays.
+"""
+
 from PyQt6 import QtWidgets, QtCore, QtGui
 
 
@@ -7,7 +14,7 @@ class DetectorControlPanel(QtWidgets.QWidget):
         super().__init__(parent)
         # Keep this panel compact even when placed in a tall dock.
         # The content can scroll instead of forcing the dock to grow.
-        self._max_panel_height = 200  # Reduced from 320 to 200 for more compact layout
+        self._max_panel_height = 200
         self.group = QtWidgets.QGroupBox("Detectors")
         self.group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 11px; }")
         # Foldable/collapsible panel
@@ -20,9 +27,9 @@ class DetectorControlPanel(QtWidgets.QWidget):
         # Put controls inside an inner widget so we can hide/show them
         self._content = QtWidgets.QWidget()
         self.vlayout = QtWidgets.QVBoxLayout(self._content)
-        self.vlayout.setContentsMargins(2, 2, 2, 2)  # Reduced margins
+        self.vlayout.setContentsMargins(2, 2, 2, 2)
         try:
-            self.vlayout.setSpacing(1)  # Reduced spacing
+            self.vlayout.setSpacing(1)
         except Exception:
             pass
 
@@ -36,7 +43,7 @@ class DetectorControlPanel(QtWidgets.QWidget):
         self._scroll.setWidget(self._content)
 
         g_layout = QtWidgets.QVBoxLayout(self.group)
-        g_layout.setContentsMargins(4, 8, 4, 4)  # Reduced margins
+        g_layout.setContentsMargins(4, 8, 4, 4)
         g_layout.setSpacing(2)
         g_layout.addWidget(self._scroll)
 

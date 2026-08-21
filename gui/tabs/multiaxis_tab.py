@@ -26,10 +26,6 @@ class MultiAxisTab(QtWidgets.QWidget):
         super().__init__(parent)
         self._config_path = config_path
         self._detector_select_cbs: dict[str, QtWidgets.QCheckBox] = {}
-        self._detector_offset_cbs: dict[str, QtWidgets.QCheckBox] = {}
-        self._detector_offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        self._detector_offset_labels: dict[str, QtWidgets.QLabel] = {}
-        self._detector_offset_values: dict[str, float] = {}
         self._build_ui()
 
     def _build_ui(self):
@@ -132,20 +128,11 @@ class MultiAxisTab(QtWidgets.QWidget):
             previously_checked = set(self.get_selected_detectors())
         except Exception:
             previously_checked = set()
-        previous_offsets = dict(self._detector_offset_values)
-        previous_offset_enabled = {
-            det_id: bool(cb.isChecked())
-            for det_id, cb in self._detector_offset_cbs.items()
-        }
 
         try:
             self.detector_list.blockSignals(True)
             self.detector_list.clear()
             self._detector_select_cbs.clear()
-            self._detector_offset_cbs.clear()
-            self._detector_offset_spins.clear()
-            self._detector_offset_labels.clear()
-            self._detector_offset_values.clear()
             for d in detectors:
                 item = QtWidgets.QListWidgetItem()
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
@@ -161,40 +148,13 @@ class MultiAxisTab(QtWidgets.QWidget):
                 # "no selection means all" behaviour). Preserve an explicit
                 # prior selection otherwise.
                 sel_cb.setChecked(d in previously_checked if previously_checked else True)
-                offset_cb = QtWidgets.QCheckBox("Off")
-                offset_cb.setStyleSheet("font-size: 9px;")  # Smaller font, shorter text
-                offset_cb.setChecked(bool(previous_offset_enabled.get(d, False)))
-                offset_label = QtWidgets.QLabel("=")
-                offset_label.setStyleSheet("font-size: 9px;")
-                offset_value_label = QtWidgets.QLabel("0")
-                offset_value_label.setMinimumWidth(35)  # Reduced width
-                offset_value_label.setStyleSheet("font-size: 9px; font-family: monospace;")
-                offset_spin = QtWidgets.QDoubleSpinBox()
-                offset_spin.setDecimals(6)
-                offset_spin.setRange(-1e12, 1e12)
-                offset_spin.setSingleStep(0.1)
-                offset_spin.setMaximumWidth(70)  # Reduced width
-                offset_spin.setStyleSheet("font-size: 9px;")
-                offset_val = float(previous_offsets.get(d, 0.0))
-                offset_spin.setValue(offset_val)
-                offset_value_label.setText(f"{offset_val:.4g}")
 
                 row_layout.addWidget(sel_cb)
-                row_layout.addWidget(offset_cb)
-                row_layout.addWidget(offset_label)
-                row_layout.addWidget(offset_value_label)
-                row_layout.addWidget(offset_spin)
                 row_layout.addStretch(1)
 
                 self._detector_select_cbs[d] = sel_cb
-                self._detector_offset_cbs[d] = offset_cb
-                self._detector_offset_spins[d] = offset_spin
-                self._detector_offset_labels[d] = offset_value_label
-                self._detector_offset_values[d] = offset_val
 
                 sel_cb.toggled.connect(lambda _chk, _d=d: self._emit_detectors_changed())
-                offset_cb.toggled.connect(lambda chk, _d=d: self.detector_offset_toggled.emit(_d, bool(chk)))
-                offset_spin.valueChanged.connect(lambda v, _d=d: self._on_offset_spin_changed(_d, float(v)))
 
                 item.setSizeHint(row.sizeHint())
                 self.detector_list.addItem(item)
@@ -253,51 +213,12 @@ class MultiAxisTab(QtWidgets.QWidget):
             pass
 
     def _on_offset_spin_changed(self, detector_id: str, value: float) -> None:
-        try:
-            self._detector_offset_values[detector_id] = float(value)
-        except Exception:
-            self._detector_offset_values[detector_id] = 0.0
-        try:
-            lbl = self._detector_offset_labels.get(detector_id)
-            if lbl is not None:
-                lbl.setText(f"{float(self._detector_offset_values.get(detector_id, 0.0)):.4g}")
-        except Exception:
-            pass
-        try:
-            self.detector_offset_value_changed.emit(detector_id, float(self._detector_offset_values.get(detector_id, 0.0)))
-        except Exception:
-            pass
+        """Does nothing - detector offset is handled by LiveTab's detector control panel."""
+        pass
 
     def set_detector_offset_state(self, detector_id: str, enabled: bool | None = None, value: float | None = None) -> None:
-        """Update detector offset controls without emitting user signals."""
-        if value is not None:
-            try:
-                self._detector_offset_values[detector_id] = float(value)
-            except Exception:
-                self._detector_offset_values[detector_id] = 0.0
-            try:
-                spin = self._detector_offset_spins.get(detector_id)
-                if spin is not None:
-                    spin.blockSignals(True)
-                    spin.setValue(float(self._detector_offset_values.get(detector_id, 0.0)))
-                    spin.blockSignals(False)
-            except Exception:
-                pass
-            try:
-                lbl = self._detector_offset_labels.get(detector_id)
-                if lbl is not None:
-                    lbl.setText(f"{float(self._detector_offset_values.get(detector_id, 0.0)):.4g}")
-            except Exception:
-                pass
-        if enabled is not None:
-            try:
-                cb = self._detector_offset_cbs.get(detector_id)
-                if cb is not None:
-                    cb.blockSignals(True)
-                    cb.setChecked(bool(enabled))
-                    cb.blockSignals(False)
-            except Exception:
-                pass
+        """Does nothing - detector offset is handled by LiveTab's detector control panel."""
+        pass
 
     def _add_axis_dialog(self):
         # List each detector individually (e.g. vm2, vm3) so the user can add a

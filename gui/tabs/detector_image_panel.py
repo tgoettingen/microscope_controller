@@ -303,7 +303,12 @@ class DetectorImagePanel(QtWidgets.QWidget):
                     arr = np.asarray(image)
                     finite = arr[np.isfinite(arr)]
                     if finite.size > 0:
-                        item.setLevels(float(np.min(finite)), float(np.max(finite)))
+                        data_min = float(np.min(finite))
+                        data_max = float(np.max(finite))
+                        if data_min == data_max:
+                            data_min = data_min - 0.5
+                            data_max = data_max + 0.5
+                        item.setLevels([data_min, data_max])
                         return
             if hasattr(img_view, "autoLevels"):
                 img_view.autoLevels()

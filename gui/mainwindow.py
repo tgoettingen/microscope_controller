@@ -1559,22 +1559,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stage_calibration_dock = None
             logger.warning("Stage Calibration dock could not be created - StageCalibrationTab import failed")
       
-      # Create Plugin Panel dock
-      try:
-         self.plugin_tab = PluginPanel(self)
-         self.plugin_tab.set_parent_window(self)
-         self.plugin_dock = QtWidgets.QDockWidget("Plugins", self)
-         self.plugin_dock.setWidget(self.plugin_tab)
-         self.plugin_dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea | QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
-         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.plugin_dock)
-         self.plugin_dock.setVisible(False)  # Hidden by default
-         logger.info("Plugin dock created successfully")
-      except Exception as e:
-         self.plugin_tab = None
-         self.plugin_dock = None
-         logger.warning("Plugin dock could not be created: %s", e)
-
-         # connect view change signals so docks can be shown/hidden as view changes
+         # Create Plugin Panel dock
+         try:
+            self.plugin_tab = PluginPanel(self)
+            self.plugin_tab.set_parent_window(self)
+            self.plugin_dock = QtWidgets.QDockWidget("Plugins", self)
+            self.plugin_dock.setWidget(self.plugin_tab)
+            self.plugin_dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea | QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.plugin_dock)
+            self.plugin_dock.setVisible(False)  # Hidden by default
+            # Connect dock close event to update View menu
+            self.plugin_dock.closeEvent = lambda e: self._cleanup_plugin_dock(e)
+            logger.info("Plugin dock created successfully")
+         except Exception as e:
+            self.plugin_tab = None
+            self.plugin_dock = None
+            logger.warning("Plugin dock could not be created: %s", e)
+      
+      # connect view change signals so docks can be shown/hidden as view changes
          try:
             self.live_tab.view_changed.connect(self._on_live_view_changed)
          except Exception:
@@ -3413,6 +3415,16 @@ class MainWindow(QtWidgets.QMainWindow):
          event.accept()
       except Exception:
          event.accept()
+   
+   def _cleanup_plugin_dock(self, event):
+      """Clean up plugin dock when closed."""
+      try:
+         # Update View menu checkbox
+         if hasattr(self, '_view_dock_actions') and 'plugin' in self._view_dock_actions:
+            self._view_dock_actions['plugin'].setChecked(False)
+         event.accept()
+      except Exception:
+         event.accept()
 
    def _toggle_excitation_control_dock(self, checked: bool):
       """Toggle Excitation Control dock visibility and ensure devices are ready."""
@@ -3432,6 +3444,16 @@ class MainWindow(QtWidgets.QMainWindow):
          if self.excitation is None:
             logger.warning("No excitation devices available for excitation control panel")
             QtWidgets.QMessageBox.warning(self, "No Excitation Devices", "No excitation device available.")
+         
+         # Update the tab with devices
+         if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
+            self.excitation_control_tab.set_excitation_devices(self.excitation)
+         
+         self.excitation_control_dock.setVisible(True)
+         self.excitation_control_dock.raise_()
+      else:
+         self.excitation_control_dock.setVisible(False)
+      return True
    
    def _toggle_plugin_dock(self, checked: bool):
       """Toggle Plugin dock visibility."""
@@ -3445,16 +3467,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # Update view menu action
       if hasattr(self, '_view_dock_actions') and 'plugin' in self._view_dock_actions:
          self._view_dock_actions['plugin'].setChecked(checked)
-            return False
-         
-         # Update the tab with devices
-         if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
-            self.excitation_control_tab.set_excitation_devices(self.excitation)
-         
-         self.excitation_control_dock.setVisible(True)
-         self.excitation_control_dock.raise_()
-      else:
-         self.excitation_control_dock.setVisible(False)
+      
       return True
 
    def _toggle_stage_calibration_dock(self, checked: bool):

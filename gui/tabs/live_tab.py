@@ -335,16 +335,6 @@ class LiveTab(QtWidgets.QWidget):
         self.detector_controls_layout = self.detector_control_panel.vlayout
         layout.addWidget(self.detector_control_panel, 0)
 
-        # Put overlay options into the Detectors panel (so they are available
-        # even when the Detector Images dock is hidden).
-        try:
-            controls = getattr(self.detector_image_panel, "controls_widget", None)
-            if controls is not None:
-                controls.setParent(None)
-                self.detector_controls_layout.insertWidget(0, controls)
-        except Exception:
-            pass
-
         # Controls: moving-window size
         ctl_layout = QtWidgets.QHBoxLayout()
         ctl_layout.addWidget(QtWidgets.QLabel("Window size:"))
@@ -1713,15 +1703,9 @@ class LiveTab(QtWidgets.QWidget):
 
         # Create a small control row: label (colored), visibility checkbox, stream checkbox
         row = QtWidgets.QWidget()
-        row_layout = QtWidgets.QVBoxLayout(row)
+        row_layout = QtWidgets.QHBoxLayout(row)
         row_layout.setContentsMargins(1, 1, 1, 1)  # Reduced margins
-        row_layout.setSpacing(1)
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(3)  # Reduced spacing
-        bottom_row = QtWidgets.QHBoxLayout()
-        bottom_row.setContentsMargins(0, 0, 0, 0)
-        bottom_row.setSpacing(3)  # Reduced spacing
+        row_layout.setSpacing(3)  # Reduced spacing
         lbl = QtWidgets.QLabel(detector_id)
         r, g, b = color
         lbl.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold; font-size: 10px;")
@@ -1746,17 +1730,16 @@ class LiveTab(QtWidgets.QWidget):
         offset_spin.setValue(0.0)
         offset_spin.setMaximumWidth(70)  # Reduced width
         offset_spin.setStyleSheet("font-size: 9px;")
-        top_row.addWidget(lbl)
-        top_row.addWidget(vis_cb)
-        top_row.addWidget(stream_cb)
-        top_row.addStretch(1)
-        bottom_row.addWidget(offset_cb)
-        bottom_row.addWidget(offset_lbl)
-        bottom_row.addWidget(offset_val_lbl)
-        bottom_row.addWidget(offset_spin)
-        bottom_row.addStretch(1)
-        row_layout.addLayout(top_row)
-        row_layout.addLayout(bottom_row)
+        
+        # Single row layout for compactness
+        row_layout.addWidget(lbl)
+        row_layout.addWidget(vis_cb)
+        row_layout.addWidget(stream_cb)
+        row_layout.addWidget(offset_cb)
+        row_layout.addWidget(offset_lbl)
+        row_layout.addWidget(offset_val_lbl)
+        row_layout.addWidget(offset_spin)
+        row_layout.addStretch(1)
         self.detector_controls_layout.addWidget(row)
         self._detector_labels[detector_id] = lbl
         
@@ -4051,7 +4034,7 @@ class LiveTab(QtWidgets.QWidget):
                     except Exception:
                         pass
                     if self._levels[0] is not None and self._levels[1] is not None:
-                        img_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                        img_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
                 except Exception:
                     pass
 
@@ -4081,7 +4064,7 @@ class LiveTab(QtWidgets.QWidget):
                     except Exception:
                         pass
                     if self._levels[0] is not None and self._levels[1] is not None:
-                        img_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+                        img_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
                 except Exception:
                     pass
 
@@ -4211,7 +4194,7 @@ class LiveTab(QtWidgets.QWidget):
             mn, mx = self._levels
         self._levels = (mn, mx * 1.1 if mx is not None else None)
         try:
-            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+            self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
         except Exception:
             pass
 
@@ -4226,7 +4209,7 @@ class LiveTab(QtWidgets.QWidget):
             mn, mx = self._levels
         self._levels = (mn, mx * 0.9 if mx is not None else None)
         try:
-            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+            self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
         except Exception:
             pass
 
@@ -4241,14 +4224,27 @@ class LiveTab(QtWidgets.QWidget):
             mn, mx = self._levels
         self._levels = (mn * 1.1 if mn is not None else None, mx)
         try:
-            self.image_view.getImageItem().setLevels(self._levels[0], self._levels[1])
+            self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
         except Exception:
             pass
 
     def reset_levels(self):
         self._levels = (None, None)
         try:
-            self.image_view.setLevels(autoLevels=True)
+            # Auto-range the levels
+            image_item = self.image_view.getImageItem()
+            if image_item is not None and image_item.image is not None:
+                image = image_item.image
+                if not isinstance(image, np.ndarray):
+                    image = np.asarray(image)
+                finite = image[np.isfinite(image)]
+                if len(finite) > 0:
+                    data_min = float(np.min(finite))
+                    data_max = float(np.max(finite))
+                    if data_min == data_max:
+                        data_min = data_min - 0.5
+                        data_max = data_max + 0.5
+                    image_item.setLevels(data_min, data_max)
         except Exception:
             try:
                 self.image_view.getImageItem().setLevels(None, None)

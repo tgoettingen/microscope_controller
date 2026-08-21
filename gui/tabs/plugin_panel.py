@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QToolTip
 from typing import Dict, Any, List, Optional
 import json
 from pathlib import Path
@@ -35,54 +36,43 @@ class PluginPanel(QtWidgets.QWidget):
     def _setup_ui(self):
         """Setup the plugin panel UI."""
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
         
         # Title
-        title = QtWidgets.QLabel("Plugin Manager")
-        title.setStyleSheet("font-weight: bold; font-size: 11pt;")
+        title = QtWidgets.QLabel("Plugins")
+        title.setStyleSheet("font-weight: bold; font-size: 10pt;")
         layout.addWidget(title)
         
-        # Plugin list
+        # Use QToolBox for collapsible sections
+        self.tool_box = QtWidgets.QToolBox()
+        self.tool_box.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.tool_box)
+        
+        # --- Plugin List Section ---
+        self.plugin_list_widget = QtWidgets.QWidget()
+        plugin_list_layout = QtWidgets.QVBoxLayout(self.plugin_list_widget)
+        plugin_list_layout.setContentsMargins(2, 2, 2, 2)
+        plugin_list_layout.setSpacing(2)
+        
         self.plugin_list = QtWidgets.QListWidget()
+        self.plugin_list.setMaximumHeight(200)  # Limit height to save space
         self.plugin_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.plugin_list.itemClicked.connect(self._on_plugin_selected)
         self.plugin_list.itemChanged.connect(self._on_plugin_toggled)
-        layout.addWidget(self.plugin_list)
+        self.plugin_list.itemEntered.connect(self._on_plugin_hover)  # Show tooltip on hover
+        plugin_list_layout.addWidget(self.plugin_list)
         
-        # Plugin details area
-        details_group = QtWidgets.QGroupBox("Plugin Details")
-        details_layout = QtWidgets.QVBoxLayout(details_group)
+        self.tool_box.addItem(self.plugin_list_widget, "Plugin List")
         
-        # Plugin name
-        self.plugin_name_label = QtWidgets.QLabel("Name: -")
-        details_layout.addWidget(self.plugin_name_label)
-        
-        # Plugin description
-        self.plugin_desc_label = QtWidgets.QLabel("Description: -")
-        self.plugin_desc_label.setWordWrap(True)
-        details_layout.addWidget(self.plugin_desc_label)
-        
-        # Plugin version
-        self.plugin_version_label = QtWidgets.QLabel("Version: -")
-        details_layout.addWidget(self.plugin_version_label)
-        
-        # Plugin author
-        self.plugin_author_label = QtWidgets.QLabel("Author: -")
-        details_layout.addWidget(self.plugin_author_label)
-        
-        # Plugin status
-        self.plugin_status_label = QtWidgets.QLabel("Status: -")
-        details_layout.addWidget(self.plugin_status_label)
-        
-        layout.addWidget(details_group)
-        
-        # Configuration area
-        config_group = QtWidgets.QGroupBox("Configuration")
-        config_layout = QtWidgets.QVBoxLayout(config_group)
+        # --- Configuration Section ---
+        self.config_widget = QtWidgets.QWidget()
+        config_layout = QtWidgets.QVBoxLayout(self.config_widget)
+        config_layout.setContentsMargins(2, 2, 2, 2)
+        config_layout.setSpacing(2)
         
         self.config_text = QtWidgets.QTextEdit()
-        self.config_text.setMaximumHeight(150)
+        self.config_text.setMaximumHeight(100)  # Reduced height
         self.config_text.setPlaceholderText("Plugin configuration (JSON format)")
         config_layout.addWidget(self.config_text)
         
@@ -90,47 +80,59 @@ class PluginPanel(QtWidgets.QWidget):
         config_buttons = QtWidgets.QWidget()
         config_btn_layout = QtWidgets.QHBoxLayout(config_buttons)
         config_btn_layout.setContentsMargins(0, 0, 0, 0)
+        config_btn_layout.setSpacing(2)
         
-        self.load_config_btn = QtWidgets.QPushButton("Load Config")
+        self.load_config_btn = QtWidgets.QPushButton("Load")
+        self.load_config_btn.setMaximumWidth(60)
         self.load_config_btn.clicked.connect(self._load_plugin_config)
         config_btn_layout.addWidget(self.load_config_btn)
         
-        self.save_config_btn = QtWidgets.QPushButton("Save Config")
+        self.save_config_btn = QtWidgets.QPushButton("Save")
+        self.save_config_btn.setMaximumWidth(60)
         self.save_config_btn.clicked.connect(self._save_plugin_config)
         config_btn_layout.addWidget(self.save_config_btn)
         
         config_layout.addWidget(config_buttons)
-        layout.addWidget(config_group)
+        self.tool_box.addItem(self.config_widget, "Config")
         
-        # Action buttons
+        # --- Actions Section ---
+        self.actions_widget = QtWidgets.QWidget()
+        actions_layout = QtWidgets.QVBoxLayout(self.actions_widget)
+        actions_layout.setContentsMargins(2, 2, 2, 2)
+        actions_layout.setSpacing(2)
+        
         action_buttons = QtWidgets.QWidget()
-        action_layout = QtWidgets.QHBoxLayout(action_buttons)
-        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_btn_layout = QtWidgets.QHBoxLayout(action_buttons)
+        action_btn_layout.setContentsMargins(0, 0, 0, 0)
+        action_btn_layout.setSpacing(2)
         
-        self.run_plugin_btn = QtWidgets.QPushButton("Run on Current Data")
+        self.run_plugin_btn = QtWidgets.QPushButton("Run")
         self.run_plugin_btn.clicked.connect(self._run_plugin_on_current_data)
         self.run_plugin_btn.setEnabled(False)
-        action_layout.addWidget(self.run_plugin_btn)
+        action_btn_layout.addWidget(self.run_plugin_btn)
         
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self._refresh_plugins)
-        action_layout.addWidget(self.refresh_btn)
+        action_btn_layout.addWidget(self.refresh_btn)
         
-        layout.addWidget(action_buttons)
+        actions_layout.addWidget(action_buttons)
+        self.tool_box.addItem(self.actions_widget, "Actions")
         
-        # Results area
-        results_group = QtWidgets.QGroupBox("Results")
-        results_layout = QtWidgets.QVBoxLayout(results_group)
+        # --- Results Section ---
+        self.results_widget = QtWidgets.QWidget()
+        results_layout = QtWidgets.QVBoxLayout(self.results_widget)
+        results_layout.setContentsMargins(2, 2, 2, 2)
         
         self.results_text = QtWidgets.QTextEdit()
-        self.results_text.setMaximumHeight(100)
+        self.results_text.setMaximumHeight(60)  # Reduced height
         self.results_text.setReadOnly(True)
-        self.results_text.setPlaceholderText("Plugin execution results will appear here")
+        self.results_text.setPlaceholderText("Results")
         results_layout.addWidget(self.results_text)
         
-        layout.addWidget(results_group)
+        self.tool_box.addItem(self.results_widget, "Results")
         
-        layout.addStretch()
+        # Set initial sizes - collapse all except Plugin List
+        self.tool_box.setCurrentIndex(0)  # Start with Plugin List expanded
     
     def _load_plugin_manager(self):
         """Load the plugin manager."""
@@ -208,17 +210,24 @@ class PluginPanel(QtWidgets.QWidget):
         if plugin is None:
             return
         
-        # Update details
-        self.plugin_name_label.setText(f"Name: {plugin.get_name()}")
-        self.plugin_desc_label.setText(f"Description: {plugin.get_description()}")
-        self.plugin_version_label.setText(f"Version: {plugin.get_version()}")
-        self.plugin_author_label.setText(f"Author: {getattr(plugin, 'author', 'Unknown')}")
+        # Show tooltip on selection as well
+        try:
+            status = "Enabled" if item.checkState() == Qt.CheckState.Checked else "Disabled"
+            tooltip_text = f"<b>{plugin.get_name()}</b><br>"
+            tooltip_text += f"<b>Version:</b> {plugin.get_version()}<br>"
+            tooltip_text += f"<b>Author:</b> {getattr(plugin, 'author', 'Unknown')}<br>"
+            tooltip_text += f"<b>Status:</b> {status}<br>"
+            tooltip_text += f"<b>Description:</b> {plugin.get_description()}"
+            
+            QtWidgets.QToolTip.showText(
+                self.plugin_list.mapToGlobal(self.plugin_list.visualItemRect(item).bottomLeft()),
+                tooltip_text,
+                self.plugin_list
+            )
+        except Exception as e:
+            print(f"[PluginPanel] Error showing tooltip: {e}")
         
-        # Update status
-        status = "Enabled" if item.checkState() == Qt.CheckState.Checked else "Disabled"
-        self.plugin_status_label.setText(f"Status: {status}")
-        
-        # Load config into text area
+        # Load config into text area (details removed, use tooltips instead)
         if plugin_name in self.plugin_configs:
             config_json = json.dumps(self.plugin_configs[plugin_name], indent=2)
             self.config_text.setPlainText(config_json)
@@ -227,6 +236,28 @@ class PluginPanel(QtWidgets.QWidget):
         
         # Enable run button if plugin has manual execution
         self.run_plugin_btn.setEnabled(hasattr(plugin, 'manual_execute_with_data'))
+    
+    def _on_plugin_hover(self, item):
+        """Show plugin details as tooltip when hovering over plugin item."""
+        plugin = item.data(Qt.ItemDataRole.UserRole)
+        if plugin is None:
+            return
+        
+        try:
+            status = "Enabled" if item.checkState() == Qt.CheckState.Checked else "Disabled"
+            tooltip_text = f"<b>{plugin.get_name()}</b><br>"
+            tooltip_text += f"<b>Version:</b> {plugin.get_version()}<br>"
+            tooltip_text += f"<b>Author:</b> {getattr(plugin, 'author', 'Unknown')}<br>"
+            tooltip_text += f"<b>Status:</b> {status}<br>"
+            tooltip_text += f"<b>Description:</b> {plugin.get_description()}"
+            
+            QtWidgets.QToolTip.showText(
+                self.plugin_list.mapToGlobal(self.plugin_list.visualItemRect(item).bottomLeft()),
+                tooltip_text,
+                self.plugin_list
+            )
+        except Exception as e:
+            print(f"[PluginPanel] Error showing tooltip: {e}")
     
     def _on_plugin_toggled(self, item):
         """Handle plugin enable/disable toggle."""
@@ -240,9 +271,7 @@ class PluginPanel(QtWidgets.QWidget):
         if hasattr(plugin, 'enabled'):
             plugin.enabled = is_enabled
         
-        # Update status label
-        status = "Enabled" if is_enabled else "Disabled"
-        self.plugin_status_label.setText(f"Status: {status}")
+        print(f"[PluginPanel] Plugin {item.text()} {'enabled' if is_enabled else 'disabled'}")
         
         print(f"[PluginPanel] Plugin {item.text()} {'enabled' if is_enabled else 'disabled'}")
     

@@ -644,6 +644,15 @@ class MultiAxisScanDecoderPlugin(DecoderPlugin):
             data_min = np.nanmin(self._decoded_data)
             data_max = np.nanmax(self._decoded_data)
             
+            # Ensure levels are valid numbers (not NaN or infinite)
+            if not np.isfinite(data_min) or not np.isfinite(data_max):
+                data_min = 0.0
+                data_max = 1.0
+            elif data_min == data_max:
+                # Avoid zero range
+                data_min = data_min - 0.5
+                data_max = data_max + 0.5
+            
             # Set the image with proper coordinate mapping
             # We'll use array indices for display and map to actual positions in hover function
             height, width = self._decoded_data.shape
