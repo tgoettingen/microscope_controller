@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6 import QtWidgets, QtCore, QtGui
-from PyQt6.QtCore import pyqtSlot, pyqtSignal
+from PyQt6.QtCore import pyqtSlot, pyqtSignal, QTimer
 from devices.base import StageXY, FocusZ
 import json
 from pathlib import Path
@@ -361,6 +361,7 @@ class StageControlTab(QtWidgets.QWidget):
     position_changed = QtCore.pyqtSignal(float, float, float)  # x, y, z in real units
     _move_complete = QtCore.pyqtSignal(float, float)  # Signal when move operation completes with target position
     _move_error = QtCore.pyqtSignal(str)  # Signal for move errors
+    _focus_move_complete = QtCore.pyqtSignal(float)  # Signal when focus move completes with target position
     
     def __init__(self, stage: StageXY = None, focus: FocusZ = None, config_path: str = None, parent=None):
         super().__init__(parent)
@@ -379,9 +380,13 @@ class StageControlTab(QtWidgets.QWidget):
         # Initialize moving flag to prevent duplicate moves
         self._is_moving = False
         
+        # Initialize interaction flags to prevent UI interference
+        self._is_interacting_z = False
+        
         # Connect signals for thread communication
         self._move_complete.connect(self._on_move_complete)
         self._move_error.connect(self._on_move_error_slot)
+        self._focus_move_complete.connect(self._on_focus_move_complete)
         
     def _load_config(self):
         """Load stage and focus configuration for units and limits."""
@@ -1209,6 +1214,9 @@ class StageControlTab(QtWidgets.QWidget):
     
     def _on_z_spin_changed(self, value):
         """Handle Z spinbox change."""
+        # Mark as user interaction
+        self._is_interacting_z = True
+        
         # Get limits for normalization
         z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
         z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
@@ -1219,9 +1227,39 @@ class StageControlTab(QtWidgets.QWidget):
         self.z_slider.blockSignals(True)
         self.z_slider.setValue(z_norm)
         self.z_slider.blockSignals(False)
+        
+        # In live mode, move focus immediately
+        if self._is_live_mode and self.focus and hasattr(self.focus, 'move_to'):
+            try:
+                from devices.scaled import ScaledFocusZ
+                is_scaled = isinstance(self.focus, ScaledFocusZ)
+                
+                if is_scaled:
+                    # For ScaledFocus, pass logical coordinate directly
+                    z_target = value
+                else:
+                    # For raw focus, convert to steps
+                    z_target = self._real_units_to_steps(value, self.focus_config['scale'], self.focus_config['offset'])
+                
+                # Move focus in a separate thread
+                import threading
+                focus_thread = threading.Thread(
+                    target=self._move_focus_thread,
+                    args=(z_target, value),
+                    daemon=True
+                )
+                focus_thread.start()
+            except Exception as e:
+                print(f"Error moving focus in live mode: {e}")
+        
+        # Reset interaction flag after short delay
+        QTimer.singleShot(100, lambda: setattr(self, '_is_interacting_z', False))
     
     def _on_z_slider_changed(self, value):
         """Handle Z slider change."""
+        # Mark as user interaction
+        self._is_interacting_z = True
+        
         # Get limits for conversion
         z_min = self.focus_config['min'] if self.focus_config['min'] is not None else 0.0
         z_max = self.focus_config['max'] if self.focus_config['max'] is not None else 100.0
@@ -1235,6 +1273,33 @@ class StageControlTab(QtWidgets.QWidget):
         
         # Update inline position labels
         self._update_position_display()
+        
+        # In live mode, move focus immediately
+        if self._is_live_mode and self.focus and hasattr(self.focus, 'move_to'):
+            try:
+                from devices.scaled import ScaledFocusZ
+                is_scaled = isinstance(self.focus, ScaledFocusZ)
+                
+                if is_scaled:
+                    # For ScaledFocus, pass logical coordinate directly
+                    z_target = z_real
+                else:
+                    # For raw focus, convert to steps
+                    z_target = self._real_units_to_steps(z_real, self.focus_config['scale'], self.focus_config['offset'])
+                
+                # Move focus in a separate thread
+                import threading
+                focus_thread = threading.Thread(
+                    target=self._move_focus_thread,
+                    args=(z_target, z_real),
+                    daemon=True
+                )
+                focus_thread.start()
+            except Exception as e:
+                print(f"Error moving focus in live mode: {e}")
+        
+        # Reset interaction flag after short delay
+        QTimer.singleShot(100, lambda: setattr(self, '_is_interacting_z', False))
     
     def _update_sliders_from_spinboxes(self):
         """Update sliders from current spinbox values using normalized coordinates."""
@@ -1340,6 +1405,29 @@ class StageControlTab(QtWidgets.QWidget):
         """Handle move error signal."""
         QtWidgets.QMessageBox.warning(self, "Move Error", f"Failed to move: {error_msg}")
     
+    @pyqtSlot(float)
+    def _on_focus_move_complete(self, z_real):
+        """Handle focus move completion signal."""
+        try:
+            print(f"[DEBUG] Focus move completed to Z={z_real}")
+            # Refresh position to show actual focus position
+            self._refresh_position()
+        except Exception as e:
+            print(f"Error handling focus move complete: {e}")
+    
+    def _move_focus_thread(self, z_target, z_real):
+        """Thread function to move focus."""
+        try:
+            print(f"[DEBUG] _move_focus_thread: Moving focus to Z={z_target}")
+            self.focus.move_to(z_target)
+            print(f"[DEBUG] _move_focus_thread: Focus move completed")
+        except Exception as e:
+            print(f"Error in focus movement thread: {e}")
+        finally:
+            # Emit completion signal with target position
+            print(f"[DEBUG] _move_focus_thread: Emitting focus_move_complete with Z={z_real}")
+            self._focus_move_complete.emit(z_real)
+    
     @pyqtSlot()
     def _refresh_position(self):
         """Refresh the current position display in real units (manual refresh)."""
@@ -1368,7 +1456,9 @@ class StageControlTab(QtWidgets.QWidget):
             self.y_spin.blockSignals(False)
             self.z_spin.blockSignals(False)
             
-            self._update_sliders_from_spinboxes()
+            # Only update sliders in live mode if not being interacted with
+            if not self._is_live_mode:
+                self._update_sliders_from_spinboxes()
             
             # Update position block visualization
             if hasattr(self, 'position_block'):
