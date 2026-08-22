@@ -16,5 +16,8 @@
   "stage_y_max": null,
   "decoder_offset_factor": 0.5,
   "random_seed": null,
-  "debug_level": 2
+  "debug_level": 2,
+  "save_to_file": true,
+  "output_file": "random_measure_decoder_data.csv",
+  "output_directory": null
 }

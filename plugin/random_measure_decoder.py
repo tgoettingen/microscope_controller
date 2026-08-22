@@ -7,6 +7,7 @@ This plugin:
 3. Decodes a position (returns position at half distance from center)
 4. Moves to the decoded position
 5. Can repeat this operation N times (configurable, default 1)
+6. Saves measurement data, decoded positions, and stage readout to file
 """
 
 import numpy as np
@@ -17,6 +18,8 @@ import sys
 from pathlib import Path
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import csv
+import json
 
 # Import base plugin classes from the main plugins package
 try:
@@ -161,6 +164,9 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
             "decoder_offset_factor": 0.5,  # Factor for decoder position (0.5 = half distance)
             "random_seed": None,  # Random seed for reproducibility
             "debug_level": 2,  # Debug level: 0=none, 1=basic, 2=detailed, 3=verbose
+            "save_to_file": True,  # Enable saving measurement data to file
+            "output_file": "random_measure_decoder_data.csv",  # Output file name
+            "output_directory": None  # Output directory (None = experiment output directory)
         }
         
         # Internal state
@@ -172,6 +178,10 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         self._center_position = None
         self._center_x = None
         self._center_y = None
+        
+        # Position history for logging
+        self._position_history = []  # List of (cycle, random_pos, decoded_pos, stage_readout) tuples
+        self._output_file_path = None  # Path to output file
     
     def _debug(self, level: int, message: str):
         """Print debug message based on debug level.
@@ -323,6 +333,21 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                 "max": 3,
                 "default": 1,
                 "description": "Debug level: 0=none, 1=basic, 2=detailed, 3=verbose"
+            },
+            "save_to_file": {
+                "type": "bool",
+                "default": True,
+                "description": "Save measurement data and positions to CSV file"
+            },
+            "output_file": {
+                "type": "str",
+                "default": "random_measure_decoder_data.csv",
+                "description": "Output CSV file name"
+            },
+            "output_directory": {
+                "type": "str",
+                "default": None,
+                "description": "Output directory (None = experiment output directory)"
             }
         }
     
@@ -339,6 +364,11 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         self._current_repeat = 0
         self._current_phase = "idle"
         self._measurement_data = []
+        self._position_history = []
+        
+        # Initialize output file if enabled
+        if self.config.get("save_to_file", True):
+            self._initialize_output_file(experiment_config)
         
         # Calculate center positions from stage range if not manually set
         # X center
@@ -387,6 +417,132 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         self._debug(1, f"Experiment ended after {self._current_repeat} cycles")
         self._current_phase = "idle"
         self._measurement_data = []
+        
+        # Close output file if enabled
+        if self._output_file_path is not None:
+            self._close_output_file()
+    
+    def _initialize_output_file(self, experiment_config: Dict[str, Any]) -> None:
+        """Initialize the output CSV file for logging."""
+        try:
+            # Determine output directory
+            output_dir = self.config.get("output_directory")
+            if output_dir is None:
+                # Try to get from experiment config
+                output_dir = experiment_config.get("output_dir")
+            
+            if output_dir is None:
+                # Use current directory
+                output_dir = Path.cwd()
+            else:
+                output_dir = Path(output_dir)
+            
+            # Create directory if it doesn't exist
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Set output file path
+            output_file = self.config.get("output_file", "random_measure_decoder_data.csv")
+            self._output_file_path = output_dir / output_file
+            
+            # Write CSV header
+            with open(self._output_file_path, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([
+                    'cycle',
+                    'timestamp',
+                    'phase',
+                    'random_x',
+                    'random_y',
+                    'random_z',
+                    'decoded_x',
+                    'decoded_y',
+                    'stage_readout_x',
+                    'stage_readout_y',
+                    'stage_readout_z',
+                    'detector_id',
+                    'measurement_value',
+                    'measurement_timestamp'
+                ])
+            
+            self._debug(1, f"Initialized output file: {self._output_file_path}")
+            
+        except Exception as e:
+            self._debug(0, f"Error initializing output file: {e}")
+            self._output_file_path = None
+    
+    def _close_output_file(self) -> None:
+        """Close the output file."""
+        try:
+            if self._output_file_path is not None:
+                self._debug(1, f"Closing output file: {self._output_file_path}")
+                self._output_file_path = None
+        except Exception as e:
+            self._debug(0, f"Error closing output file: {e}")
+    
+    def _log_to_file(self, cycle: int, phase: str, random_pos: Dict, decoded_pos: Dict, 
+                     stage_readout: Dict, measurement_data: List = None) -> None:
+        """Log data to output CSV file."""
+        if not self.config.get("save_to_file", True) or self._output_file_path is None:
+            return
+        
+        try:
+            with open(self._output_file_path, 'a', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                timestamp = time.time()
+                
+                # Log position information
+                writer.writerow([
+                    cycle,
+                    timestamp,
+                    phase,
+                    random_pos.get('x', ''),
+                    random_pos.get('y', ''),
+                    random_pos.get('z', ''),
+                    decoded_pos.get('x', ''),
+                    decoded_pos.get('y', ''),
+                    stage_readout.get('x', ''),
+                    stage_readout.get('y', ''),
+                    stage_readout.get('z', ''),
+                    '',  # detector_id placeholder
+                    '',  # measurement_value placeholder
+                    ''   # measurement_timestamp placeholder
+                ])
+                
+                # Log measurement data if available
+                if measurement_data:
+                    for meas in measurement_data:
+                        writer.writerow([
+                            cycle,
+                            meas.get('timestamp', timestamp),
+                            phase,
+                            random_pos.get('x', ''),
+                            random_pos.get('y', ''),
+                            random_pos.get('z', ''),
+                            decoded_pos.get('x', ''),
+                            decoded_pos.get('y', ''),
+                            stage_readout.get('x', ''),
+                            stage_readout.get('y', ''),
+                            stage_readout.get('z', ''),
+                            meas.get('detector_id', ''),
+                            meas.get('value', ''),
+                            meas.get('timestamp', timestamp)
+                        ])
+        except Exception as e:
+            self._debug(0, f"Error writing to output file: {e}")
+    
+    def _extract_stage_readout(self, data: PluginData) -> Dict[str, float]:
+        """Extract stage readout position from measurement data.
+        
+        Returns:
+            Dictionary with x, y, z positions from stage
+        """
+        if data and data.positions:
+            return {
+                'x': data.positions.get('X', 0.0),
+                'y': data.positions.get('Y', 0.0),
+                'z': data.positions.get('Z', 0.0)
+            }
+        return {'x': 0.0, 'y': 0.0, 'z': 0.0}
     
     def process_data(self, data: PluginData) -> PluginResult:
         """Process measurement data based on current phase."""
@@ -452,6 +608,18 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                 "measurement_count": len(self._measurement_data),
                 "cycle_number": self._current_repeat + 1
             }
+            
+            # Log decoded position and stage readout to file
+            if self.config.get("save_to_file", True):
+                stage_readout = self._extract_stage_readout(data)
+                self._log_to_file(
+                    cycle=self._current_repeat,
+                    phase="decoded_position",
+                    random_pos=self._target_position,
+                    decoded_pos=decoded_position,
+                    stage_readout=stage_readout,
+                    measurement_data=self._measurement_data
+                )
             
             # Generate movement commands for both X and Y
             result.move_commands.append({
@@ -571,6 +739,16 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
             self._debug(2, "Stage range: Not available, using configured ranges")
         self._debug(2, f"Target position: X={self._target_position['x']:.3f}, Y={self._target_position['y']:.3f}, Z={self._target_position['z']:.3f}")
         self._debug(2, "Phase: moving")
+        
+        # Log random position to file
+        if self.config.get("save_to_file", True):
+            self._log_to_file(
+                cycle=self._current_repeat,
+                phase="random_position",
+                random_pos=self._target_position,
+                decoded_pos={'x': '', 'y': ''},
+                stage_readout={'x': '', 'y': '', 'z': ''}
+            )
     
     def _decode_position(self) -> Dict[str, float]:
         """Decode position from measurement data.
