@@ -76,6 +76,8 @@ class PluginManager:
     def auto_load_custom_plugins(self) -> int:
         """Auto-load all plugins from custom directories.
         
+        Checks each plugin's config file for an "enabled" field before loading.
+        
         Returns:
             Number of plugins successfully loaded
         """
@@ -99,6 +101,19 @@ class PluginManager:
                     
                 try:
                     plugin_name = plugin_file.stem
+                    
+                    # Check if plugin config exists and has enabled field
+                    config_file = plugin_dir / f"{plugin_name}_config.json"
+                    if config_file.exists():
+                        try:
+                            with open(config_file) as f:
+                                config = json.load(f)
+                                if not config.get("enabled", True):
+                                    logger.info(f"Plugin {plugin_name} is disabled in config, skipping auto-load")
+                                    continue
+                        except Exception as e:
+                            logger.warning(f"Error reading config for {plugin_name}: {e}, attempting to load anyway")
+                    
                     success = self.load_plugin(plugin_name, plugin_file)
                     if success:
                         loaded_count += 1

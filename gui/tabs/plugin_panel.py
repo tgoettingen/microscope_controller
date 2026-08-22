@@ -180,8 +180,17 @@ class PluginPanel(QtWidgets.QWidget):
                 item = QtWidgets.QListWidgetItem(plugin_name)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 
-                # Check if plugin is enabled
-                is_enabled = plugin.enabled if hasattr(plugin, 'enabled') else False
+                # Check config file for enabled state
+                config_file = self.custom_plugin_dir / f"{plugin_name}_config.json"
+                is_enabled = True  # Default to enabled
+                if config_file.exists():
+                    try:
+                        with open(config_file) as f:
+                            config = json.load(f)
+                            is_enabled = config.get("enabled", True)
+                    except Exception:
+                        pass
+                
                 item.setCheckState(Qt.CheckState.Checked if is_enabled else Qt.CheckState.Unchecked)
                 
                 # Store plugin reference
@@ -190,10 +199,12 @@ class PluginPanel(QtWidgets.QWidget):
                 self.plugin_list.addItem(item)
                 
                 # Load config if available
-                config_file = self.custom_plugin_dir / f"{plugin_name}_config.json"
                 if config_file.exists():
-                    with open(config_file) as f:
-                        self.plugin_configs[plugin_name] = json.load(f)
+                    try:
+                        with open(config_file) as f:
+                            self.plugin_configs[plugin_name] = json.load(f)
+                    except Exception:
+                        pass
             
             self.results_text.setText(f"Loaded {len(all_plugins)} plugins")
             

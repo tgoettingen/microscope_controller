@@ -1,0 +1,20 @@
+{
+  "enabled": false,
+  "repeat_count": -1,
+  "measurement_duration": 3.0,
+  "post_move_delay": 2.0,
+  "post_decode_delay": 2.0,
+  "random_range_x": 10.0,
+  "random_range_y": 10.0,
+  "random_range_z": 50.0,
+  "center_position": null,
+  "center_x": null,
+  "center_y": null,
+  "stage_x_min": null,
+  "stage_x_max": null,
+  "stage_y_min": null,
+  "stage_y_max": null,
+  "decoder_offset_factor": 0.5,
+  "random_seed": null,
+  "debug_level": 2
+}
