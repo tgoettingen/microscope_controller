@@ -298,6 +298,12 @@ class MainWindow(QtWidgets.QMainWindow):
       self._capture_original_layout()
       self._load_layout(kind="default")
       
+      # Sync View menu checks after layout restoration
+      self._sync_view_menu_checks()
+      
+      # Final sync after everything is initialized (using QTimer to ensure it runs after all events)
+      QtCore.QTimer.singleShot(100, self._sync_view_menu_checks)
+      
       # Update window title with loaded filenames
       self._update_window_title()
       
@@ -305,7 +311,8 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          if self._build_devices_now():
             logger.info("Devices built successfully on startup")
-            self._reload_visible_panels_after_init()
+            # Use QTimer to ensure panel reload happens after layout is fully settled
+            QtCore.QTimer.singleShot(100, self._reload_visible_panels_after_init)
       except Exception as e:
          logger.warning("Failed to build devices on startup: %s", e)
       
@@ -1067,17 +1074,20 @@ class MainWindow(QtWidgets.QMainWindow):
             ("stage_control", getattr(self, "stage_control_dock", None)),
             ("excitation_control", getattr(self, "excitation_control_dock", None)),
             ("stage_calibration", getattr(self, "stage_calibration_dock", None)),
+            ("plugin", getattr(self, "plugin_dock", None)),
          ]
          for key, dock in pairs:
             act = actions.get(key)
             if dock is None or act is None:
                continue
             try:
-               act.setChecked(bool(dock.isVisible()))
-            except Exception:
-               pass
-      except Exception:
-         pass
+               is_visible = bool(dock.isVisible())
+               act.setChecked(is_visible)
+               print(f"[MainWindow] Syncing {key}: dock_visible={is_visible}, checkbox={act.isChecked()}")
+            except Exception as e:
+               print(f"[MainWindow] Error syncing {key}: {e}")
+      except Exception as e:
+         print(f"[MainWindow] Error in _sync_view_menu_checks: {e}")
 
    def closeEvent(self, event):
       """Persist the current layout before closing."""
@@ -1564,10 +1574,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plugin_tab = PluginPanel(self)
             self.plugin_tab.set_parent_window(self)
             self.plugin_dock = QtWidgets.QDockWidget("Plugins", self)
+            self.plugin_dock.setObjectName("PluginDock")  # Set objectName for saveState/restoreState
             self.plugin_dock.setWidget(self.plugin_tab)
             self.plugin_dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea | QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
             self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.plugin_dock)
-            self.plugin_dock.setVisible(False)  # Hidden by default
+            # Don't set visibility here - let layout restoration handle it
             # Connect dock close event to update View menu
             self.plugin_dock.closeEvent = lambda e: self._cleanup_plugin_dock(e)
             logger.info("Plugin dock created successfully")
@@ -1584,6 +1595,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
          # Add new control docks to View menu (must be after dock creation)
          self._add_new_docks_to_view_menu()
+         
+         # Sync View menu checks after all docks are created
+         self._sync_view_menu_checks()
 
       except Exception as e:
          logger.exception("Critical error during dock creation: %s", e)
@@ -3344,8 +3358,7 @@ class MainWindow(QtWidgets.QMainWindow):
          if hasattr(self, 'plugin_dock') and self.plugin_dock is not None:
             try:
                plugin_act = QAction("Plugins", self, checkable=True)
-               plugin_act.setChecked(False)
-               plugin_act.triggered.connect(lambda checked: self._toggle_plugin_dock(checked))
+               plugin_act.triggered.connect(lambda checked: self.plugin_dock.setVisible(bool(checked)))
                view_menu.addAction(plugin_act)
                if not hasattr(self, '_view_dock_actions'):
                   self._view_dock_actions = {}
@@ -3493,7 +3506,8 @@ class MainWindow(QtWidgets.QMainWindow):
          # Update the tab with devices
          if hasattr(self, 'stage_calibration_tab') and self.stage_calibration_tab:
             self.stage_calibration_tab.set_stage(self.stage)
-            self.stage_calibration_tab.set_config_path(self._config_path)
+            # Set config path directly as attribute
+            self.stage_calibration_tab.config_path = self._config_path
          
          self.stage_calibration_dock.setVisible(True)
          self.stage_calibration_dock.raise_()

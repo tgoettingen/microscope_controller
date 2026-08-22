@@ -889,6 +889,11 @@ class DetectorImagePanel(QtWidgets.QWidget):
         def _on_cmap(name: str, did=detector_id, iv=img_view):
             self._apply_gradient_to_imageview(iv, name)
             self._save_setting(f"detector_cmap/{did}", str(name))
+            # Force redraw of the image with new colormap
+            try:
+                iv.getImageItem().updateImage()
+            except Exception:
+                pass
 
         cmap_combo.currentTextChanged.connect(_on_cmap)
 
@@ -1009,6 +1014,11 @@ class DetectorImagePanel(QtWidgets.QWidget):
                     self._set_combo_text(combo, self._default_gradient)
             except Exception:
                 pass
+            # Force redraw of the image with new colormap
+            try:
+                iv.getImageItem().updateImage()
+            except Exception:
+                pass
 
     def _populate_gradients(self, combo: QtWidgets.QComboBox) -> None:
         names: list[str]
@@ -1090,7 +1100,6 @@ class DetectorImagePanel(QtWidgets.QWidget):
         # 1) Newer/explicit helper
         try:
             img_view.setPredefinedGradient(name)
-            return
         except Exception:
             pass
 
@@ -1100,7 +1109,6 @@ class DetectorImagePanel(QtWidgets.QWidget):
             grad = getattr(hist, "gradient", None)
             if grad is not None and hasattr(grad, "loadPreset"):
                 grad.loadPreset(name)
-                return
         except Exception:
             pass
 
@@ -1113,7 +1121,12 @@ class DetectorImagePanel(QtWidgets.QWidget):
             grad = getattr(hist, "gradient", None)
             if state is not None and grad is not None and hasattr(grad, "restoreState"):
                 grad.restoreState(state)
-                return
+        except Exception:
+            pass
+        
+        # Force redraw after colormap change
+        try:
+            img_view.getImageItem().updateImage()
         except Exception:
             pass
 

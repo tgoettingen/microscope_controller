@@ -549,8 +549,28 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         result = PluginResult()
         
         if self._current_phase == "idle":
-            result.message = "Plugin idle, waiting for start"
-            self._debug(2, "Phase: idle")
+            # Auto-initialize if plugin is called while idle (for standalone operation)
+            self._debug(1, "Plugin in idle phase, auto-initializing for standalone operation")
+            
+            # Try to get stage range from config if not already set
+            if (self.config.get("stage_x_min") is None or 
+                self.config.get("stage_x_max") is None or
+                self.config.get("stage_y_min") is None or 
+                self.config.get("stage_y_max") is None):
+                self._debug(1, "Stage range not configured, attempting to get from positions data")
+                # Try to infer stage range from current position data
+                if data and data.positions:
+                    current_x = data.positions.get('X', 0.0)
+                    current_y = data.positions.get('Y', 0.0)
+                    # Use a reasonable default range around current position
+                    self.config["stage_x_min"] = current_x - 1000.0
+                    self.config["stage_x_max"] = current_x + 1000.0
+                    self.config["stage_y_min"] = current_y - 1000.0
+                    self.config["stage_y_max"] = current_y + 1000.0
+                    self._debug(1, f"Set default stage range from current position: X[{self.config['stage_x_min']:.1f}, {self.config['stage_x_max']:.1f}], Y[{self.config['stage_y_min']:.1f}, {self.config['stage_y_max']:.1f}]")
+            
+            self.on_experiment_start({})
+            result.message = "Plugin auto-initialized for standalone operation"
             return result
         
         elif self._current_phase == "waiting":
@@ -621,19 +641,41 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                     measurement_data=self._measurement_data
                 )
             
+            # Get stage limits for clamping decoded position movement
+            stage_x_min = self.config.get("stage_x_min")
+            stage_x_max = self.config.get("stage_x_max")
+            stage_y_min = self.config.get("stage_y_min")
+            stage_y_max = self.config.get("stage_y_max")
+            
+            # Clamp decoded X position to stage limits
+            decoded_x = decoded_position["x"]
+            if stage_x_min is not None and stage_x_max is not None:
+                decoded_x_before_clamp = decoded_x
+                decoded_x = max(stage_x_min, min(stage_x_max, decoded_x))
+                if decoded_x != decoded_x_before_clamp:
+                    self._debug(2, f"Clamped decoded movement X from {decoded_x_before_clamp:.3f} to {decoded_x:.3f} (stage limits: [{stage_x_min:.3f}, {stage_x_max:.3f}])")
+            
+            # Clamp decoded Y position to stage limits
+            decoded_y = decoded_position["y"]
+            if stage_y_min is not None and stage_y_max is not None:
+                decoded_y_before_clamp = decoded_y
+                decoded_y = max(stage_y_min, min(stage_y_max, decoded_y))
+                if decoded_y != decoded_y_before_clamp:
+                    self._debug(2, f"Clamped decoded movement Y from {decoded_y_before_clamp:.3f} to {decoded_y:.3f} (stage limits: [{stage_y_min:.3f}, {stage_y_max:.3f}])")
+            
             # Generate movement commands for both X and Y
             result.move_commands.append({
                 "axis": "x",
-                "position": decoded_position["x"],
+                "position": decoded_x,
                 "relative": False
             })
             result.move_commands.append({
                 "axis": "y",
-                "position": decoded_position["y"],
+                "position": decoded_y,
                 "relative": False
             })
             
-            self._debug(1, f"Adding decoded movement commands to result: X={decoded_position['x']:.3f}, Y={decoded_position['y']:.3f}")
+            self._debug(1, f"Adding decoded movement commands to result: X={decoded_x:.3f}, Y={decoded_y:.3f}")
             self._debug(1, f"Total movement commands in result: {len(result.move_commands)}")
             
             # Stay in decoding phase for this call
@@ -754,7 +796,7 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         """Decode position from measurement data.
         
         Returns:
-            Decoded position (half distance from center to target) for X and Y
+            Decoded position (half distance from center to target) for X and Y, clamped to stage limits
         """
         if not self._measurement_data:
             self._debug(2, "No measurement data, returning center position")
@@ -778,6 +820,24 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
         decoded_x = self._center_x + (distance_from_center_x * self.config.get("decoder_offset_factor", 0.5))
         decoded_y = self._center_y + (distance_from_center_y * self.config.get("decoder_offset_factor", 0.5))
         
+        # Clamp decoded position to stage limits if available
+        stage_x_min = self.config.get("stage_x_min")
+        stage_x_max = self.config.get("stage_x_max")
+        stage_y_min = self.config.get("stage_y_min")
+        stage_y_max = self.config.get("stage_y_max")
+        
+        if stage_x_min is not None and stage_x_max is not None:
+            decoded_x_before_clamp = decoded_x
+            decoded_x = max(stage_x_min, min(stage_x_max, decoded_x))
+            if decoded_x != decoded_x_before_clamp:
+                self._debug(2, f"Clamped decoded X from {decoded_x_before_clamp:.3f} to {decoded_x:.3f} (stage limits: [{stage_x_min:.3f}, {stage_x_max:.3f}])")
+        
+        if stage_y_min is not None and stage_y_max is not None:
+            decoded_y_before_clamp = decoded_y
+            decoded_y = max(stage_y_min, min(stage_y_max, decoded_y))
+            if decoded_y != decoded_y_before_clamp:
+                self._debug(2, f"Clamped decoded Y from {decoded_y_before_clamp:.3f} to {decoded_y:.3f} (stage limits: [{stage_y_min:.3f}, {stage_y_max:.3f}])")
+        
         self._debug(2, f"Decoding: target_x={target_x:.3f}, target_y={target_y:.3f}")
         self._debug(2, f"Center X: {self._center_x:.3f}, Center Y: {self._center_y:.3f}")
         self._debug(2, f"Distance X: {distance_from_center_x:.3f}, Distance Y: {distance_from_center_y:.3f}")
@@ -794,21 +854,43 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                 len(result.move_commands) == 0)
     
     def get_movement_commands(self, data: PluginData, result: PluginResult) -> List[Dict[str, Any]]:
-        """Get movement commands based on current state."""
+        """Get movement commands based on current state, clamped to stage limits."""
         commands = []
         
         if self._current_phase == "moving" and "target_position" in self._state:
             target = self._state["target_position"]
             
+            # Get stage limits for clamping
+            stage_x_min = self.config.get("stage_x_min")
+            stage_x_max = self.config.get("stage_x_max")
+            stage_y_min = self.config.get("stage_y_min")
+            stage_y_max = self.config.get("stage_y_max")
+            
+            # Clamp X position to stage limits
+            x_position = target["x"]
+            if stage_x_min is not None and stage_x_max is not None:
+                x_position_before_clamp = x_position
+                x_position = max(stage_x_min, min(stage_x_max, x_position))
+                if x_position != x_position_before_clamp:
+                    self._debug(2, f"Clamped movement X from {x_position_before_clamp:.3f} to {x_position:.3f} (stage limits: [{stage_x_min:.3f}, {stage_x_max:.3f}])")
+            
+            # Clamp Y position to stage limits
+            y_position = target["y"]
+            if stage_y_min is not None and stage_y_max is not None:
+                y_position_before_clamp = y_position
+                y_position = max(stage_y_min, min(stage_y_max, y_position))
+                if y_position != y_position_before_clamp:
+                    self._debug(2, f"Clamped movement Y from {y_position_before_clamp:.3f} to {y_position:.3f} (stage limits: [{stage_y_min:.3f}, {stage_y_max:.3f}])")
+            
             # Add movement commands for all axes
             commands.append({
                 "axis": "x",
-                "position": target["x"],
+                "position": x_position,
                 "relative": False
             })
             commands.append({
                 "axis": "y", 
-                "position": target["y"],
+                "position": y_position,
                 "relative": False
             })
             commands.append({
@@ -817,7 +899,7 @@ class RandomMeasureDecoderPlugin(MovementPlugin):
                 "relative": False
             })
             
-            self._debug(2, f"Generating movement commands: X={target['x']:.3f}, Y={target['y']:.3f}, Z={target['z']:.3f}")
+            self._debug(2, f"Generating movement commands: X={x_position:.3f}, Y={y_position:.3f}, Z={target['z']:.3f}")
             
             # After moving, start waiting phase
             self._current_phase = "waiting"

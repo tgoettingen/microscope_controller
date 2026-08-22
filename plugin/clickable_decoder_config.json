@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "decoder_formula": "mean",
   "custom_formula": "A + B",
   "channel_names": [],
@@ -7,5 +7,9 @@
   "display_window_title": "Clickable Decoder Display",
   "auto_show_display": true,
   "colormap": "plasma",
-  "tooltip_channels": "all"
+  "tooltip_channels": "all",
+  "stage_x_min": 100,
+  "stage_x_max": 10100,
+  "stage_y_min": -100,
+  "stage_y_max": 19900
 }

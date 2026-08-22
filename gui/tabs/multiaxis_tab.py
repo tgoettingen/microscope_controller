@@ -25,23 +25,12 @@ class MultiAxisTab(QtWidgets.QWidget):
     def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
         self._config_path = config_path
-        self._detector_select_cbs: dict[str, QtWidgets.QCheckBox] = {}
         self._build_ui()
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(4)  # Reduced spacing
         layout.setContentsMargins(4, 4, 4, 4)  # Reduced margins
-
-        # Detector selection area (main detectors available in the system) - compact
-        det_label = QtWidgets.QLabel("Detectors:")
-        det_label.setStyleSheet("font-weight: bold; font-size: 11px;")
-        layout.addWidget(det_label)
-        
-        self.detector_list = QtWidgets.QListWidget()
-        self.detector_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        self.detector_list.setMaximumHeight(120)  # Limit height to be more compact
-        layout.addWidget(self.detector_list)
 
         # Defined axes - compact
         axis_label = QtWidgets.QLabel("Axes:")
@@ -119,98 +108,39 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.axis_list.keyPressEvent = self._axis_list_key_press
 
     def set_available_detectors(self, detectors: list[str]):
-        """Populate the available detector list with checkable items.
-
-        detectors: list of detector identifiers (strings)
+        """Detector selection is handled by LiveTab's detector control panel.
+        
+        This method is kept for compatibility but does nothing.
         """
-        # Preserve prior check state where possible.
-        try:
-            previously_checked = set(self.get_selected_detectors())
-        except Exception:
-            previously_checked = set()
-
-        try:
-            self.detector_list.blockSignals(True)
-            self.detector_list.clear()
-            self._detector_select_cbs.clear()
-            for d in detectors:
-                item = QtWidgets.QListWidgetItem()
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, d)
-                row = QtWidgets.QWidget()
-                row_layout = QtWidgets.QHBoxLayout(row)
-                row_layout.setContentsMargins(2, 1, 2, 1)  # Reduced margins
-                row_layout.setSpacing(3)  # Reduced spacing
-
-                sel_cb = QtWidgets.QCheckBox(str(d))
-                sel_cb.setStyleSheet("font-size: 10px;")  # Smaller font
-                # Default to selected when there was no prior selection so a
-                # fresh run records every detector (matches the historical
-                # "no selection means all" behaviour). Preserve an explicit
-                # prior selection otherwise.
-                sel_cb.setChecked(d in previously_checked if previously_checked else True)
-
-                row_layout.addWidget(sel_cb)
-                row_layout.addStretch(1)
-
-                self._detector_select_cbs[d] = sel_cb
-
-                sel_cb.toggled.connect(lambda _chk, _d=d: self._emit_detectors_changed())
-
-                item.setSizeHint(row.sizeHint())
-                self.detector_list.addItem(item)
-                self.detector_list.setItemWidget(item, row)
-        finally:
-            try:
-                self.detector_list.blockSignals(False)
-            except Exception:
-                pass
-
-        # Emit once after population.
-        try:
-            QtCore.QTimer.singleShot(0, self._emit_detectors_changed)
-        except Exception:
-            pass
+        pass
 
     def get_selected_detectors(self) -> list[str]:
-        selected = []
-        for det_id, cb in self._detector_select_cbs.items():
-            try:
-                if cb.isChecked():
-                    selected.append(det_id)
-            except Exception:
-                continue
-        return selected
+        """Detector selection is handled by LiveTab's detector control panel.
+        
+        Returns empty list for compatibility.
+        """
+        return []
 
     def get_available_detectors(self) -> list[str]:
-        """Return all detector ids currently shown in the available list."""
-        return list(self._detector_select_cbs.keys())
+        """Detector selection is handled by LiveTab's detector control panel.
+        
+        Returns empty list for compatibility.
+        """
+        return []
 
     def set_selected_detectors(self, detector_ids: list[str]):
-        """Check the given detector ids in the available detector list."""
-        wanted = set(detector_ids or [])
-        try:
-            self.detector_list.blockSignals(True)
-            for det_id, cb in self._detector_select_cbs.items():
-                try:
-                    cb.setChecked(det_id in wanted)
-                except Exception:
-                    pass
-        finally:
-            try:
-                self.detector_list.blockSignals(False)
-            except Exception:
-                pass
-
-        try:
-            QtCore.QTimer.singleShot(0, self._emit_detectors_changed)
-        except Exception:
-            pass
+        """Detector selection is handled by LiveTab's detector control panel.
+        
+        This method is kept for compatibility but does nothing.
+        """
+        pass
 
     def _emit_detectors_changed(self, *_args):
-        try:
-            self.detectors_changed.emit(self.get_selected_detectors())
-        except Exception:
-            pass
+        """Detector selection is handled by LiveTab's detector control panel.
+        
+        This method is kept for compatibility but does nothing.
+        """
+        pass
 
     def _on_offset_spin_changed(self, detector_id: str, value: float) -> None:
         """Does nothing - detector offset is handled by LiveTab's detector control panel."""

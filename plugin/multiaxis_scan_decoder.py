@@ -338,7 +338,7 @@ class MultiAxisScanDecoderPlugin(DecoderPlugin):
             self._process_scan_data()
             
             # Show display if enabled
-            if self.config.get("auto_show_display", True) and self._decoded_data is not None:
+            if self.config.get("auto_show_display", True) and self._decoded_data is not None and self.enabled:
                 self._show_display_window()
             
             print("[MultiAxisScanDecoder] Manual execution completed successfully")
@@ -602,6 +602,59 @@ class MultiAxisScanDecoderPlugin(DecoderPlugin):
                 self._auto_levels_cb.toggled.connect(self._update_levels)
                 control_layout.addWidget(self._auto_levels_cb)
                 
+                # Lower limit control
+                control_layout.addWidget(QtWidgets.QLabel("Min:"))
+                self._min_spin = QtWidgets.QDoubleSpinBox()
+                self._min_spin.setRange(-1e10, 1e10)
+                self._min_spin.setDecimals(3)
+                self._min_spin.valueChanged.connect(self._update_manual_levels)
+                control_layout.addWidget(self._min_spin)
+                
+                # Upper limit control
+                control_layout.addWidget(QtWidgets.QLabel("Max:"))
+                self._max_spin = QtWidgets.QDoubleSpinBox()
+                self._max_spin.setRange(-1e10, 1e10)
+                self._max_spin.setDecimals(3)
+                self._max_spin.valueChanged.connect(self._update_manual_levels)
+                control_layout.addWidget(self._max_spin)
+                
+                # Gamma control
+                control_layout.addWidget(QtWidgets.QLabel("Gamma:"))
+                self._gamma_spin = QtWidgets.QDoubleSpinBox()
+                self._gamma_spin.setRange(0.1, 10.0)
+                self._gamma_spin.setSingleStep(0.1)
+                self._gamma_spin.setValue(1.0)
+                self._gamma_spin.valueChanged.connect(self._update_gamma)
+                control_layout.addWidget(self._gamma_spin)
+                
+                # Scale mode (linear/log)
+                control_layout.addWidget(QtWidgets.QLabel("Scale:"))
+                self._scale_combo = QtWidgets.QComboBox()
+                self._scale_combo.addItems(["Linear", "Log"])
+                self._scale_combo.currentTextChanged.connect(self._update_scale_mode)
+                control_layout.addWidget(self._scale_combo)
+                
+                # Overlay checkbox
+                self._overlay_cb = QtWidgets.QCheckBox("Overlay")
+                self._overlay_cb.toggled.connect(self._toggle_overlay)
+                control_layout.addWidget(self._overlay_cb)
+                
+                # Overlay mode selector
+                self._overlay_mode_combo = QtWidgets.QComboBox()
+                self._overlay_mode_combo.addItems(["Transparent", "Additive", "Maximum"])
+                self._overlay_mode_combo.setEnabled(False)
+                self._overlay_mode_combo.currentTextChanged.connect(self._update_overlay_mode)
+                control_layout.addWidget(self._overlay_mode_combo)
+                
+                # Overlay opacity slider
+                control_layout.addWidget(QtWidgets.QLabel("Opacity:"))
+                self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+                self._opacity_slider.setRange(0, 100)
+                self._opacity_slider.setValue(50)
+                self._opacity_slider.setEnabled(False)
+                self._opacity_slider.valueChanged.connect(self._update_opacity)
+                control_layout.addWidget(self._opacity_slider)
+                
                 # Reset view button
                 reset_btn = QtWidgets.QPushButton("Reset View")
                 reset_btn.clicked.connect(self._reset_view)
@@ -652,6 +705,12 @@ class MultiAxisScanDecoderPlugin(DecoderPlugin):
                 # Avoid zero range
                 data_min = data_min - 0.5
                 data_max = data_max + 0.5
+            
+            # Initialize control values
+            self._min_spin.setValue(data_min)
+            self._max_spin.setValue(data_max)
+            self._gamma_spin.setValue(1.0)
+            self._scale_combo.setCurrentText("Linear")
             
             # Set the image with proper coordinate mapping
             # We'll use array indices for display and map to actual positions in hover function
@@ -779,10 +838,118 @@ class MultiAxisScanDecoderPlugin(DecoderPlugin):
             data_min = np.nanmin(self._decoded_data)
             data_max = np.nanmax(self._decoded_data)
             self._image_item.setLevels([data_min, data_max])
+            # Update spin boxes
+            self._min_spin.setValue(data_min)
+            self._max_spin.setValue(data_max)
         else:
-            # Keep current levels (no change when unchecked)
-            # This allows users to manually adjust levels via other controls if added later
-            pass
+            # Enable manual level control
+            self._update_manual_levels()
+    
+    def _update_manual_levels(self):
+        """Update image levels from manual spin boxes."""
+        if not self._auto_levels_cb.isChecked():
+            min_val = self._min_spin.value()
+            max_val = self._max_spin.value()
+            self._image_item.setLevels([min_val, max_val])
+    
+    def _update_gamma(self, gamma):
+        """Update gamma correction for display."""
+        try:
+            # Gamma correction applies a power law to the data
+            if gamma <= 0:
+                gamma = 0.1  # Prevent division by zero
+            
+            # Get current data
+            data = self._decoded_data.copy()
+            
+            # Apply gamma correction: result = data^gamma
+            # For proper gamma correction, we should normalize first
+            data_min = np.nanmin(data)
+            data_max = np.nanmax(data)
+            
+            if data_max > data_min:
+                normalized = (data - data_min) / (data_max - data_min)
+                gamma_corrected = np.power(normalized, gamma)
+                corrected_data = gamma_corrected * (data_max - data_min) + data_min
+            else:
+                corrected_data = data
+            
+            self._image_item.setImage(corrected_data)
+            
+        except Exception as e:
+            print(f"[MultiAxisScanDecoder] Error updating gamma: {e}")
+    
+    def _update_scale_mode(self, mode):
+        """Update scale mode (linear/log)."""
+        try:
+            data = self._decoded_data.copy()
+            
+            if mode == "Log":
+                # Apply log scaling
+                # Handle negative values by adding offset
+                data_min = np.nanmin(data)
+                if data_min <= 0:
+                    offset = abs(data_min) + 1e-10
+                    log_data = np.log10(data + offset)
+                else:
+                    log_data = np.log10(data)
+                
+                self._image_item.setImage(log_data)
+                # Update levels for log scale
+                log_min = np.nanmin(log_data)
+                log_max = np.nanmax(log_data)
+                self._image_item.setLevels([log_min, log_max])
+                self._min_spin.setValue(log_min)
+                self._max_spin.setValue(log_max)
+            else:
+                # Linear scale - restore original data
+                self._image_item.setImage(data)
+                # Restore original levels
+                data_min = np.nanmin(data)
+                data_max = np.nanmax(data)
+                self._image_item.setLevels([data_min, data_max])
+                self._min_spin.setValue(data_min)
+                self._max_spin.setValue(data_max)
+                
+        except Exception as e:
+            print(f"[MultiAxisScanDecoder] Error updating scale mode: {e}")
+    
+    def _toggle_overlay(self, enabled):
+        """Toggle overlay mode."""
+        self._overlay_mode_combo.setEnabled(enabled)
+        self._opacity_slider.setEnabled(enabled)
+        
+        if enabled:
+            # Enable overlay blending
+            self._image_item.setAlpha(self._opacity_slider.value() / 100.0)
+        else:
+            # Disable overlay
+            self._image_item.setAlpha(1.0)
+    
+    def _update_overlay_mode(self, mode):
+        """Update overlay blending mode."""
+        try:
+            # pyqtgraph ImageItem doesn't have direct blending mode control
+            # We simulate this by adjusting the composition mode or alpha
+            if mode == "Transparent":
+                # Use alpha for transparency
+                self._image_item.setAlpha(self._opacity_slider.value() / 100.0)
+            elif mode == "Additive":
+                # Try to use additive blending if available
+                self._image_item.setAlpha(self._opacity_slider.value() / 100.0)
+            elif mode == "Maximum":
+                # Maximum blending would require custom implementation
+                self._image_item.setAlpha(self._opacity_slider.value() / 100.0)
+        except Exception as e:
+            print(f"[MultiAxisScanDecoder] Error updating overlay mode: {e}")
+    
+    def _update_opacity(self, value):
+        """Update overlay opacity."""
+        try:
+            if self._overlay_cb.isChecked():
+                self._image_item.setAlpha(value / 100.0)
+        except Exception as e:
+            print(f"[MultiAxisScanDecoder] Error updating opacity: {e}")
     
     def _reset_view(self):
         """Reset the view to show the entire image."""

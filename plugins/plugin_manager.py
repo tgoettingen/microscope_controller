@@ -260,14 +260,31 @@ class PluginManager:
             # Instantiate plugin
             plugin_instance = plugin_class()
             
-            # Load saved configuration if available
+            # Load saved configuration from config file if available
             config = self._plugin_configs.get(storage_name, {})
+            
+            # Also try to load from individual config file
+            if not config:
+                for search_dir in self._default_plugin_dirs + self._plugin_paths:
+                    config_file = search_dir / f"{storage_name}_config.json"
+                    if config_file.exists():
+                        try:
+                            with open(config_file) as f:
+                                config = json.load(f)
+                            self._plugin_configs[storage_name] = config
+                            logger.info(f"Loaded config from {config_file}: enabled={config.get('enabled', False)}")
+                            break
+                        except Exception as e:
+                            logger.warning(f"Error loading config from {config_file}: {e}")
+            
             if config:
                 plugin_instance.initialize(config)
+                # Set enabled state from config
+                if "enabled" in config:
+                    plugin_instance.enabled = config["enabled"]
             
-            # Do NOT auto-enable plugin by default
-            # Plugins should be enabled via experiment configuration or UI
-            if not hasattr(plugin_instance, 'enabled') or plugin_instance.enabled is None:
+            # If no config or no enabled field, default to disabled
+            if not config or "enabled" not in config:
                 plugin_instance.enabled = False
             
             self._plugins[storage_name] = plugin_instance
@@ -332,6 +349,23 @@ class PluginManager:
         plugin = self.get_plugin(plugin_name)
         if plugin:
             plugin.enabled = True
+            # Update config if it exists
+            if plugin_name in self._plugin_configs:
+                self._plugin_configs[plugin_name]["enabled"] = True
+            # Update individual config file if it exists
+            for search_dir in self._default_plugin_dirs + self._plugin_paths:
+                config_file = search_dir / f"{plugin_name}_config.json"
+                if config_file.exists():
+                    try:
+                        with open(config_file) as f:
+                            config = json.load(f)
+                        config["enabled"] = True
+                        with open(config_file, 'w') as f:
+                            json.dump(config, f, indent=2)
+                        logger.info(f"Updated config file for {plugin_name}: enabled=True")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Error updating config file for {plugin_name}: {e}")
             logger.info(f"Enabled plugin: {plugin_name}")
             return True
         return False
@@ -348,6 +382,23 @@ class PluginManager:
         plugin = self.get_plugin(plugin_name)
         if plugin:
             plugin.enabled = False
+            # Update config if it exists
+            if plugin_name in self._plugin_configs:
+                self._plugin_configs[plugin_name]["enabled"] = False
+            # Update individual config file if it exists
+            for search_dir in self._default_plugin_dirs + self._plugin_paths:
+                config_file = search_dir / f"{plugin_name}_config.json"
+                if config_file.exists():
+                    try:
+                        with open(config_file) as f:
+                            config = json.load(f)
+                        config["enabled"] = False
+                        with open(config_file, 'w') as f:
+                            json.dump(config, f, indent=2)
+                        logger.info(f"Updated config file for {plugin_name}: enabled=False")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Error updating config file for {plugin_name}: {e}")
             logger.info(f"Disabled plugin: {plugin_name}")
             return True
         return False

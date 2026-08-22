@@ -344,6 +344,28 @@ class LiveTab(QtWidgets.QWidget):
         self.window_spin.setValue(self._window_size)
         self.window_spin.valueChanged.connect(self.set_window_size)
         ctl_layout.addWidget(self.window_spin)
+        
+        # Intensity limit controls
+        ctl_layout.addWidget(QtWidgets.QLabel("Min:"))
+        self.level_min_spin = QtWidgets.QDoubleSpinBox()
+        self.level_min_spin.setRange(-1e12, 1e12)
+        self.level_min_spin.setDecimals(2)
+        self.level_min_spin.setSingleStep(0.1)
+        self.level_min_spin.setValue(0.0)
+        self.level_min_spin.setSpecialValueText("Auto")
+        self.level_min_spin.valueChanged.connect(self._on_level_min_changed)
+        ctl_layout.addWidget(self.level_min_spin)
+        
+        ctl_layout.addWidget(QtWidgets.QLabel("Max:"))
+        self.level_max_spin = QtWidgets.QDoubleSpinBox()
+        self.level_max_spin.setRange(-1e12, 1e12)
+        self.level_max_spin.setDecimals(2)
+        self.level_max_spin.setSingleStep(0.1)
+        self.level_max_spin.setValue(0.0)
+        self.level_max_spin.setSpecialValueText("Auto")
+        self.level_max_spin.valueChanged.connect(self._on_level_max_changed)
+        ctl_layout.addWidget(self.level_max_spin)
+        
         layout.addLayout(ctl_layout)
 
         # keyboard shortcuts for levels
@@ -4195,6 +4217,12 @@ class LiveTab(QtWidgets.QWidget):
         self._levels = (mn, mx * 1.1 if mx is not None else None)
         try:
             self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
+            # Update spinbox to reflect new value
+            if self._levels[1] is not None:
+                try:
+                    self.level_max_spin.setValue(self._levels[1])
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -4210,6 +4238,12 @@ class LiveTab(QtWidgets.QWidget):
         self._levels = (mn, mx * 0.9 if mx is not None else None)
         try:
             self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
+            # Update spinbox to reflect new value
+            if self._levels[1] is not None:
+                try:
+                    self.level_max_spin.setValue(self._levels[1])
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -4225,6 +4259,12 @@ class LiveTab(QtWidgets.QWidget):
         self._levels = (mn * 1.1 if mn is not None else None, mx)
         try:
             self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
+            # Update spinbox to reflect new value
+            if self._levels[0] is not None:
+                try:
+                    self.level_min_spin.setValue(self._levels[0])
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -4245,11 +4285,50 @@ class LiveTab(QtWidgets.QWidget):
                         data_min = data_min - 0.5
                         data_max = data_max + 0.5
                     image_item.setLevels(data_min, data_max)
+                    # Update spinboxes with auto-calculated values
+                    try:
+                        self.level_min_spin.setValue(data_min)
+                        self.level_max_spin.setValue(data_max)
+                    except Exception:
+                        pass
         except Exception:
             try:
                 self.image_view.getImageItem().setLevels(None, None)
             except Exception:
                 pass
+        
+        # Reset spinboxes to auto if image not available
+        try:
+            self.level_min_spin.setValue(0.0)
+            self.level_max_spin.setValue(0.0)
+        except Exception:
+            pass
+
+    def _on_level_min_changed(self, value):
+        """Handle minimum level spinbox change."""
+        if value == 0.0:
+            # Auto mode
+            self._levels = (None, self._levels[1])
+        else:
+            self._levels = (value, self._levels[1])
+        
+        try:
+            self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
+        except Exception:
+            pass
+
+    def _on_level_max_changed(self, value):
+        """Handle maximum level spinbox change."""
+        if value == 0.0:
+            # Auto mode
+            self._levels = (self._levels[0], None)
+        else:
+            self._levels = (self._levels[0], value)
+        
+        try:
+            self.image_view.getImageItem().setLevels([self._levels[0], self._levels[1]])
+        except Exception:
+            pass
 
     def _update_false_color_overlay(self, *_args):
         """Build/refresh composite RGB overlay from cached per-detector heatmaps."""

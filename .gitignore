@@ -3,6 +3,7 @@ data
 *.npy
 *.pyc
 *.jsonl
+*.csv
 .DS_Store
 __pycache__/
 devices/plugin_loader.py
@@ -23,3 +24,4 @@ build/
 MicroscopeController.spec
 install.sh
 data\
+
