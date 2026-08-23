@@ -25,3 +25,16 @@ MicroscopeController.spec
 install.sh
 data\
 
+.vscode/launch_lab.json
+config/default_devices_lab_firmware2 - Copy_testResistance.json
+config/default_devices_lab_firmware2 - Copy.json
+config/default_devices_lab_firmware2 - mmscale.json
+config/default_devices_lab_firmware2.json
+config/devices_I_lab_mmscale.json
+config/devices_II_lab_mmscale.json
+experiments/0.2x0.4scan copy.json
+experiments/2d_grid_5mm.json
+experiments/4mmx2mm_3channel.json
+experiments/range-5mm.json
+experiments/stage_blink.json
+experiments/xaxis_backandforth.json

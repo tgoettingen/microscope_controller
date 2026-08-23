@@ -15,6 +15,16 @@
       "x_max": 57.0,
       "y_min": 7.0,
       "y_max": 81.0
+    },
+    "motors": {
+      "x": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      },
+      "y": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
     }
   },
   "focus": {
