@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "decoder_formula": "mean",
   "custom_formula": "A + B",
   "channel_names": [],

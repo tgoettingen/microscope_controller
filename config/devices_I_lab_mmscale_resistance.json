@@ -87,6 +87,14 @@
       "overflow_policy": "overwrite",
       "scale": 1.0,
       "offset": 0.0
+    },
+    {
+      "type": "Multimeter",
+      "name": "multimeter",
+      "gpib": "11",
+      "mode": "res",
+      "scale": 1.0,
+      "offset": 0.0
     }
   ],
   "excitation": {
