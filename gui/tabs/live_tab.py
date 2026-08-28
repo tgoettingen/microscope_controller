@@ -284,7 +284,11 @@ class LiveTab(QtWidgets.QWidget):
             plot_item.vb.sigResized.connect(self._sync_temperature_viewbox)
             self._sync_temperature_viewbox()
             self._ensure_temperature_legend()
-            self._set_temperature_axis_visible(True)
+            # Only show temperature in multiaxis mode, not in strip-chart mode
+            if getattr(self, "_plot_mode", "strip") == "multiaxis":
+                self._set_temperature_axis_visible(True)
+            else:
+                self._set_temperature_axis_visible(False)
             self._set_resistance_axis_visible(True)
         except Exception:
             pass
@@ -1403,7 +1407,14 @@ class LiveTab(QtWidgets.QWidget):
             pass
 
     def _set_temperature_axis_visible(self, visible: bool) -> None:
-        """Show/hide temperature axis and temperature curves together."""
+        """Show/hide temperature axis and temperature curves together.
+        
+        Temperature is hidden in strip-chart mode to reduce visual clutter.
+        """
+        # In strip mode, always hide temperature regardless of the visible parameter
+        if getattr(self, "_plot_mode", "strip") == "strip":
+            visible = False
+        
         self._temp_axis_visible = bool(visible)
         try:
             plot_item = self.plot_widget.getPlotItem()
