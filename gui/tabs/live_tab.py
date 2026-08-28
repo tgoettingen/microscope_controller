@@ -1791,7 +1791,11 @@ class LiveTab(QtWidgets.QWidget):
             tcurve = pg.PlotDataItem([], [], pen=temp_pen, name=f"{detector_id} (temp)")
             self._temp_viewbox.addItem(tcurve)
             self._temperature_curves[detector_id] = tcurve
-            tcurve.setVisible(bool(getattr(self, "_temp_axis_visible", True) and self._is_detector_visible(detector_id)))
+            # In strip mode, always hide temperature curves
+            temp_visible = (getattr(self, "_temp_axis_visible", True) and 
+                          self._is_detector_visible(detector_id) and 
+                          getattr(self, "_plot_mode", "strip") != "strip")
+            tcurve.setVisible(temp_visible)
         except Exception:
             pass
         self._temperature_buffers[detector_id] = deque(maxlen=self._window_size)
@@ -1940,6 +1944,8 @@ class LiveTab(QtWidgets.QWidget):
         # Reset plot mode back to strip-chart.
         try:
             self._plot_mode = "strip"
+            # Hide temperature axis when returning to strip-chart mode
+            self._set_temperature_axis_visible(False)
         except Exception:
             pass
         # Clear any run-scoped x-axis preference so strip-chart mode is unaffected.
@@ -3785,6 +3791,8 @@ class LiveTab(QtWidgets.QWidget):
                     if getattr(self, "_plot_mode", "strip") != "multiaxis":
                         self._plot_mode = "multiaxis"
                         self._clear_plot_and_legend()
+                        # Hide temperature axis when switching to multiaxis mode
+                        self._set_temperature_axis_visible(False)
                         # First data has arrived: refresh x-axis options so the
                         # preferred x-axis (set before data existed) gets applied.
                         self._refresh_xaxis_options()
