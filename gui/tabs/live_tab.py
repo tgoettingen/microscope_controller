@@ -1742,6 +1742,8 @@ class LiveTab(QtWidgets.QWidget):
         lbl = QtWidgets.QLabel(detector_id)
         r, g, b = color
         lbl.setStyleSheet(f"color: rgb({r},{g},{b}); font-weight: bold; font-size: 10px;")
+        lbl.setMinimumWidth(80)  # Fixed width to prevent jumping when temperature is displayed
+        lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         vis_cb = QtWidgets.QCheckBox("Show")
         vis_cb.setStyleSheet("font-size: 9px;")
         vis_cb.setChecked(True)
@@ -1946,6 +1948,12 @@ class LiveTab(QtWidgets.QWidget):
             self._plot_mode = "strip"
             # Hide temperature axis when returning to strip-chart mode
             self._set_temperature_axis_visible(False)
+            # Reset detector labels to just detector name (remove temperature display)
+            for det_id, lbl in self._detector_labels.items():
+                try:
+                    lbl.setText(det_id)
+                except Exception:
+                    pass
         except Exception:
             pass
         # Clear any run-scoped x-axis preference so strip-chart mode is unaffected.
@@ -3503,7 +3511,11 @@ class LiveTab(QtWidgets.QWidget):
                     self._temperature_buffers[det_id].append(t)
                     lbl = self._detector_labels.get(det_id)
                     if lbl is not None:
-                        lbl.setText(f"{det_id}  T={t:.2f}")
+                        # Only show temperature in multiaxis mode, not in strip mode
+                        if getattr(self, "_plot_mode", "strip") != "strip":
+                            lbl.setText(f"{det_id}  T={t:6.2f}")
+                        else:
+                            lbl.setText(detector_id)
                     self._update_temperature_legend_visibility()
             except Exception:
                 pass
@@ -3791,8 +3803,12 @@ class LiveTab(QtWidgets.QWidget):
                     if getattr(self, "_plot_mode", "strip") != "multiaxis":
                         self._plot_mode = "multiaxis"
                         self._clear_plot_and_legend()
-                        # Hide temperature axis when switching to multiaxis mode
-                        self._set_temperature_axis_visible(False)
+                        # Reset detector labels to show temperature in multiaxis mode
+                        for det_id, lbl in self._detector_labels.items():
+                            try:
+                                lbl.setText(det_id)  # Will be updated with T=... when data arrives
+                            except Exception:
+                                pass
                         # First data has arrived: refresh x-axis options so the
                         # preferred x-axis (set before data existed) gets applied.
                         self._refresh_xaxis_options()
@@ -3910,7 +3926,11 @@ class LiveTab(QtWidgets.QWidget):
                         try:
                             dlbl = self._detector_labels.get(det_id)
                             if dlbl is not None and t_ys:
-                                dlbl.setText(f"{det_id}  T={float(t_ys[-1]):.2f}")
+                                # Only show temperature in multiaxis mode, not in strip mode
+                                if getattr(self, "_plot_mode", "strip") == "multiaxis":
+                                    dlbl.setText(f"{det_id}  T={float(t_ys[-1]):6.2f}")
+                                else:
+                                    dlbl.setText(detector_id)
                         except Exception:
                             pass
 
