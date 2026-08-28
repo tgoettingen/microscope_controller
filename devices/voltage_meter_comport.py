@@ -18,6 +18,79 @@ from .base import Detector
 
 logger = logging.getLogger(__name__)
 
+
+class RingBuffer:
+    """Fixed-size circular buffer for stable memory management."""
+    
+    def __init__(self, size: int):
+        self.size = size
+        self.buffer = bytearray(size)
+        self.write_idx = 0
+        self.read_idx = 0
+        self.count = 0
+        self._lock = threading.Lock()
+    
+    def write(self, data: bytes) -> int:
+        """Write data to ring buffer. Returns number of bytes written."""
+        with self._lock:
+            written = 0
+            for byte in data:
+                self.buffer[self.write_idx] = byte
+                self.write_idx = (self.write_idx + 1) % self.size
+                if self.count < self.size:
+                    self.count += 1
+                else:
+                    # Buffer full, overwriting oldest data
+                    self.read_idx = (self.read_idx + 1) % self.size
+                written += 1
+            return written
+    
+    def read(self, count: int) -> bytes:
+        """Read up to count bytes from ring buffer."""
+        with self._lock:
+            if count > self.count:
+                count = self.count
+            
+            result = bytearray(count)
+            for i in range(count):
+                result[i] = self.buffer[self.read_idx]
+                self.read_idx = (self.read_idx + 1) % self.size
+            self.count -= count
+            return bytes(result)
+    
+    def peek(self, count: int) -> bytes:
+        """Peek at up to count bytes without consuming them."""
+        with self._lock:
+            if count > self.count:
+                count = self.count
+            
+            result = bytearray(count)
+            temp_idx = self.read_idx
+            for i in range(count):
+                result[i] = self.buffer[temp_idx]
+                temp_idx = (temp_idx + 1) % self.size
+            return bytes(result)
+    
+    def skip(self, count: int) -> None:
+        """Skip/consume count bytes from buffer."""
+        with self._lock:
+            if count > self.count:
+                count = self.count
+            self.read_idx = (self.read_idx + count) % self.size
+            self.count -= count
+    
+    def available(self) -> int:
+        """Return number of bytes available to read."""
+        with self._lock:
+            return self.count
+    
+    def clear(self) -> None:
+        """Clear the buffer."""
+        with self._lock:
+            self.write_idx = 0
+            self.read_idx = 0
+            self.count = 0
+
 def parse_ascii_line(line: bytes | str) -> Optional[float]:
     """Parse an ASCII text line into a float. Returns None on failure."""
     if isinstance(line, bytes):
@@ -113,7 +186,8 @@ class ComPort(Detector):
             raise ValueError(
                 f'Expected 5 or 6 payload bytes (3 voltage + 2 temperature [+ optional checksum]), got {self._payload_length}'
             )
-        self._rx_buffer = bytearray()
+        # Use ring buffer for RX data instead of bytearray for stability
+        self._rx_buffer = RingBuffer(8192)  # 8KB ring buffer for incoming data
         self._ring_buffer_size = max(1, int(ring_buffer_size))
         self._ring_buffer = deque(maxlen=self._ring_buffer_size)
         pol = str(overflow_policy or 'overwrite').strip().lower()
@@ -288,8 +362,13 @@ class ComPort(Detector):
                 chunk = b''
 
             if chunk:
-                self._rx_buffer.extend(chunk)
-                self._consume_rx_frames()
+                # Write to ring buffer instead of extend
+                written = self._rx_buffer.write(chunk)
+                if written != len(chunk):
+                    self._bytes_discarded += len(chunk) - written
+
+            # Process frames from ring buffer
+            self._consume_rx_frames()
 
             dt = time.time() - t0
             sleep_s = period - dt
@@ -297,34 +376,50 @@ class ComPort(Detector):
                 time.sleep(sleep_s)
 
     def _consume_rx_frames(self) -> None:
+        """Consume complete frames from RX ring buffer using stable pattern matching."""
         header = self._frame_header
         trailer = self._frame_trailer
         frame_len = self._frame_length
-
-        while len(self._rx_buffer) >= frame_len:
-            idx = self._rx_buffer.find(header)
+        header_len = len(header)
+        trailer_len = len(trailer)
+        
+        # Process all available data in the ring buffer
+        while self._rx_buffer.available() >= frame_len:
+            # Look for header without consuming
+            if self._rx_buffer.available() < header_len:
+                break
+            
+            header_candidate = self._rx_buffer.peek(header_len)
+            idx = header_candidate.find(header)
+            
             if idx < 0:
-                keep = max(0, len(header) - 1)
-                drop_n = max(0, len(self._rx_buffer) - keep)
-                if drop_n:
-                    del self._rx_buffer[:drop_n]
-                    self._bytes_discarded += drop_n
-                return
+                # Header not found, skip to just before where we'd expect it
+                skip_bytes = max(1, self._rx_buffer.available() - (header_len - 1))
+                self._rx_buffer.skip(skip_bytes)
+                self._bytes_discarded += skip_bytes
+                continue
+            
             if idx > 0:
-                del self._rx_buffer[:idx]
+                # Skip bytes before header
+                self._rx_buffer.skip(idx)
                 self._bytes_discarded += idx
-            if len(self._rx_buffer) < frame_len:
-                return
-
-            frame = bytes(self._rx_buffer[:frame_len])
-            if frame[-len(trailer):] != trailer:
-                del self._rx_buffer[0]
+            
+            # Check if we have enough data for a full frame
+            if self._rx_buffer.available() < frame_len:
+                break
+            
+            # Peek at the frame to check trailer
+            frame_candidate = self._rx_buffer.peek(frame_len)
+            if frame_candidate[-trailer_len:] != trailer:
+                # Trailer mismatch, skip first byte and continue searching
+                self._rx_buffer.skip(1)
                 self._bytes_discarded += 1
                 self._frames_rejected += 1
                 continue
-
-            del self._rx_buffer[:frame_len]
-            payload = frame[len(header):frame_len - len(trailer)]
+            
+            # Valid frame found - consume it
+            frame = self._rx_buffer.read(frame_len)
+            payload = frame[header_len:frame_len - trailer_len]
             self._handle_payload(payload)
 
     def _handle_payload(self, payload: bytes) -> None:
