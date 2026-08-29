@@ -1731,8 +1731,13 @@ class LiveTab(QtWidgets.QWidget):
         curve = self.plot_widget.plot([], [], pen=pen, name=detector_id)
         self._detector_curves[detector_id] = curve
         
-        # Ensure the curve is visible
-        curve.setVisible(True)
+        # Ensure the curve is visible based on current plot mode
+        # In strip mode, all detector curves should be visible by default
+        # In multiaxis mode, visibility is controlled separately
+        if getattr(self, "_plot_mode", "strip") == "strip":
+            curve.setVisible(True)
+        else:
+            curve.setVisible(False)  # Will be made visible when data arrives in multiaxis mode
 
         # Create a small control row: label (colored), visibility checkbox, stream checkbox
         row = QtWidgets.QWidget()
@@ -2048,12 +2053,13 @@ class LiveTab(QtWidgets.QWidget):
         except Exception:
             pass
 
+        # Ensure all registered detectors have curves recreated
         for det_id in list(self._detector_curves.keys()):
             try:
                 old_curve = self._detector_curves.get(det_id)
                 pen = old_curve.opts.get("pen") if old_curve is not None else pg.mkPen(color=(255, 255, 255), width=2)
                 self._detector_curves[det_id] = self.plot_widget.plot([], [], pen=pen, name=det_id)
-                # Ensure the new curve is visible
+                # Ensure the new curve is visible in strip-chart mode
                 self._detector_curves[det_id].setVisible(True)
             except Exception:
                 pass
@@ -2063,7 +2069,8 @@ class LiveTab(QtWidgets.QWidget):
                 tcurve = pg.PlotDataItem([], [], pen=tpen, name=f"{det_id} (temp)")
                 self._temp_viewbox.addItem(tcurve)
                 self._temperature_curves[det_id] = tcurve
-                tcurve.setVisible(bool(getattr(self, "_temp_axis_visible", True) and self._is_detector_visible(det_id)))
+                # Hide temperature curves in strip-chart mode
+                tcurve.setVisible(False)
             except Exception:
                 pass
             try:
@@ -2072,7 +2079,8 @@ class LiveTab(QtWidgets.QWidget):
                 rcurve = pg.PlotDataItem([], [], pen=rpen, name=f"{det_id} (res)")
                 self._res_viewbox.addItem(rcurve)
                 self._resistance_curves[det_id] = rcurve
-                rcurve.setVisible(bool(getattr(self, "_res_axis_visible", True) and self._is_detector_visible(det_id)))
+                # Hide resistance curves in strip-chart mode
+                rcurve.setVisible(False)
             except Exception:
                 pass
 
