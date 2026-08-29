@@ -25,6 +25,11 @@ class MultiAxisTab(QtWidgets.QWidget):
     def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
         self._config_path = config_path
+        # Track detectors known to the application and which are selected for
+        # multi-axis scans. Default to empty lists; MainWindow will populate
+        # these via set_available_detectors().
+        self._available_detectors: list[str] = []
+        self._selected_detectors: list[str] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -108,39 +113,67 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.axis_list.keyPressEvent = self._axis_list_key_press
 
     def set_available_detectors(self, detectors: list[str]):
-        """Detector selection is handled by LiveTab's detector control panel.
-        
-        This method is kept for compatibility but does nothing.
+        """Receive the list of available detector IDs from the application.
+
+        Stores the list and selects all detectors by default so multi-axis
+        dialogs can list detectors individually. Emits detectors_changed.
         """
-        pass
+        try:
+            self._available_detectors = list(detectors or [])
+            # default: select all available detectors
+            self._selected_detectors = list(self._available_detectors)
+            self.detectors_changed.emit(list(self._selected_detectors))
+        except Exception:
+            self._available_detectors = []
+            self._selected_detectors = []
+            try:
+                self.detectors_changed.emit([])
+            except Exception:
+                pass
 
     def get_selected_detectors(self) -> list[str]:
-        """Detector selection is handled by LiveTab's detector control panel.
-        
-        Returns empty list for compatibility.
+        """Return the currently selected detectors for multi-axis scans.
+
+        Falls back to all available detectors when none explicitly selected.
         """
+        try:
+            if getattr(self, "_selected_detectors", None):
+                return list(self._selected_detectors)
+            if getattr(self, "_available_detectors", None):
+                return list(self._available_detectors)
+        except Exception:
+            pass
         return []
 
     def get_available_detectors(self) -> list[str]:
-        """Detector selection is handled by LiveTab's detector control panel.
-        
-        Returns empty list for compatibility.
-        """
-        return []
+        """Return the list of detector ids known to this tab."""
+        try:
+            return list(getattr(self, "_available_detectors", []) or [])
+        except Exception:
+            return []
 
     def set_selected_detectors(self, detector_ids: list[str]):
-        """Detector selection is handled by LiveTab's detector control panel.
-        
-        This method is kept for compatibility but does nothing.
-        """
-        pass
+        """Set the currently selected detector ids and emit detectors_changed."""
+        try:
+            available = getattr(self, "_available_detectors", []) or []
+            # keep only ids that are known
+            self._selected_detectors = [d for d in (detector_ids or []) if d in available]
+            if not self._selected_detectors and available:
+                # if nothing selected, default to all available
+                self._selected_detectors = list(available)
+            self.detectors_changed.emit(list(self._selected_detectors))
+        except Exception:
+            try:
+                self.detectors_changed.emit([])
+            except Exception:
+                pass
 
     def _emit_detectors_changed(self, *_args):
-        """Detector selection is handled by LiveTab's detector control panel.
-        
-        This method is kept for compatibility but does nothing.
-        """
-        pass
+        """Internal helper to re-emit the current selected detectors."""
+        try:
+            self.detectors_changed.emit(list(self.get_selected_detectors()))
+        except Exception:
+            pass
 
     def _on_offset_spin_changed(self, detector_id: str, value: float) -> None:
         """Does nothing - detector offset is handled by LiveTab's detector control panel."""

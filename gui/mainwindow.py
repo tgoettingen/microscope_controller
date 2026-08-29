@@ -5461,6 +5461,35 @@ class MainWindow(QtWidgets.QMainWindow):
          self._connect_detector_errors(self.det)
          self.devices_built = True
          self.devices_released = False
+         # Populate available detectors in multi-axis tab immediately so UI
+         # dialogs (e.g. Add Axis) can list detectors before any run starts.
+         try:
+            det_ids: list[str] = []
+            if isinstance(self.det, list):
+               for d in self.det:
+                  det_ids.append(getattr(d, "name", getattr(d, "port", "detector")))
+            else:
+               if self.det is not None:
+                  det_ids.append(getattr(self.det, "name", getattr(self.det, "port", "detector")))
+            if det_ids and hasattr(self, 'multi_tab'):
+               try:
+                  self.multi_tab.set_available_detectors(det_ids)
+                  if hasattr(self.multi_tab, 'set_selected_detectors'):
+                     self.multi_tab.set_selected_detectors(list(det_ids))
+               except Exception:
+                  pass
+            # Also ensure live tab registers these detectors for display controls.
+            try:
+               if hasattr(self, 'live_tab') and det_ids:
+                  for det_id in det_ids:
+                     try:
+                        self.live_tab.register_detector(det_id)
+                     except Exception:
+                        pass
+            except Exception:
+               pass
+         except Exception:
+            pass
          return True
       except Exception:
          logger.exception("Failed to build devices from config %s", self._config_path)
