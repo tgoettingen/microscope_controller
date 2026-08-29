@@ -19,3 +19,9 @@ It is intended as a starting point for building a real microscope automation sys
 python -m venv .venv
 source .venv/bin/activate  # on Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+
+## log file in mac
+/Users/haisenta/.microscope_controller/logs
+
+## log file in windows
+C:\Users\YourUsername\AppData\Local\microscope_controller\logs
