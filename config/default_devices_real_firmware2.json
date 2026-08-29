@@ -12,6 +12,16 @@
       "x_max": null,
       "y_min": null,
       "y_max": null
+    },
+    "motors": {
+      "x": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      },
+      "y": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
     }
   },
   "focus": {
@@ -19,6 +29,12 @@
     "scaling": {
       "scale": 1.0,
       "offset": 0.0
+    },
+    "motors": {
+      "z": {
+        "motor_spec_id": null,
+        "operating_limits": null
+      }
     }
   },
   "camera": {

@@ -1,0 +1,123 @@
+{
+  "demo": {
+    "mode": "sim",
+    "n_timepoints": 3,
+    "interval_s": 0.05,
+    "z_start": 90.0,
+    "z_end": 110.0,
+    "z_step": 10.0,
+    "output_dir": "C:\\source\\microscope_control\\microscope_controller\\data",
+    "det_scale": 1.0,
+    "det_offset": 0.0
+  },
+  "multiaxis": {
+    "axes": [
+      {
+        "axis_type": "X",
+        "params": {
+          "start": 10.0,
+          "end": 20.0,
+          "step": 1.0,
+          "wait": 0.0,
+          "motors": [
+            "stage"
+          ],
+          "motor_mode": "sequential",
+          "motor_modes": {
+            "stage": "sequential"
+          },
+          "sync_timeout": 5.0,
+          "sync_poll": 0.01,
+          "sync_tol": 0.001,
+          "pre_pos": null,
+          "post_pos": null
+        }
+      },
+      {
+        "axis_type": "Y",
+        "params": {
+          "start": 37.0,
+          "end": 45.0,
+          "step": 1.0,
+          "wait": 0.0,
+          "motors": [
+            "stage"
+          ],
+          "motor_mode": "sequential",
+          "motor_modes": {
+            "stage": "sequential"
+          },
+          "sync_timeout": 5.0,
+          "sync_poll": 0.01,
+          "sync_tol": 0.001,
+          "pre_pos": 7.0,
+          "post_pos": 7.0
+        }
+      },
+      {
+        "axis_type": "Detector",
+        "params": {
+          "wait": 0.0
+        }
+      }
+    ],
+    "detectors": []
+  },
+  "output_dir": "C:\\source\\microscope_control\\microscope_controller\\data",
+  "devices": {
+    "detector_scale": 1.0,
+    "detector_offset": 0.0
+  },
+  "plugins": {
+    "configs": {
+      "clickable_decoder": {
+        "enabled": false,
+        "decoder_formula": "mean",
+        "custom_formula": "A + B",
+        "channel_names": [],
+        "decoder_factor": 1.0,
+        "display_window_title": "Clickable Decoder Display",
+        "auto_show_display": true,
+        "colormap": "plasma",
+        "tooltip_channels": "all",
+        "stage_x_min": 100,
+        "stage_x_max": 10100,
+        "stage_y_min": -100,
+        "stage_y_max": 19900
+      },
+      "multiaxis_scan_decoder": {
+        "enabled": false,
+        "channel1_name": "detector1",
+        "channel2_name": "detector2",
+        "decoder_factor": 2.0,
+        "display_window_title": "Multi-Axis Scan Decoder Data",
+        "auto_show_display": true,
+        "colormap": "viridis"
+      },
+      "random_measure_decoder": {
+        "enabled": false,
+        "repeat_count": -1,
+        "measurement_duration": 3.0,
+        "post_move_delay": 2.0,
+        "post_decode_delay": 2.0,
+        "random_range_x": 10.0,
+        "random_range_y": 10.0,
+        "random_range_z": 50.0,
+        "center_position": null,
+        "center_x": null,
+        "center_y": null,
+        "stage_x_min": 100,
+        "stage_x_max": 10100,
+        "stage_y_min": -100,
+        "stage_y_max": 19900,
+        "decoder_offset_factor": 0.5,
+        "random_seed": null,
+        "debug_level": 2,
+        "save_to_file": true,
+        "output_file": "random_measure_decoder_data.csv",
+        "output_directory": null
+      }
+    },
+    "enabled": []
+  }
+}
