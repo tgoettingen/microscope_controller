@@ -3761,11 +3761,23 @@ class MainWindow(QtWidgets.QMainWindow):
          self.live_tab.reset_1d_detector()
       except Exception:
          pass
+      # Create strip-chart curves before the worker and queued detector
+      # samples start arriving. This keeps streamed ComPort channels visible
+      # even when the first sample is emitted from a background thread.
+      for det_id in det_list:
+         try:
+            self.live_tab.register_detector(str(det_id))
+         except Exception:
+            pass
 
       # Apply moving window length (seconds) to the sample-buffer length.
       try:
          interval_s = float(cfg.get("interval_s", 0.05))
          window_s = float(cfg.get("window_time_s", 5.0))
+         try:
+            self.live_tab.set_strip_window_seconds(window_s)
+         except Exception:
+            pass
          if interval_s > 0:
             n = int(max(10, min(10000, round(window_s / interval_s))))
             try:

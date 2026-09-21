@@ -32,6 +32,7 @@ class LiveTab(QtWidgets.QWidget):
 
         # per-detector moving window buffers
         self._window_size = 200
+        self._strip_window_seconds = 5.0
         # Strip-chart should normally follow the newest samples as a moving window.
         self._follow_strip_x_window = True
         # Multi-axis scans always auto-fit the x-axis to show the full scan span.
@@ -58,6 +59,7 @@ class LiveTab(QtWidgets.QWidget):
         
         # Keep references to per-detector controls so other UI parts can drive them.
         self._detector_show_cbs: dict[str, QtWidgets.QCheckBox] = {}
+        self._detector_visibility_state: dict[str, bool] = {}
         self._detector_stream_cbs: dict[str, QtWidgets.QCheckBox] = {}
         self._detector_offset_cbs: dict[str, QtWidgets.QCheckBox] = {}
         self._detector_offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -935,29 +937,27 @@ class LiveTab(QtWidgets.QWidget):
         if not getattr(self, "_follow_strip_x_window", True):
             return
 
-        x0 = None
         x1 = None
         for times in self._detector_times.values():
             try:
                 if times:
-                    start = float(times[0])
                     end = float(times[-1])
-                    x0 = start if x0 is None else min(x0, start)
                     x1 = end if x1 is None else max(x1, end)
             except Exception:
                 continue
 
-        if x0 is None or x1 is None:
+        if x1 is None:
             return
+        window_seconds = max(0.001, float(getattr(self, "_strip_window_seconds", 5.0)))
+        x0 = max(0.0, x1 - window_seconds)
         if x0 == x1:
-            x0 -= 1.0
-            x1 += 1.0
+            x1 = x0 + min(1.0, window_seconds)
 
         vb = self._plot_view_box()
         if vb is None:
             return
         try:
-            vb.setXRange(x0, x1, padding=0.02)
+            vb.setXRange(x0, x1, padding=0.0)
         except Exception:
             pass
 
@@ -1751,7 +1751,7 @@ class LiveTab(QtWidgets.QWidget):
         lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         vis_cb = QtWidgets.QCheckBox("Show")
         vis_cb.setStyleSheet("font-size: 9px;")
-        vis_cb.setChecked(True)
+        vis_cb.setChecked(self._detector_visibility_state.get(detector_id, True))
         stream_cb = QtWidgets.QCheckBox("Stream")
         stream_cb.setStyleSheet("font-size: 9px;")
         stream_cb.setChecked(False)
@@ -1822,8 +1822,13 @@ class LiveTab(QtWidgets.QWidget):
             pass
 
         def _on_vis(chk):
+            self._detector_visibility_state[detector_id] = bool(chk)
+            selected = (
+                self._selected_detectors_filter is None
+                or detector_id in self._selected_detectors_filter
+            )
             try:
-                self._detector_curves[detector_id].setVisible(bool(chk))
+                self._detector_curves[detector_id].setVisible(bool(chk) and selected)
             except Exception:
                 pass
             try:
@@ -2058,9 +2063,9 @@ class LiveTab(QtWidgets.QWidget):
             try:
                 old_curve = self._detector_curves.get(det_id)
                 pen = old_curve.opts.get("pen") if old_curve is not None else pg.mkPen(color=(255, 255, 255), width=2)
+                visible = old_curve.isVisible() if old_curve is not None else True
                 self._detector_curves[det_id] = self.plot_widget.plot([], [], pen=pen, name=det_id)
-                # Ensure the new curve is visible in strip-chart mode
-                self._detector_curves[det_id].setVisible(True)
+                self._detector_curves[det_id].setVisible(bool(visible))
             except Exception:
                 pass
             try:
@@ -2188,15 +2193,27 @@ class LiveTab(QtWidgets.QWidget):
         if cb is None:
             return
 
-        if self._selected_detectors_filter is None:
-            # Show all when nothing is selected.
-            if not cb.isChecked():
-                cb.setChecked(True)
-            return
-
-        should_show = detector_id in self._selected_detectors_filter
-        if cb.isChecked() != should_show:
-            cb.setChecked(bool(should_show))
+        selected = (
+            self._selected_detectors_filter is None
+            or detector_id in self._selected_detectors_filter
+        )
+        visible = bool(cb.isChecked()) and selected
+        try:
+            self._detector_curves[detector_id].setVisible(visible)
+        except Exception:
+            pass
+        try:
+            self._temperature_curves[detector_id].setVisible(
+                visible and bool(getattr(self, "_temp_axis_visible", True))
+            )
+        except Exception:
+            pass
+        try:
+            self._resistance_curves[detector_id].setVisible(
+                visible and bool(getattr(self, "_res_axis_visible", True))
+            )
+        except Exception:
+            pass
 
     def _is_detector_visible(self, detector_id: str) -> bool:
         if self._selected_detectors_filter is not None and detector_id not in self._selected_detectors_filter:
@@ -4161,6 +4178,14 @@ class LiveTab(QtWidgets.QWidget):
             old_times = list(self._resistance_times.get(k, []))
             self._resistance_buffers[k] = deque(old_vals[-self._window_size :], maxlen=self._window_size)
             self._resistance_times[k] = deque(old_times[-self._window_size :], maxlen=self._window_size)
+
+    def set_strip_window_seconds(self, seconds: float) -> None:
+        """Set the visible strip-chart x-axis span in seconds."""
+        try:
+            self._strip_window_seconds = max(0.001, float(seconds))
+        except (TypeError, ValueError):
+            self._strip_window_seconds = 5.0
+        self._follow_strip_chart_window()
 
     # -----------------------------
     # image hover and levels

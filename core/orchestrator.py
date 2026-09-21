@@ -60,6 +60,17 @@ class Orchestrator:
                     det.sample_received.connect(self._on_detector_signal)
             except Exception:
                 pass
+        # Streaming detectors (such as ComPort) need their reader started
+        # after the signal connection is installed so the first sample is not lost.
+        for det in self.detectors:
+            try:
+                start = getattr(det, "start", None)
+                if callable(start):
+                    start()
+            except Exception:
+                # Connection errors are handled by the device; initialization
+                # should still leave non-streaming detectors usable.
+                pass
 
     def shutdown(self, disconnect_devices: bool = True) -> None:
         if disconnect_devices:
