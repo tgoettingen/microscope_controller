@@ -39,7 +39,7 @@ class ComPort(QObject):
         mode: int | str | None = None,
         name: str | None = None,
         reader_hz: float = 40.0,
-        ring_buffer_size: int = 8192,
+        ring_buffer_size: int = 81920,
         frame_length: int = DEFAULT_FRAME_LENGTH,
         frame_header: bytes | str = DEFAULT_FRAME_HEADER,
         frame_trailer: bytes | str = DEFAULT_FRAME_TRAILER,

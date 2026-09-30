@@ -60,7 +60,7 @@
       "mode": 1,
       "read_timeout": 0.1,
       "reader_hz": 1000.0,
-      "ring_buffer_size": 8192,
+      "ring_buffer_size": 81920,
       "frame_length": 10,
       "frame_header": "0A01",
       "frame_trailer": "010A",
