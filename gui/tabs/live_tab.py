@@ -35,6 +35,8 @@ class LiveTab(QtWidgets.QWidget):
         self._strip_window_seconds = 5.0
         # Strip-chart should normally follow the newest samples as a moving window.
         self._follow_strip_x_window = True
+        self._strip_chart_running = False
+        self._strip_chart_frozen_end: float | None = None
         # Multi-axis scans always auto-fit the x-axis to show the full scan span.
         self._follow_multiaxis_x_window = True
         self._detector_buffers: dict[str, deque] = {}
@@ -931,7 +933,7 @@ class LiveTab(QtWidgets.QWidget):
         return (x0, x1, y0, y1)
 
     def _follow_strip_chart_window(self) -> None:
-        """Keep the strip-chart x-axis pinned to the newest buffer window."""
+        """Keep the strip-chart x-axis pinned to the current acquisition window."""
         if getattr(self, "_plot_mode", "strip") != "strip":
             return
         if not getattr(self, "_follow_strip_x_window", True):
@@ -945,6 +947,16 @@ class LiveTab(QtWidgets.QWidget):
                     x1 = end if x1 is None else max(x1, end)
             except Exception:
                 continue
+
+        if self._strip_chart_running:
+            try:
+                current_elapsed = time.time() - float(self._t0)
+                x1 = current_elapsed if x1 is None else max(x1, current_elapsed)
+            except (TypeError, ValueError):
+                if x1 is None:
+                    return
+        elif self._strip_chart_frozen_end is not None:
+            x1 = self._strip_chart_frozen_end if x1 is None else max(x1, self._strip_chart_frozen_end)
 
         if x1 is None:
             return
@@ -2285,6 +2297,20 @@ class LiveTab(QtWidgets.QWidget):
         detector images still update.
         """
         self._strip_owns_plot = bool(owns)
+
+    @QtCore.pyqtSlot(bool)
+    def set_strip_chart_running(self, running: bool) -> None:
+        """Start following live time or freeze the window at the stop time."""
+        was_running = self._strip_chart_running
+        self._strip_chart_running = bool(running)
+        if running:
+            self._strip_chart_frozen_end = None
+        elif was_running or self._strip_chart_frozen_end is None:
+            try:
+                self._strip_chart_frozen_end = max(0.0, time.time() - float(self._t0))
+            except (TypeError, ValueError):
+                self._strip_chart_frozen_end = None
+        self._follow_strip_chart_window()
 
     def set_preferred_plot_xaxis(self, axis_name: str | None) -> None:
         """Request selecting a specific x-axis after the next x-axis refresh.

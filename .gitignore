@@ -39,3 +39,5 @@ experiments/range-5mm.json
 experiments/stage_blink.json
 experiments/xaxis_backandforth.json
 *.json
+reports/
+*.bin
