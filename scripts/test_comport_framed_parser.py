@@ -65,59 +65,20 @@ def encode_temp_le(raw16: int) -> bytes:
     return bytes([v & 0xFF, (v >> 8) & 0xFF])
 
 
-def make_frame(raw24: int, temp16: int, header: bytes, trailer: bytes) -> bytes:
-    payload = encode_voltage_triplet(raw24) + encode_temp_le(temp16)
-    return header + payload + trailer
+def make_frame(raw24: int, telemetry: bytes, header: bytes, trailer: bytes) -> bytes:
+    if len(telemetry) != 3:
+        raise ValueError("production telemetry must contain three bytes")
+    return header + encode_voltage_triplet(raw24) + telemetry + trailer
 
 
 def make_test_instance(ring_buffer_size: int = 8, overflow_policy: str = "overwrite") -> ComPort:
-    # Build a ComPort instance without touching serial hardware.
-    inst = object.__new__(ComPort)
-    inst.port = "TEST"
-    inst._frame_header = b"\x0a\x01"
-    inst._frame_trailer = b"\x01\x0a"
-    inst._frame_length = 9
-    inst._payload_length = 5
-    inst._rx_buffer = bytearray()
-    inst._ring_buffer_size = int(ring_buffer_size)
-    from collections import deque
-
-    inst._ring_buffer = deque(maxlen=inst._ring_buffer_size)
-    inst._overflow_policy = overflow_policy
-    inst._overflow_count = 0
-    inst._frames_parsed = 0
-    inst._frames_rejected = 0
-    inst._bytes_discarded = 0
-    inst._last_overflow_error_ts = 0.0
-
-    inst._scale = 1.0
-    inst._offset = 0.0
-    inst._last_value = None
-    inst._last_scaled_value = None
-    inst._last_temperature = None
-    inst._last_timestamp = None
-
-    # Minimal lock and signal stubs used by parser path.
-    import threading
-
-    inst._lock = threading.Lock()
-
-    class _DummySignal:
-        def __init__(self):
-            self.count = 0
-
-        def emit(self, *args, **kwargs):
-            self.count += 1
-
-    class _DummyEmitter:
-        def __init__(self):
-            self.sample_received = _DummySignal()
-            self.error = _DummySignal()
-
-    inst.sample_received = _DummyEmitter().sample_received
-    inst.error = _DummyEmitter().error
-
-    return inst
+    return ComPort(
+        port="TEST",
+        name="TEST",
+        ring_buffer_size=ring_buffer_size,
+        frame_length=10,
+        overflow_policy=overflow_policy,
+    )
 
 
 def append_chunks(inst: ComPort, chunks: list[bytes]) -> None:
@@ -129,8 +90,8 @@ def append_chunks(inst: ComPort, chunks: list[bytes]) -> None:
 def main() -> int:
     print("\n=== TEST 1: aligned frames ===")
     c1 = make_test_instance(ring_buffer_size=16)
-    f1 = make_frame(0x001234, 25, c1._frame_header, c1._frame_trailer)
-    f2 = make_frame(0x002345, 26, c1._frame_header, c1._frame_trailer)
+    f1 = make_frame(0x001234, b"\x00\x19\x00", c1._frame_header, c1._frame_trailer)
+    f2 = make_frame(0x002345, b"\x00\x1a\x00", c1._frame_header, c1._frame_trailer)
     append_chunks(c1, [f1, f2])
     ok = True
     ok &= check("parsed 2 frames", c1._frames_parsed == 2, str(c1._frames_parsed))
@@ -138,7 +99,7 @@ def main() -> int:
 
     print("\n=== TEST 2: shifted stream realignment ===")
     c2 = make_test_instance(ring_buffer_size=16)
-    f = make_frame(0x003456, 31, c2._frame_header, c2._frame_trailer)
+    f = make_frame(0x003456, b"\x00\x1f\x00", c2._frame_header, c2._frame_trailer)
     shifted = f[4:] + f + f
     append_chunks(c2, [shifted])
     ok &= check("realigned and parsed >=2 frames", c2._frames_parsed >= 2, str(c2._frames_parsed))
@@ -150,9 +111,9 @@ def main() -> int:
     append_chunks(
         c3,
         [
-            make_frame(0x004567, 41, c3._frame_header, c3._frame_trailer),
+            make_frame(0x004567, b"\x00\x29\x00", c3._frame_header, c3._frame_trailer),
             noise,
-            make_frame(0x005678, 42, c3._frame_header, c3._frame_trailer),
+            make_frame(0x005678, b"\x00\x2a\x00", c3._frame_header, c3._frame_trailer),
         ],
     )
     ok &= check("parsed both valid frames", c3._frames_parsed == 2, str(c3._frames_parsed))
@@ -160,7 +121,7 @@ def main() -> int:
 
     print("\n=== TEST 4: marker mismatch rejection ===")
     c4 = make_test_instance(ring_buffer_size=16)
-    good = make_frame(0x006789, 50, c4._frame_header, c4._frame_trailer)
+    good = make_frame(0x006789, b"\x00\x32\x00", c4._frame_header, c4._frame_trailer)
     bad = good[:-2] + b"\xff\xee"
     append_chunks(c4, [bad + good])
     ok &= check("reject counter incremented", c4._frames_rejected >= 1, str(c4._frames_rejected))
@@ -168,7 +129,7 @@ def main() -> int:
 
     print("\n=== TEST 5: overflow signaling ===")
     c5 = make_test_instance(ring_buffer_size=3, overflow_policy="overwrite")
-    frames = [make_frame(0x000100 + i, 10 + i, c5._frame_header, c5._frame_trailer) for i in range(8)]
+    frames = [make_frame(0x000100 + i, bytes((0, 10 + i, 0)), c5._frame_header, c5._frame_trailer) for i in range(8)]
     append_chunks(c5, frames)
     ok &= check("buffer capped at configured size", len(c5.get_recent_samples()) == 3)
     ok &= check("overflow counter incremented", c5._overflow_count > 0, str(c5._overflow_count))

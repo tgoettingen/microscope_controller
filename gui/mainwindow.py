@@ -3760,11 +3760,23 @@ class MainWindow(QtWidgets.QMainWindow):
          self.live_tab.reset_1d_detector()
       except Exception:
          pass
+      # Create strip-chart curves before the worker and queued detector
+      # samples start arriving. This keeps streamed ComPort channels visible
+      # even when the first sample is emitted from a background thread.
+      for det_id in det_list:
+         try:
+            self.live_tab.register_detector(str(det_id))
+         except Exception:
+            pass
 
       # Apply moving window length (seconds) to the sample-buffer length.
       try:
          interval_s = float(cfg.get("interval_s", 0.05))
          window_s = float(cfg.get("window_time_s", 5.0))
+         try:
+            self.live_tab.set_strip_window_seconds(window_s)
+         except Exception:
+            pass
          if interval_s > 0:
             n = int(max(10, min(10000, round(window_s / interval_s))))
             try:
@@ -3823,6 +3835,11 @@ class MainWindow(QtWidgets.QMainWindow):
                   if dets:
                      for d in dets:
                         try:
+                           # Streaming detectors are forwarded by the
+                           # Orchestrator's sample_received connection. Polling
+                           # them here duplicates each frame in the strip buffer.
+                           if hasattr(d, "sample_received"):
+                              continue
                            sample = d.read_value() if hasattr(d, "read_value") else None
                            if sample is None:
                               continue
@@ -3860,6 +3877,12 @@ class MainWindow(QtWidgets.QMainWindow):
                   if remaining > 0:
                      time.sleep(remaining)
             finally:
+               QtCore.QMetaObject.invokeMethod(
+                  self.live_tab,
+                  "set_strip_chart_running",
+                  QtCore.Qt.ConnectionType.QueuedConnection,
+                  QtCore.Q_ARG(bool, False),
+               )
                try:
                   self.orch.shutdown(disconnect_devices=False)
                except Exception:
@@ -3876,6 +3899,7 @@ class MainWindow(QtWidgets.QMainWindow):
                self.orch_thread = None
                self._set_measurement_state("Finished", kind="Strip Chart")
 
+      self.live_tab.set_strip_chart_running(True)
       self.orch_thread = threading.Thread(target=worker, daemon=True)
       self.orch_thread.start()
       self._strip_reserved = self._strip_chart_hardware()
@@ -3930,6 +3954,8 @@ class MainWindow(QtWidgets.QMainWindow):
          self.statusBar().showMessage("Stopping experiment… closing files…")
       except Exception:
          pass
+
+      self.live_tab.set_strip_chart_running(False)
 
       try:
          self.orch.stop()
@@ -4244,6 +4270,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # Skip this while the Strip Chart is running: the two modes share the Live
       # plot, and changing the x-axis to a scan axis (X/Z/…) would disrupt the
       # running strip chart's time-based x label.
+      strip_running = False
       try:
          strip_running = getattr(self, "orch_thread", None) is not None
          # Tell the Live plot whether the Strip Chart owns it; while it does, the
@@ -4263,17 +4290,19 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
-      # Also clear strip-chart buffers so stale traces don't remain visible
-      # while the multi-axis run is starting (before the first multi-axis samples arrive).
-      try:
-         self.live_tab.reset_1d_detector()
-      except Exception:
-         pass
-      try:
-         if hasattr(self.live_tab, "_clear_plot_and_legend"):
-            self.live_tab._clear_plot_and_legend()
-      except Exception:
-         pass
+      # Clear stale strip-chart traces before a standalone multi-axis run.
+      # Keep them intact when Strip Chart owns the shared plot, or its moving
+      # time window would restart at zero while acquisition is still running.
+      if not strip_running:
+         try:
+            self.live_tab.reset_1d_detector()
+         except Exception:
+            pass
+         try:
+            if hasattr(self.live_tab, "_clear_plot_and_legend"):
+               self.live_tab._clear_plot_and_legend()
+         except Exception:
+            pass
 
       # Execute pre-scan positions defined in axis configs
       try:
