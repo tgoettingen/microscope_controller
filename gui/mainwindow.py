@@ -343,8 +343,7 @@ class MainWindow(QtWidgets.QMainWindow):
          if hasattr(self, 'excitation_control_dock') and self.excitation_control_dock.isVisible():
             if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
                logger.info("Reloading Excitation Control panel after initialization")
-               self.excitation_control_tab.set_excitation(self.excitation)
-               self.excitation_control_tab.set_config_path(self._config_path)
+               self.excitation_control_tab.set_excitation_devices(self.excitation)
                
       except Exception as e:
          logger.exception("Failed to reload visible panels after initialization: %s", e)
@@ -5597,8 +5596,7 @@ class MainWindow(QtWidgets.QMainWindow):
                try:
                   logger.info("Reloading Excitation Control panel after hardware config change")
                   if hasattr(self, 'excitation_control_tab') and self.excitation_control_tab:
-                     self.excitation_control_tab.set_excitation(self.excitation)
-                     self.excitation_control_tab.set_config_path(self._config_path)
+                     self.excitation_control_tab.set_excitation_devices(self.excitation)
                except Exception as e:
                   logger.exception("Failed to reload Excitation Control panel: %s", e)
             
