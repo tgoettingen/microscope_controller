@@ -136,6 +136,11 @@ class ComPort(QObject):
     def connect(self, port: str | None = None) -> str:
         if self.connected and self.ser is not None:
             return str(self.port)
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                f"Previous serial reader for {self.port} is still stopping"
+            )
+        self._thread = None
         if port:
             self.port = port
         if not self.port:
@@ -166,14 +171,29 @@ class ComPort(QObject):
         return str(self.port)
 
     def disconnect(self) -> None:
-        self.stop()
-        ser, self.ser = self.ser, None
+        self.running = False
+        self._stop_event.set()
+        ser = self.ser
         if ser is not None:
+            for method_name in ("reset_input_buffer", "reset_output_buffer", "cancel_read"):
+                method = getattr(ser, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except Exception:
+                        pass
             try:
                 ser.close()
             except Exception:
                 pass
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=max(1.0, self.read_timeout + 1.0))
+        self._thread = thread if thread is not None and thread.is_alive() else None
+        self.ser = None
         self.connected = False
+        if self._thread is None:
+            self.reset()
 
     def reset(self) -> None:
         with self._lock:
@@ -236,6 +256,9 @@ class ComPort(QObject):
     def start(self) -> None:
         if not self.connected:
             self.connect()
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(f"Previous serial reader for {self.port} is still stopping")
+        self._thread = None
         if self.running:
             return
         self.running = True
@@ -248,8 +271,8 @@ class ComPort(QObject):
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
-            thread.join(timeout=2.0)
-        self._thread = None
+            thread.join(timeout=max(1.0, self.read_timeout + 1.0))
+        self._thread = thread if thread is not None and thread.is_alive() else None
 
     def close(self) -> None:
         self.disconnect()
@@ -339,7 +362,8 @@ class ComPort(QObject):
                 if interval:
                     self._stop_event.wait(interval)
             except Exception as exc:
-                self._report_error(f"Serial read failed: {exc}")
+                if self.running and not self._stop_event.is_set():
+                    self._report_error(f"Serial read failed: {exc}")
                 break
         self.running = False
 

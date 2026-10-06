@@ -226,9 +226,18 @@ def build_devices(config_path="config/default_devices.json"):
     stage_cfg = cfg.get("stage", {"type": "simulated"})
     stage_type = stage_cfg.get("type", "simulated") if isinstance(stage_cfg, dict) else "simulated"
     if stage_cfg.get("type") == "StandaStageXY":
+        motors_cfg = stage_cfg.get("motors", {})
+        x_motor_cfg = motors_cfg.get("x", {}) if isinstance(motors_cfg, dict) else {}
+        y_motor_cfg = motors_cfg.get("y", {}) if isinstance(motors_cfg, dict) else {}
         stage = StandaStageXY(
             com_x=stage_cfg["com_x"],
-            com_y=stage_cfg["com_y"]
+            com_y=stage_cfg["com_y"],
+            x_max_velocity=x_motor_cfg.get("max_velocity"),
+            x_max_acceleration=x_motor_cfg.get("max_acceleration"),
+            x_max_deceleration=x_motor_cfg.get("max_deceleration"),
+            y_max_velocity=y_motor_cfg.get("max_velocity"),
+            y_max_acceleration=y_motor_cfg.get("max_acceleration"),
+            y_max_deceleration=y_motor_cfg.get("max_deceleration"),
         )
         stage_type_for_motor = "StandaStageXY"
     else:

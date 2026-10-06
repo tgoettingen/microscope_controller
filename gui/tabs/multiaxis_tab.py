@@ -22,6 +22,9 @@ class MultiAxisTab(QtWidgets.QWidget):
     # emitted when the Default X Axis combo changes
     xaxis_changed = QtCore.pyqtSignal(str)
 
+    _run_button_style = "background-color: #4CAF50; color: white; font-weight: bold; padding: 4px;"
+    _running_button_style = "background-color: #8BE6A0; color: white; font-weight: bold; padding: 4px;"
+
     def __init__(self, parent=None, config_path=None):
         super().__init__(parent)
         self._config_path = config_path
@@ -87,8 +90,20 @@ class MultiAxisTab(QtWidgets.QWidget):
         run_btns.setSpacing(3)
         
         self.start_btn = QtWidgets.QPushButton("Run")
-        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 4px;")
+        self.start_btn.setStyleSheet(self._run_button_style)
         self.start_btn.setMaximumWidth(50)
+        self._run_button_opacity = QtWidgets.QGraphicsOpacityEffect(self.start_btn)
+        self._run_button_opacity.setOpacity(1.0)
+        self.start_btn.setGraphicsEffect(self._run_button_opacity)
+        self._run_button_animation = QtCore.QPropertyAnimation(
+            self._run_button_opacity, b"opacity", self
+        )
+        self._run_button_animation.setDuration(1000)
+        self._run_button_animation.setStartValue(1.0)
+        self._run_button_animation.setKeyValueAt(0.5, 0.58)
+        self._run_button_animation.setEndValue(1.0)
+        self._run_button_animation.setLoopCount(-1)
+        self._run_button_animation.setEasingCurve(QtCore.QEasingCurve.Type.InOutSine)
         self.stop_btn = QtWidgets.QPushButton("Stop")
         self.stop_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 4px;")
         self.stop_btn.setMaximumWidth(50)
@@ -111,6 +126,21 @@ class MultiAxisTab(QtWidgets.QWidget):
 
         # Ctrl+Up / Ctrl+Down reorders the selected axis
         self.axis_list.keyPressEvent = self._axis_list_key_press
+
+    def set_scan_running(self, running: bool) -> None:
+        """Pulse the green Run button while a multi-axis scan is active."""
+        if running:
+            self.start_btn.setStyleSheet(self._running_button_style)
+            self.start_btn.setToolTip("Multi-axis scan running")
+            if self._run_button_animation.state() != QtCore.QAbstractAnimation.State.Running:
+                self._run_button_opacity.setOpacity(1.0)
+                self._run_button_animation.start()
+            return
+
+        self._run_button_animation.stop()
+        self._run_button_opacity.setOpacity(1.0)
+        self.start_btn.setStyleSheet(self._run_button_style)
+        self.start_btn.setToolTip("")
 
     def set_available_detectors(self, detectors: list[str]):
         """Receive the list of available detector IDs from the application.

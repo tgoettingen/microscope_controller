@@ -2,6 +2,7 @@ from pylablib.devices import Standa
 from .base import SingleAxis
 import logging
 import argparse
+import math
 
 
 logger = logging.getLogger(__name__)
@@ -9,25 +10,77 @@ logger = logging.getLogger(__name__)
 class StandaAxis(SingleAxis):
    """Low-level controller for a single Standa axis on one COM port."""
 
-   def __init__(self, com_port: str):
+   def __init__(
+      self,
+      com_port: str,
+      max_velocity: int | None = None,
+      max_acceleration: int | None = None,
+      max_deceleration: int | None = None,
+   ):
       self.com_port = com_port
+      self.max_velocity = self._validate_profile_value("max_velocity", max_velocity)
+      self.max_acceleration = self._validate_profile_value("max_acceleration", max_acceleration)
+      self.max_deceleration = self._validate_profile_value("max_deceleration", max_deceleration)
       self.dev = None
       self.pos = 0
 
       try:
-            self.dev = Standa.Standa8SMC(com_port)
+         self.dev = Standa.Standa8SMC(com_port)
+         self._apply_motion_profile()
       except Exception as e:
-         try:
-            logger.warning("Could not open Standa axis on %s: %s", com_port, e)
-         except Exception:
-            pass
-            self.dev = None
+         logger.warning("Could not open/configure Standa axis on %s: %s", com_port, e)
+         if self.dev is not None:
+            try:
+               self.dev.close()
+            except Exception:
+               pass
+         self.dev = None
+
+   @staticmethod
+   def _validate_profile_value(name: str, value: int | None) -> int | None:
+      if value is None:
+         return None
+      try:
+         numeric_value = float(value)
+      except (TypeError, ValueError) as exc:
+         raise ValueError(f"{name} must be a positive integer or None") from exc
+      if (
+         isinstance(value, bool)
+         or not math.isfinite(numeric_value)
+         or numeric_value <= 0
+         or not numeric_value.is_integer()
+      ):
+         raise ValueError(f"{name} must be a positive integer or None")
+      return int(numeric_value)
+
+   def _apply_motion_profile(self) -> None:
+      if self.dev is None:
+         return
+      settings = {
+         "speed": self.max_velocity,
+         "accel": self.max_acceleration,
+         "decel": self.max_deceleration,
+      }
+      settings = {name: value for name, value in settings.items() if value is not None}
+      if settings:
+         self.dev.setup_move(**settings)
 
    def connect(self):
-      self.__init__()
+      if self.dev is None:
+         self.__init__(
+            self.com_port,
+            self.max_velocity,
+            self.max_acceleration,
+            self.max_deceleration,
+         )
    
    def disconnect(self):
       self.stop()
+      if self.dev is not None:
+         try:
+            self.dev.close()
+         finally:
+            self.dev = None
       
    def reset(self):
       pass
@@ -113,15 +166,30 @@ class StandaAxis(SingleAxis):
 
 
 class StandaStageXY:
-   def __init__(self, com_x: str, com_y: str):
-      self.x = StandaAxis(com_x)
-      self.y = StandaAxis(com_y)
+   def __init__(
+      self,
+      com_x: str,
+      com_y: str,
+      x_max_velocity: int | None = None,
+      x_max_acceleration: int | None = None,
+      x_max_deceleration: int | None = None,
+      y_max_velocity: int | None = None,
+      y_max_acceleration: int | None = None,
+      y_max_deceleration: int | None = None,
+   ):
+      self.x = StandaAxis(
+         com_x, x_max_velocity, x_max_acceleration, x_max_deceleration
+      )
+      self.y = StandaAxis(
+         com_y, y_max_velocity, y_max_acceleration, y_max_deceleration
+      )
 
    def connect(self):
       pass
    
    def disconnect(self):
-      self.stop()
+      self.x.disconnect()
+      self.y.disconnect()
       
    def reset(self):
       pass

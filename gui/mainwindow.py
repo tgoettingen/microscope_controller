@@ -145,6 +145,7 @@ def _resolve_motors(device_map: dict, params: dict):
 class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
+   multiaxis_progress_changed = QtCore.pyqtSignal(str)
    measurement_state_changed = QtCore.pyqtSignal(object)
 
    def __init__(self, config_path: str = "config/default_devices.json"):
@@ -173,6 +174,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.multi_runner: MultiAxisRunner | None = None
       self.multi_thread: threading.Thread | None = None
+      self._multi_point_count = 0
 
       # Hardware currently reserved by an active run. Each entry is a tuple of
       # (detector-id set, motor-name set). None => that run is not active.
@@ -374,6 +376,12 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+   @QtCore.pyqtSlot(str)
+   def _set_multiaxis_progress_text(self, text: str) -> None:
+      label = getattr(self, "_multiaxis_progress_label", None)
+      if label is not None:
+         label.setText(text)
+
 
    @QtCore.pyqtSlot(object)
    def _apply_measurement_state(self, payload: object) -> None:
@@ -402,6 +410,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self._measurement_state = normalized
       self._measurement_kind = kind_text
+
+      if kind_text == "Multi-Axis":
+         try:
+            self.multi_tab.set_scan_running(normalized == "Running")
+         except Exception:
+            pass
 
       # Release hardware reservations when a run finishes so the other mode's
       # start button can be re-enabled. Done before any early return below.
@@ -1287,6 +1301,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.live_tab.hover_info.connect(lambda s: self.statusBar().showMessage(s))
       # connect load/save status messages to status bar
       self.live_tab.status_message.connect(lambda msg, ms: self.statusBar().showMessage(msg, ms))
+      self.multiaxis_progress_changed.connect(self._set_multiaxis_progress_text)
       try:
          self.live_tab.plugin_movement_commands.connect(self._execute_plugin_movement_commands)
       except Exception:
@@ -1297,6 +1312,13 @@ class MainWindow(QtWidgets.QMainWindow):
          self.statusBar().addPermanentWidget(self._measurement_status_label)
       except Exception:
          self._measurement_status_label = None
+      try:
+         self._multiaxis_progress_label = QtWidgets.QLabel(self)
+         self._multiaxis_progress_label.setMinimumWidth(240)
+         self._multiaxis_progress_label.setText("Multi-axis: idle")
+         self.statusBar().addPermanentWidget(self._multiaxis_progress_label)
+      except Exception:
+         self._multiaxis_progress_label = None
       
       # Add stage position label to status bar
       try:
@@ -4261,8 +4283,6 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          logger.exception("Failed to log multi-axis scan dimensions")
 
-      self.live_tab.reset_multiaxis()
-
       # Apply the Multi-Axis tab's default x-axis preference to the Live plot.
       # The Live plot will apply this as soon as the first multi-axis samples
       # arrive and x-axis options are refreshed.
@@ -4272,7 +4292,8 @@ class MainWindow(QtWidgets.QMainWindow):
       # running strip chart's time-based x label.
       strip_running = False
       try:
-         strip_running = getattr(self, "orch_thread", None) is not None
+         strip_thread = getattr(self, "orch_thread", None)
+         strip_running = strip_thread is not None and strip_thread.is_alive()
          # Tell the Live plot whether the Strip Chart owns it; while it does, the
          # multi-axis scan must not switch plot mode or change the x-axis label.
          try:
@@ -4290,17 +4311,11 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
-      # Clear stale strip-chart traces before a standalone multi-axis run.
-      # Keep them intact when Strip Chart owns the shared plot, or its moving
-      # time window would restart at zero while acquisition is still running.
-      if not strip_running:
+      if has_detector_axis and not strip_running:
          try:
-            self.live_tab.reset_1d_detector()
-         except Exception:
-            pass
-         try:
-            if hasattr(self.live_tab, "_clear_plot_and_legend"):
-               self.live_tab._clear_plot_and_legend()
+            if hasattr(self, "plot_dock"):
+               self.plot_dock.show()
+               self.plot_dock.raise_()
          except Exception:
             pass
 
@@ -4358,6 +4373,38 @@ class MainWindow(QtWidgets.QMainWindow):
       # multichannel savers). A detector-less scan owns nothing, so it must not
       # tear down a concurrently running strip chart's savers.
       self._multi_owns_stream_savers = False
+      selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
+      det_list = []
+      if selected:
+         det_list = selected
+      elif isinstance(det, list):
+         det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+      elif det is not None:
+         det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
+
+      if axis_detector_names is not None:
+         det_list = [detector_id for detector_id in det_list if str(detector_id) in axis_detector_names]
+      if not has_detector_axis:
+         det_list = []
+         self.statusBar().showMessage(
+            "No Detector axis defined → detector signal not streamed", 6000
+         )
+
+      if has_detector_axis:
+         self._selected_detectors_for_display = set(det_list) if det_list else None
+         if not strip_running:
+            try:
+               self.live_tab.set_selected_detectors(list(det_list))
+            except Exception:
+               pass
+      try:
+         self.live_tab.prepare_multiaxis_plot(
+            det_list,
+            preserve_strip_plot=strip_running,
+         )
+      except Exception:
+         logger.exception("Failed to prepare Live plot for multi-axis scan")
+
       try:
          out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
          # Generate a new universal measurement ID for this run
@@ -4365,28 +4412,7 @@ class MainWindow(QtWidgets.QMainWindow):
          use_multichannel = bool(getattr(self.demo_tab, 'multichannel_cb', None) and
                                  self.demo_tab.multichannel_cb.isChecked() and
                                  MultiChannelSaver is not None)
-         selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
-         det_list = []
-         if selected:
-            det_list = selected
-         else:
-            if isinstance(det, list):
-               det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
-            else:
-               det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
-
-         # Restrict to detectors named by the Detector axes (e.g. only "vm2"
-         # when a single vm2 detector axis is defined).
-         if axis_detector_names is not None:
-            det_list = [d for d in det_list if str(d) in axis_detector_names]
-
-         if not has_detector_axis:
-            # No Detector axis defined: this is a pure motor/camera scan, so do
-            # not register detectors or create (empty) stream savers.
-            det_list = []
-            self.statusBar().showMessage(
-               "No Detector axis defined → detector signal not streamed", 6000)
-         elif use_multichannel and _SAVING_ENABLED:
+         if has_detector_axis and use_multichannel and _SAVING_ENABLED:
             # One shared file for all detectors
             self._close_mc_saver()
             self._mc_saver = MultiChannelSaver(
@@ -4434,26 +4460,21 @@ class MainWindow(QtWidgets.QMainWindow):
          # Record whether this run owns savers, so a concurrent strip chart's
          # savers are never torn down by this run.
          self._multi_owns_stream_savers = bool(det_list)
-
-         # When the Detector axes name specific detectors, restrict the display
-         # (plot curves, detector image panel) to exactly those active detectors
-         # so the UI reflects the number of detectors actually in use.
-         if has_detector_axis and axis_detector_names is not None:
-            try:
-               self._selected_detectors_for_display = set(det_list) if det_list else None
-            except Exception:
-               self._selected_detectors_for_display = None
-            try:
-               if hasattr(self.live_tab, "set_selected_detectors"):
-                  self.live_tab.set_selected_detectors(list(det_list))
-            except Exception:
-               pass
          # apply default X-axis selection from MultiAxisTab via the preference
          # mechanism (handled by set_preferred_plot_xaxis called earlier above).
       except Exception:
          pass
 
       def measure(state: dict):
+            self._multi_point_count += 1
+            state_summary = ", ".join(
+               f"{key}={state[key]}" for key in ("X", "Y", "Z", "Round") if key in state
+            )
+            message = f"Multi-axis: point {self._multi_point_count}"
+            if state_summary:
+               message += f" | {state_summary}"
+            self.multiaxis_progress_changed.emit(message)
+
             # camera image if Channel present
             if "Channel" in state:
                img = cam.snap()
@@ -4563,6 +4584,9 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
             finally:
+               self.multiaxis_progress_changed.emit(
+                  f"Multi-axis: finished ({self._multi_point_count} points)"
+               )
                # When the measurement finishes, stop stream saving — but only
                # if this run actually owns the savers. A detector-less scan that
                # ran alongside the strip chart must leave the strip chart's
@@ -4583,10 +4607,12 @@ class MainWindow(QtWidgets.QMainWindow):
                # Timer will be restarted by _apply_measurement_state
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
-      self.multi_thread.start()
+      self._multi_point_count = 0
+      self.multiaxis_progress_changed.emit("Multi-axis: starting")
       self._multi_reserved = self._multiaxis_hardware()
       self._set_measurement_state("Running", kind="Multi-Axis")
       self._refresh_run_button_states()
+      self.multi_thread.start()
 
    def _stop_multiaxis(self):
       try:
@@ -5009,6 +5035,12 @@ class MainWindow(QtWidgets.QMainWindow):
       NOTE: This runs on the worker thread — never touch Qt widgets directly here.
       """
       try:
+         compact_pos = repr(pos)
+         if len(compact_pos) > 48:
+            compact_pos = compact_pos[:45] + "..."
+         self.multiaxis_progress_changed.emit(
+            f"Multi-axis: point {self._multi_point_count} | {axis_name}={compact_pos}"
+         )
          ts = time.time()
          payload = {
             "timestamp": ts,
@@ -5428,8 +5460,17 @@ class MainWindow(QtWidgets.QMainWindow):
       with open(path, "w") as f:
          json.dump(data, f, indent=2)
 
-   def _release_current_devices(self) -> None:
-      """Stop any running acquisitions and disconnect currently-open devices."""
+   def _release_current_devices(self) -> bool:
+      """Stop active workers and fully release the current hardware devices."""
+      worker_threads = [
+         thread for thread in (
+            self.orch_thread,
+            self.multi_thread,
+            self.multiview_thread,
+         )
+         if thread is not None
+      ]
+
       # Stop running experiments / scans so devices are no longer in use.
       try:
          if self.orch_thread is not None:
@@ -5447,17 +5488,52 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
+      deadline = time.monotonic() + 5.0
+      for thread in worker_threads:
+         if thread.is_alive():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+      active_threads = [thread.name for thread in worker_threads if thread.is_alive()]
+      if active_threads:
+         logger.warning("Hardware reload cancelled; workers still active: %s", active_threads)
+         try:
+            self.statusBar().showMessage(
+               "Hardware reload cancelled: acquisition is still stopping.", 8000
+            )
+         except Exception:
+            pass
+         return False
+
       if not self.devices_built or self.devices_released:
-         return
+         return True
 
       detectors = self.det if isinstance(self.det, list) else [self.det]
+      disconnect_errors = []
       for dev in [self.cam, self.stage, self.focus, self.light, self.fw, self.excitation, *detectors]:
          if dev is None:
             continue
          try:
             dev.disconnect()
+         except Exception as exc:
+            disconnect_errors.append(f"{getattr(dev, 'name', type(dev).__name__)}: {exc}")
+            continue
+         reader = getattr(dev, "_thread", None)
+         if reader is not None and reader.is_alive():
+            disconnect_errors.append(
+               f"{getattr(dev, 'name', type(dev).__name__)}: serial reader did not stop"
+            )
+         if getattr(dev, "ser", None) is not None:
+            disconnect_errors.append(
+               f"{getattr(dev, 'name', type(dev).__name__)}: serial port is still open"
+            )
+
+      if disconnect_errors:
+         message = "; ".join(disconnect_errors)
+         logger.error("Hardware release incomplete: %s", message)
+         try:
+            self.statusBar().showMessage(f"Hardware reload cancelled: {message}", 10000)
          except Exception:
             pass
+         return False
 
       self.cam = None
       self.stage = None
@@ -5468,6 +5544,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.excitation = None
       self.devices_built = False
       self.devices_released = True
+      return True
 
    def _build_devices_now(self) -> bool:
       """Open/initialize all hardware from the active config up front.
@@ -5545,7 +5622,14 @@ class MainWindow(QtWidgets.QMainWindow):
          return
 
       # Close/disconnect any currently-open hardware before switching configs.
-      self._release_current_devices()
+      if not self._release_current_devices():
+         QtWidgets.QMessageBox.warning(
+            self,
+            "Load Hardware Config",
+            "The current hardware could not be fully released. Stop active runs "
+            "and close any other program using its COM ports, then try again.",
+         )
+         return
 
       self._config_path = path
       try:

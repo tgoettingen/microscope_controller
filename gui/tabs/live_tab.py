@@ -1980,6 +1980,30 @@ class LiveTab(QtWidgets.QWidget):
             pass
         # Clear any run-scoped x-axis preference so strip-chart mode is unaffected.
 
+    def prepare_multiaxis_plot(
+        self,
+        detector_ids: list[str] | None = None,
+        *,
+        preserve_strip_plot: bool = False,
+    ) -> None:
+        """Prepare detector buffers and plot state before a multi-axis run."""
+        self.reset_multiaxis()
+        if detector_ids is not None and not preserve_strip_plot:
+            self.set_selected_detectors(detector_ids)
+        if detector_ids is not None:
+            for detector_id in detector_ids:
+                self.register_detector(detector_id)
+
+        self.reset_1d_detector()
+        if not preserve_strip_plot:
+            self._clear_plot_and_legend()
+            self._plot_mode = "strip"
+        self._strip_owns_plot = bool(preserve_strip_plot)
+        self._last_multi_render = 0.0
+        self._multi_dirty = False
+        if not self.plot_timer.isActive():
+            self.plot_timer.start(100)
+
     def get_multiaxis_scan_data(self):
         """Get the current multi-axis scan data for plugin processing.
         
