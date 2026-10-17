@@ -212,13 +212,13 @@ class MotorAxisDialog(QtWidgets.QDialog):
                 banner_text = (
                     f"<b>Unit: mm</b> — stage calibration is active<br>"
                     f"<small>X: {xs_str} steps/mm &nbsp;|&nbsp; Y: {ys_str} steps/mm<br>"
-                    f"Enter Start / End / Step in <b>millimetres</b>.</small>"
+                    f"Enter Start / End / Step size in <b>millimetres</b>.</small>"
                 )
                 banner_color = "#e6f4ea"   # light green
             else:
                 banner_text = (
                     "<b>Unit: steps</b> — no calibration configured<br>"
-                    "<small>Enter Start / End / Step in raw motor <b>steps</b>.<br>"
+                    "<small>Enter Start / End / Step size in raw motor <b>steps</b>.<br>"
                     "Run <i>Action → Calibrate Stage…</i> to enable mm units.</small>"
                 )
                 banner_color = "#fff3cd"   # amber warning
@@ -270,7 +270,7 @@ class MotorAxisDialog(QtWidgets.QDialog):
 
         self.start_spin.setValue(0)
         self.end_spin.setValue(1000)
-        self.step_spin.setValue(100)
+        self.step_spin.setValue(1 if is_motor_axis else 100)
 
         # Show unit suffix on the three position spinboxes for X/Y/Z axes
         if axis_type in ("X", "Y", "Z"):
@@ -283,7 +283,7 @@ class MotorAxisDialog(QtWidgets.QDialog):
         # ── Wait ─────────────────────────────────────────────────────────────
         self.wait_spin = ScientificSpinBox()
         self.wait_spin.setRange(0.0, 3600.0)
-        self.wait_spin.setValue(0.05)
+        self.wait_spin.setValue(0.0)
         self.wait_spin.setSuffix(" s")
 
         # ── Motor / hardware selection & per-device mode ─────────────────────
@@ -321,7 +321,7 @@ class MotorAxisDialog(QtWidgets.QDialog):
 
         layout.addRow("Start", self.start_spin)
         layout.addRow("End", self.end_spin)
-        layout.addRow("Step", self.step_spin)
+        layout.addRow("Step size", self.step_spin)
         layout.addRow("Wait", self.wait_spin)
         layout.addRow("Hardware", self.hardware_table)
 
@@ -540,7 +540,7 @@ class MotorAxisDialog(QtWidgets.QDialog):
         except Exception: pass
         try: self.step_spin.setValue(p["step"])
         except Exception: pass
-        try: self.wait_spin.setValue(p.get("wait", 0.05))
+        try: self.wait_spin.setValue(p.get("wait", 0.0))
         except Exception: pass
         try:
             motors = p.get("motors") or []

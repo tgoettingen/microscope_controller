@@ -4134,7 +4134,8 @@ class LiveTab(QtWidgets.QWidget):
                 # 1D scan: plot line on per-detector curve
                 ax = axes[0]
                 coords = [s[ax] for s, _ in det_list]
-                vals = [v for _, v in det_list]
+                display_offset = self._effective_display_offset(det_id)
+                vals = [v - display_offset for _, v in det_list]
                 try:
                     curve = self._detector_curves.get(det_id)
                     if curve is not None:
@@ -4146,6 +4147,7 @@ class LiveTab(QtWidgets.QWidget):
 
             elif len(axes) == 2:
                 ax1, ax2 = axes
+                display_offset = self._effective_display_offset(det_id)
                 xs = sorted(set(s[ax1] for s, _ in det_list))
                 ys = sorted(set(s[ax2] for s, _ in det_list))
                 xi = {v: i for i, v in enumerate(xs)}
@@ -4154,7 +4156,7 @@ class LiveTab(QtWidgets.QWidget):
                 arr = np.zeros((len(xs), len(ys)), dtype=np.float32)
                 for s, v in det_list:
                     try:
-                        arr[xi[s[ax1]], yi[s[ax2]]] = v
+                        arr[xi[s[ax1]], yi[s[ax2]]] = v - display_offset
                     except KeyError:
                         pass
 
@@ -4176,6 +4178,7 @@ class LiveTab(QtWidgets.QWidget):
 
             elif len(axes) == 3:
                 ax1, ax2, ax3 = axes
+                display_offset = self._effective_display_offset(det_id)
                 xs = sorted(set(s[ax1] for s, _ in det_list))
                 ys = sorted(set(s[ax2] for s, _ in det_list))
                 zs = sorted(set(s[ax3] for s, _ in det_list))
@@ -4186,7 +4189,7 @@ class LiveTab(QtWidgets.QWidget):
                 arr = np.zeros((len(xs), len(ys), len(zs)), dtype=np.float32)
                 for s, v in det_list:
                     try:
-                        arr[xi[s[ax1]], yi[s[ax2]], zi[s[ax3]]] = v
+                        arr[xi[s[ax1]], yi[s[ax2]], zi[s[ax3]]] = v - display_offset
                     except KeyError:
                         pass
 

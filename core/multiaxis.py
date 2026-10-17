@@ -36,6 +36,9 @@ class AxisConfig:
             prefix += f"↳ [group {mode}/{length}] "
         if p.get("collapse_one_step"):
             prefix += "⊙ [1 step] "
+        display_name = str(p.get("display_name", "")).strip()
+        if display_name:
+            base = f"{display_name}: {base}"
         return f"{prefix}{base}"
 
     def _label_base(self) -> str:

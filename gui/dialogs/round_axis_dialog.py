@@ -4,7 +4,7 @@ from core.multiaxis import AxisConfig
 
 
 class RoundAxisDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config: AxisConfig | None = None):
         super().__init__(parent)
         self.setWindowTitle("Round Axis Settings")
 
@@ -13,6 +13,8 @@ class RoundAxisDialog(QtWidgets.QDialog):
         self.rounds_spin = QtWidgets.QSpinBox()
         self.rounds_spin.setRange(1, 100000)
         self.rounds_spin.setValue(1)
+        if config is not None:
+            self.rounds_spin.setValue(int(config.params.get("n_rounds", 1)))
 
         layout.addRow("Rounds", self.rounds_spin)
 

@@ -5,7 +5,7 @@ from core.multiaxis import AxisConfig
 
 
 class ChannelAxisDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config: AxisConfig | None = None):
         super().__init__(parent)
         self.setWindowTitle("Channel Axis Settings")
 
@@ -20,7 +20,7 @@ class ChannelAxisDialog(QtWidgets.QDialog):
 
         self.wait_spin = QtWidgets.QDoubleSpinBox()
         self.wait_spin.setRange(0.0, 10.0)
-        self.wait_spin.setValue(0.01)
+        self.wait_spin.setValue(0.0)
         layout.addWidget(QtWidgets.QLabel("Wait [s]"))
         layout.addWidget(self.wait_spin)
 
@@ -33,6 +33,32 @@ class ChannelAxisDialog(QtWidgets.QDialog):
         add_btn.clicked.connect(self._add_channel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
+
+        if config is not None:
+            self.wait_spin.setValue(float(config.params.get("wait", self.wait_spin.value())))
+            for channel in config.params.get("channels", []):
+                if isinstance(channel, dict):
+                    values = (
+                        channel.get("name", ""),
+                        channel.get("filter_position", channel.get("filter", "")),
+                        channel.get("light_intensity", channel.get("intensity", "")),
+                        channel.get("exposure_ms", channel.get("exposure", "")),
+                    )
+                else:
+                    values = (
+                        getattr(channel, "name", ""),
+                        getattr(channel, "filter_position", ""),
+                        getattr(channel, "light_intensity", ""),
+                        getattr(channel, "exposure_ms", ""),
+                    )
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                for column, value in enumerate(values):
+                    self.table.setItem(
+                        row,
+                        column,
+                        QtWidgets.QTableWidgetItem(str(value)),
+                    )
 
     def _add_channel(self):
         row = self.table.rowCount()

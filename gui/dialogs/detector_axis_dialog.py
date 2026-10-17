@@ -19,7 +19,7 @@ class DetectorAxisDialog(QtWidgets.QDialog):
 
         self.wait_spin = QtWidgets.QDoubleSpinBox()
         self.wait_spin.setRange(0.0, 10.0)
-        self.wait_spin.setValue(0.01)
+        self.wait_spin.setValue(0.0)
 
         # Detector scaling is taken from the device config JSON.
         # This axis is kept as a timing/no-op axis only.

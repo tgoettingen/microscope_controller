@@ -124,7 +124,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         # Enable editing axis by double-clicking the list item
         self.axis_list.itemDoubleClicked.connect(lambda _: self._edit_selected())
 
-        # Ctrl+Up / Ctrl+Down reorders the selected axis
+        # Ctrl/Command+Up / Ctrl/Command+Down reorders the selected axis
         self.axis_list.keyPressEvent = self._axis_list_key_press
 
     def set_scan_running(self, running: bool) -> None:
@@ -244,20 +244,10 @@ class MultiAxisTab(QtWidgets.QWidget):
         elif axis_type in det_names:
             d = DetectorAxisDialog(self, detector_name=axis_type)
         elif axis_type == "Excitation":
-            # Try to get excitation devices from config
-            excitation_devices = None
-            try:
-                from core.factory import load_config, build_devices
-                cfg = load_config(self._config_path)
-                exc_cfg = cfg.get("excitation")
-                if exc_cfg:
-                    # Build the devices to get the actual device objects
-                    _, _, _, _, _, _, excitation = build_devices(self._config_path)
-                    excitation_devices = excitation if isinstance(excitation, list) else [excitation]
-            except Exception:
-                pass
-            
-            d = ExcitationAxisDialog(self, excitation_devices=excitation_devices)
+            d = ExcitationAxisDialog(
+                self,
+                excitation_devices=self._get_excitation_devices(),
+            )
         elif axis_type == "Round":
             d = RoundAxisDialog(self)
         else:
@@ -265,6 +255,10 @@ class MultiAxisTab(QtWidgets.QWidget):
 
         if d.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             cfg: AxisConfig = d.get_config()
+            display_name = self._prompt_axis_name(cfg)
+            if display_name is None:
+                return
+            cfg.params["display_name"] = display_name
             item = QtWidgets.QListWidgetItem(cfg.label())
             item.setData(QtCore.Qt.ItemDataRole.UserRole, cfg)
             self.axis_list.addItem(item)
@@ -291,13 +285,17 @@ class MultiAxisTab(QtWidgets.QWidget):
                 config_path=self._config_path,
             )
         elif cfg.axis_type == "Channel":
-            dlg = ChannelAxisDialog(self)
+            dlg = ChannelAxisDialog(self, config=cfg)
         elif cfg.axis_type == "Detector":
             dlg = DetectorAxisDialog(self, detector_name=cfg.params.get("detector"))
         elif cfg.axis_type == "Excitation":
-            dlg = ExcitationAxisDialog(self)
+            dlg = ExcitationAxisDialog(
+                self,
+                excitation_devices=self._get_excitation_devices(),
+                config=cfg,
+            )
         elif cfg.axis_type == "Round":
-            dlg = RoundAxisDialog(self)
+            dlg = RoundAxisDialog(self, config=cfg)
         else:
             return
 
@@ -313,9 +311,9 @@ class MultiAxisTab(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Populate detector/channel/round dialog wait values when present.
+        # Populate detector dialog wait value when present.
         try:
-            if hasattr(dlg, "wait_spin") and getattr(cfg, "params", None):
+            if isinstance(dlg, DetectorAxisDialog) and cfg.params:
                 if "wait" in cfg.params:
                     dlg.wait_spin.setValue(cfg.params.get("wait", dlg.wait_spin.value()))
         except Exception:
@@ -323,8 +321,72 @@ class MultiAxisTab(QtWidgets.QWidget):
 
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             new_cfg = dlg.get_config()
+            for key in (
+                "display_name",
+                "group_with_prev",
+                "group_mode",
+                "group_length",
+                "collapse_one_step",
+            ):
+                if key in cfg.params:
+                    new_cfg.params[key] = cfg.params[key]
+            display_name = self._prompt_axis_name(
+                new_cfg,
+                default_name=cfg.params.get("display_name"),
+            )
+            if display_name is None:
+                return
+            new_cfg.params["display_name"] = display_name
             item.setText(new_cfg.label())
             item.setData(QtCore.Qt.ItemDataRole.UserRole, new_cfg)
+
+    def _prompt_axis_name(
+        self,
+        cfg: AxisConfig,
+        *,
+        default_name: str | None = None,
+    ) -> str | None:
+        """Ask for a user-facing name, choosing an unused default when adding."""
+        if default_name is None:
+            default_name = cfg.axis_type
+            existing_names = set()
+            for i in range(self.axis_list.count()):
+                axis_config = self.axis_list.item(i).data(
+                    QtCore.Qt.ItemDataRole.UserRole
+                )
+                if isinstance(axis_config, AxisConfig):
+                    existing_names.add(
+                        str(axis_config.params.get("display_name", "")).strip()
+                    )
+            candidate = default_name
+            suffix = 2
+            while candidate in existing_names:
+                candidate = f"{default_name} {suffix}"
+                suffix += 1
+            default_name = candidate
+
+        name, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "Name Axis",
+            "Axis name:",
+            text=str(default_name),
+        )
+        if not accepted:
+            return None
+        return name.strip() or str(default_name).strip()
+
+    def _get_excitation_devices(self):
+        """Build configured excitation devices for the excitation-axis editor."""
+        try:
+            from core.factory import build_devices, load_config
+
+            cfg = load_config(self._config_path)
+            if not cfg.get("excitation"):
+                return None
+            *_, excitation = build_devices(self._config_path)
+            return excitation if isinstance(excitation, list) else [excitation]
+        except Exception:
+            return None
 
     def _remove_selected(self):
         for item in self.axis_list.selectedItems():
@@ -356,7 +418,7 @@ class MultiAxisTab(QtWidgets.QWidget):
                 continue
             other = self.axis_list.item(i)
             ocfg = other.data(QtCore.Qt.ItemDataRole.UserRole)
-            label = ocfg._label_base() if isinstance(ocfg, AxisConfig) else other.text()
+            label = ocfg.label() if isinstance(ocfg, AxisConfig) else other.text()
             other_axes.append((i, label))
 
         # Determine the current selection to preselect in the dialog. Collapse
@@ -368,7 +430,7 @@ class MultiAxisTab(QtWidgets.QWidget):
             current = ("none",)
 
         dlg = GroupAxisDialog(
-            cfg._label_base(),
+            cfg.label(),
             other_axes,
             parent=self,
             mode=cfg.params.get("group_mode", "sync"),
@@ -421,11 +483,14 @@ class MultiAxisTab(QtWidgets.QWidget):
             pass
 
     def _axis_list_key_press(self, event):
-        """Handle Ctrl+Up / Ctrl+Down to reorder the selected axis."""
+        """Handle Ctrl/Command+Up / Ctrl/Command+Down to reorder the selected axis."""
         mod = event.modifiers()
         key = event.key()
-        ctrl = QtCore.Qt.KeyboardModifier.ControlModifier
-        if mod & ctrl:
+        reorder_modifiers = (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.MetaModifier
+        )
+        if mod & reorder_modifiers:
             if key == QtCore.Qt.Key.Key_Up:
                 self._move_axis(-1)
                 return
