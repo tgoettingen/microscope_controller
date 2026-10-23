@@ -59,6 +59,28 @@ class MultiAxisAxisControlTests(unittest.TestCase):
         self.assertEqual(get_text.call_args.kwargs["text"], "X 2")
         tab.close()
 
+    def test_axis_list_has_resizable_splitter_panel(self):
+        tab = MultiAxisTab()
+        tab.resize(300, 400)
+        tab.show()
+        self.app.processEvents()
+
+        self.assertEqual(
+            tab.axis_splitter.orientation(),
+            QtCore.Qt.Orientation.Vertical,
+        )
+        self.assertIs(
+            tab.axis_splitter.widget(0).findChild(QtWidgets.QListWidget),
+            tab.axis_list,
+        )
+        self.assertGreater(tab.axis_splitter.handleWidth(), 0)
+        self.assertGreater(tab.axis_list.maximumHeight(), 100)
+
+        tab.axis_splitter.setSizes([250, 100])
+        self.app.processEvents()
+        self.assertGreater(tab.axis_list.height(), 100)
+        tab.close()
+
     def test_control_and_command_shortcuts_reorder_axis(self):
         for modifier in (
             QtCore.Qt.KeyboardModifier.ControlModifier,

@@ -40,16 +40,30 @@ class MultiAxisTab(QtWidgets.QWidget):
         layout.setSpacing(4)  # Reduced spacing
         layout.setContentsMargins(4, 4, 4, 4)  # Reduced margins
 
-        # Defined axes - compact
+        self.axis_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.axis_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.axis_splitter)
+
+        # Defined axes
+        axis_panel = QtWidgets.QWidget()
+        axis_layout = QtWidgets.QVBoxLayout(axis_panel)
+        axis_layout.setSpacing(4)
+        axis_layout.setContentsMargins(0, 0, 0, 0)
         axis_label = QtWidgets.QLabel("Axes:")
         axis_label.setStyleSheet("font-weight: bold; font-size: 11px;")
-        layout.addWidget(axis_label)
+        axis_layout.addWidget(axis_label)
         
         self.axis_list = QtWidgets.QListWidget()
         self.axis_list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
         self.axis_list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
-        self.axis_list.setMaximumHeight(100)  # Limit height
-        layout.addWidget(self.axis_list)
+        self.axis_list.setMinimumHeight(40)
+        axis_layout.addWidget(self.axis_list)
+        self.axis_splitter.addWidget(axis_panel)
+
+        controls_panel = QtWidgets.QWidget()
+        controls_layout = QtWidgets.QVBoxLayout(controls_panel)
+        controls_layout.setSpacing(4)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
 
         # Default X-axis selector for runs - compact row
         xsel_layout = QtWidgets.QHBoxLayout()
@@ -63,7 +77,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         )
         xsel_layout.addWidget(self.default_xaxis_combo)
         xsel_layout.addStretch()
-        layout.addLayout(xsel_layout)
+        controls_layout.addLayout(xsel_layout)
 
         # Buttons for axis management - compact row
         btns = QtWidgets.QHBoxLayout()
@@ -83,7 +97,7 @@ class MultiAxisTab(QtWidgets.QWidget):
         btns.addWidget(self.group_axis_btn)
         btns.addWidget(self.remove_axis_btn)
         btns.addStretch()
-        layout.addLayout(btns)
+        controls_layout.addLayout(btns)
 
         # Run buttons - compact row
         run_btns = QtWidgets.QHBoxLayout()
@@ -111,9 +125,13 @@ class MultiAxisTab(QtWidgets.QWidget):
         run_btns.addWidget(self.start_btn)
         run_btns.addWidget(self.stop_btn)
         run_btns.addStretch()
-        layout.addLayout(run_btns)
+        controls_layout.addLayout(run_btns)
 
-        layout.addStretch(1)
+        controls_layout.addStretch(1)
+        self.axis_splitter.addWidget(controls_panel)
+        self.axis_splitter.setStretchFactor(0, 1)
+        self.axis_splitter.setStretchFactor(1, 0)
+        self.axis_splitter.setSizes([120, 140])
 
         self.add_axis_btn.clicked.connect(self._add_axis_dialog)
         self.group_axis_btn.clicked.connect(self._group_axis)
