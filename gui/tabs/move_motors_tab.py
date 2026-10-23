@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import threading
+
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtCore import pyqtSlot, pyqtSignal, QTimer
 from devices.base import StageXY, FocusZ
@@ -12,6 +15,8 @@ SLIDER_RANGE = 1000  # Normalized slider range
 AUTO_REFRESH_INTERVAL_MS = 500  # Live mode refresh interval in milliseconds
 SLIDER_RANGE = 1000  # Normalized slider range
 AUTO_REFRESH_INTERVAL_MS = 500  # Auto-refresh interval in milliseconds
+
+logger = logging.getLogger(__name__)
 
 
 class PositionBlockWidget(QtWidgets.QWidget):
@@ -362,6 +367,8 @@ class StageControlTab(QtWidgets.QWidget):
     _move_complete = QtCore.pyqtSignal(float, float)  # Signal when move operation completes with target position
     _move_error = QtCore.pyqtSignal(str)  # Signal for move errors
     _focus_move_complete = QtCore.pyqtSignal(float)  # Signal when focus move completes with target position
+    _position_refresh_complete = QtCore.pyqtSignal(object)
+    _stage_move_finished = QtCore.pyqtSignal(object)
     
     def __init__(self, stage: StageXY = None, focus: FocusZ = None, config_path: str = None, parent=None):
         super().__init__(parent)
@@ -370,15 +377,16 @@ class StageControlTab(QtWidgets.QWidget):
         self.config_path = config_path
         self._is_live_mode = False  # Default: live mode OFF
         self._is_dragging = False  # Track dragging state
+        self._is_moving = False
+        self._active_xy_target: tuple[float, float] | None = None
+        self._pending_xy_target: tuple[float, float] | None = None
+        self._position_refresh_in_flight = False
         self._keep_aspect_ratio = True  # Default: keep aspect ratio ON
         self._aspect_ratio = 1.0  # Will be calculated from range
         self._xy_width = POSITION_BLOCK_SIZE  # Dynamic width for XY controls
         self._load_config()
         self._build_ui()
         self._setup_position_timer()
-        
-        # Initialize moving flag to prevent duplicate moves
-        self._is_moving = False
         
         # Initialize interaction flags to prevent UI interference
         self._is_interacting_z = False
@@ -387,6 +395,8 @@ class StageControlTab(QtWidgets.QWidget):
         self._move_complete.connect(self._on_move_complete)
         self._move_error.connect(self._on_move_error_slot)
         self._focus_move_complete.connect(self._on_focus_move_complete)
+        self._position_refresh_complete.connect(self._apply_position_refresh)
+        self._stage_move_finished.connect(self._on_stage_move_finished)
         
     def _load_config(self):
         """Load stage and focus configuration for units and limits."""
@@ -883,48 +893,38 @@ class StageControlTab(QtWidgets.QWidget):
     def _move_to_position_xy(self, x, y):
         """Move stage to specific X,Y position in a separate thread."""
         try:
-            print(f"[DEBUG] _move_to_position_xy called with: X={x}, Y={y}")
-            print(f"[DEBUG] Stage type: {type(self.stage)}")
-            
             # Check if we're using ScaledStageXY
             from devices.scaled import ScaledStageXY
             is_scaled = isinstance(self.stage, ScaledStageXY)
-            print(f"[DEBUG] Is ScaledStageXY: {is_scaled}")
-            
-            # Check if underlying stage is StandaStageXY (which already handles concurrent X/Y movement)
-            from devices.standa_stage import StandaStageXY
-            is_standa = False
-            if is_scaled and hasattr(self.stage, '_stage'):
-                is_standa = isinstance(self.stage._stage, StandaStageXY)
-            elif not is_scaled:
-                is_standa = isinstance(self.stage, StandaStageXY)
-            print(f"[DEBUG] Is StandaStageXY: {is_standa}")
             
             if is_scaled:
-                # For ScaledStageXY, pass logical coordinates directly
-                # It will handle the scale/offset conversion internally
                 x_steps = x
                 y_steps = y
-                print(f"[DEBUG] Using ScaledStageXY - passing logical coordinates: X={x_steps}, Y={y_steps}")
             else:
-                # For raw stages, convert to steps
                 x_steps = self._real_units_to_steps(x, self.stage_config['x_scale'], self.stage_config['x_offset'])
                 y_steps = self._real_units_to_steps(y, self.stage_config['y_scale'], self.stage_config['y_offset'])
-                print(f"[DEBUG] Using raw stage - converted to steps: X={x_steps}, Y={y_steps}")
             
             # Prevent duplicate moves by checking if already moving
             if hasattr(self, '_is_moving') and self._is_moving:
-                print(f"[DEBUG] Already moving, ignoring duplicate move request")
+                target = (float(x), float(y))
+                if target == self._active_xy_target:
+                    return
+                self._pending_xy_target = target
+                logger.debug(
+                    "Queued latest stage target while a move is in progress: X=%s Y=%s",
+                    x,
+                    y,
+                )
                 return
             
             self._is_moving = True
+            self._active_xy_target = (float(x), float(y))
             
             # Move stage in a separate thread to avoid blocking UI
             if self.stage and hasattr(self.stage, 'move_to'):
-                import threading
                 move_thread = threading.Thread(
                     target=self._move_stage_thread,
-                    args=(x_steps, y_steps, x, y, is_standa),
+                    args=(x_steps, y_steps, x, y),
                     daemon=True
                 )
                 move_thread.start()
@@ -932,27 +932,40 @@ class StageControlTab(QtWidgets.QWidget):
                 # Update UI even if stage not available
                 self._update_position_ui(x, y)
                 self._is_moving = False
-                
-        except Exception as e:
-            print(f"Error moving stage: {e}")
+                self._active_xy_target = None
+        except Exception:
+            logger.exception("Could not start stage movement")
             self._is_moving = False
-    
-    def _move_stage_thread(self, x_steps, y_steps, x_real, y_real, is_standa):
+            self._active_xy_target = None
+
+    def _move_stage_thread(self, x_steps, y_steps, x_real, y_real):
         """Thread function to move stage."""
         try:
-            print(f"[DEBUG] _move_stage_thread: Moving to steps X={x_steps}, Y={y_steps}, is_standa={is_standa}")
-            print(f"[DEBUG] _move_stage_thread: Current stage position: {self.stage.get_position()}")
+            logger.info("Stage UI move starting: X=%s Y=%s", x_steps, y_steps)
             self.stage.move_to(x_steps, y_steps)
-            print(f"[DEBUG] _move_stage_thread: Move completed, new position: {self.stage.get_position()}")
+            logger.info("Stage UI move command completed")
+            result = (True, x_real, y_real, "")
         except Exception as e:
-            print(f"Error in stage movement thread: {e}")
-            self._move_error.emit(str(e))
-        finally:
-            # Reset moving flag
-            self._is_moving = False
-            # Update UI using signal with target position
-            print(f"[DEBUG] _move_stage_thread: Emitting move_complete with X={x_real}, Y={y_real}")
-            self._move_complete.emit(x_real, y_real)
+            logger.exception("Stage UI move failed")
+            result = (False, x_real, y_real, str(e))
+        self._stage_move_finished.emit(result)
+
+    @pyqtSlot(object)
+    def _on_stage_move_finished(self, result):
+        succeeded, x_real, y_real, error = result
+        self._is_moving = False
+        self._active_xy_target = None
+        pending_target = self._pending_xy_target
+        self._pending_xy_target = None
+        if succeeded:
+            if pending_target is None:
+                self._move_complete.emit(x_real, y_real)
+        else:
+            self._move_error.emit(error)
+            return
+
+        if pending_target is not None:
+            self._move_to_position_xy(*pending_target)
     
     @pyqtSlot(float, float)
     def _update_position_ui(self, x, y):
@@ -1017,52 +1030,65 @@ class StageControlTab(QtWidgets.QWidget):
         # Timer will be started when live mode is enabled
     
     def _auto_refresh_position(self):
-        """Auto-refresh position without blocking UI."""
+        """Read hardware positions in the background; never block the GUI thread."""
+        if self._is_moving or self._position_refresh_in_flight:
+            return
+        self._position_refresh_in_flight = True
+        stage = self.stage
+        focus = self.focus
+
+        def read_position():
+            try:
+                x_real, y_real, z_real = 0.0, 0.0, 0.0
+                if stage and hasattr(stage, "get_position"):
+                    position = stage.get_position()
+                    if isinstance(position, (tuple, list)) and len(position) >= 2:
+                        x_real, y_real = float(position[0]), float(position[1])
+                    elif position is not None:
+                        x_real = float(position)
+                if focus and hasattr(focus, "get_position"):
+                    focus_position = focus.get_position()
+                    if focus_position is not None:
+                        z_real = float(focus_position)
+                result = (x_real, y_real, z_real, None)
+            except Exception as exc:
+                result = (0.0, 0.0, 0.0, str(exc))
+            self._position_refresh_complete.emit(result)
+
         try:
-            x_real, y_real, z_real = 0.0, 0.0, 0.0
-            
-            if self.stage and hasattr(self.stage, 'get_position'):
-                pos = self.stage.get_position()
-                if isinstance(pos, (tuple, list)) and len(pos) >= 2:
-                    x_steps, y_steps = float(pos[0]), float(pos[1])
-                else:
-                    x_steps = float(pos) if pos is not None else 0.0
-                    y_steps = 0.0
-                    
-                # Convert steps to real units
-                x_real = self._steps_to_real_units(x_steps, self.stage_config['x_scale'], self.stage_config['x_offset'])
-                y_real = self._steps_to_real_units(y_steps, self.stage_config['y_scale'], self.stage_config['y_offset'])
-                    
-            if self.focus and hasattr(self.focus, 'get_position'):
-                z_steps = float(self.focus.get_position()) if self.focus.get_position() is not None else 0.0
-                z_real = self._steps_to_real_units(z_steps, self.focus_config['scale'], self.focus_config['offset'])
-                
-            self.current_x_label.setText(f"{x_real:.1f}")
-            self.current_y_label.setText(f"{y_real:.1f}")
-            self.current_z_label.setText(f"{z_real:.1f}")
-            
-            # Update position block visualization
-            self.position_block.set_position(x_real, y_real)
-            
-            # Only update spinboxes and sliders in live mode
-            if self._is_live_mode:
-                self.x_spin.blockSignals(True)
-                self.y_spin.blockSignals(True)
-                self.z_spin.blockSignals(True)
+            threading.Thread(target=read_position, daemon=True).start()
+        except RuntimeError:
+            self._position_refresh_in_flight = False
+            logger.exception("Could not start background stage position refresh")
+
+    @pyqtSlot(object)
+    def _apply_position_refresh(self, result):
+        self._position_refresh_in_flight = False
+        x_real, y_real, z_real, error = result
+        if error:
+            logger.warning("Could not refresh stage position: %s", error)
+            return
+
+        self.current_x_label.setText(f"{x_real:.1f}")
+        self.current_y_label.setText(f"{y_real:.1f}")
+        self.current_z_label.setText(f"{z_real:.1f}")
+        self.position_block.set_position(x_real, y_real)
+
+        if self._is_live_mode:
+            self.x_spin.blockSignals(True)
+            self.y_spin.blockSignals(True)
+            self.z_spin.blockSignals(True)
+            try:
                 self.x_spin.setValue(x_real)
                 self.y_spin.setValue(y_real)
                 self.z_spin.setValue(z_real)
+            finally:
                 self.x_spin.blockSignals(False)
                 self.y_spin.blockSignals(False)
                 self.z_spin.blockSignals(False)
-                
-                self._update_sliders_from_spinboxes()
-            
-            self.position_changed.emit(x_real, y_real, z_real)
-            
-        except Exception:
-            # Silently fail on auto-refresh to avoid UI blocking
-            pass
+            self._update_sliders_from_spinboxes()
+
+        self.position_changed.emit(x_real, y_real, z_real)
     
     def _update_slider_limits(self):
         """Update slider limits based on configuration and sync with position block."""
@@ -1431,41 +1457,7 @@ class StageControlTab(QtWidgets.QWidget):
     @pyqtSlot()
     def _refresh_position(self):
         """Refresh the current position display in real units (manual refresh)."""
-        try:
-            x_real, y_real, z_real = 0.0, 0.0, 0.0
-            
-            if self.stage and hasattr(self.stage, 'get_position'):
-                pos = self.stage.get_position()
-                if isinstance(pos, (tuple, list)) and len(pos) >= 2:
-                    x_steps, y_steps = float(pos[0]), float(pos[1])
-                    x_real = self._steps_to_real_units(x_steps, self.stage_config['x_scale'], self.stage_config['x_offset'])
-                    y_real = self._steps_to_real_units(y_steps, self.stage_config['y_scale'], self.stage_config['y_offset'])
-                    
-            if self.focus and hasattr(self.focus, 'get_position'):
-                z_steps = self.focus.get_position()
-                z_real = self._steps_to_real_units(z_steps, self.focus_config['scale'], self.focus_config['offset'])
-                
-            # Update UI
-            self.x_spin.blockSignals(True)
-            self.y_spin.blockSignals(True)
-            self.z_spin.blockSignals(True)
-            self.x_spin.setValue(x_real)
-            self.y_spin.setValue(y_real)
-            self.z_spin.setValue(z_real)
-            self.x_spin.blockSignals(False)
-            self.y_spin.blockSignals(False)
-            self.z_spin.blockSignals(False)
-            
-            # Only update sliders in live mode if not being interacted with
-            if not self._is_live_mode:
-                self._update_sliders_from_spinboxes()
-            
-            # Update position block visualization
-            if hasattr(self, 'position_block'):
-                self.position_block.set_position(x_real, y_real)
-            
-        except Exception as e:
-            print(f"Error refreshing position: {e}")
+        self._auto_refresh_position()
     
     def set_stage(self, stage: StageXY):
         """Set the stage device and refresh position."""

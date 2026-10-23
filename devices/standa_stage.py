@@ -3,6 +3,7 @@ from .base import SingleAxis
 import logging
 import argparse
 import math
+import threading
 
 
 logger = logging.getLogger(__name__)
@@ -183,13 +184,15 @@ class StandaStageXY:
       self.y = StandaAxis(
          com_y, y_max_velocity, y_max_acceleration, y_max_deceleration
       )
+      self._motion_lock = threading.RLock()
 
    def connect(self):
       pass
    
    def disconnect(self):
-      self.x.disconnect()
-      self.y.disconnect()
+      with self._motion_lock:
+         self.x.disconnect()
+         self.y.disconnect()
       
    def reset(self):
       pass
@@ -198,6 +201,10 @@ class StandaStageXY:
 
 
    def move_to(self, x: float, y: float):
+      with self._motion_lock:
+         return self._move_to_locked(x, y)
+
+   def _move_to_locked(self, x: float, y: float):
       try:
          logger.info("StandaStageXY move_to x=%s y=%s", x, y)
       except Exception:
@@ -205,7 +212,6 @@ class StandaStageXY:
       
       # Use concurrent movement for speed, but with proper error handling
       # This is more efficient than sequential movement
-      import threading
       x_success = False
       y_success = False
       x_error = None
@@ -248,32 +254,30 @@ class StandaStageXY:
       elif y_error:
          logger.warning(f"Y axis move issue: {y_error}")
       
-      # If both failed with non-timeout errors, raise exception
-      if not x_success and not y_success:
-         raise RuntimeError(f"Failed to move both X and Y axes. X error: {x_error}, Y error: {y_error}")
-      
-      # Return success status
-      return x_success and y_success
+      # Propagate a partial XY failure instead of reporting a successful move.
+      if not x_success or not y_success:
+         raise RuntimeError(
+            "Standa XY move did not complete successfully. "
+            f"X success={x_success} error={x_error}; "
+            f"Y success={y_success} error={y_error}"
+         )
+      return True
    
    def _move_x_axis(self, x: float):
       """Move X axis in a separate thread."""
       try:
-         logger.info(f"StandaStageXY _move_x_axis: Moving X to {x}, current X position: {self.x.get_position()}")
+         logger.info("StandaStageXY _move_x_axis: Moving X to %s", x)
          self.x.move_to(x)
-         # Store success in thread object
-         import threading
          threading.current_thread().success = True
-         logger.info(f"StandaStageXY _move_x_axis: X move completed, new position: {self.x.get_position()}")
+         logger.info("StandaStageXY _move_x_axis: X move completed")
       except Exception as e:
          error_msg = str(e)
          # Handle timeout exceptions as warnings, not errors
          if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
             logger.warning(f"X axis move timeout (may have completed): {e}")
-            import threading
             threading.current_thread().success = True  # Consider as success for timeout cases
          else:
             logger.warning(f"Failed to move X axis: {e}")
-            import threading
             threading.current_thread().success = False
             threading.current_thread().error = error_msg
    
@@ -281,28 +285,28 @@ class StandaStageXY:
       """Move Y axis in a separate thread."""
       try:
          self.y.move_to(y)
-         # Store success in thread object
-         import threading
          threading.current_thread().success = True
       except Exception as e:
          error_msg = str(e)
          # Handle timeout exceptions as warnings, not errors
          if 'timeout' in error_msg.lower() or 'SerialTimeoutException' in error_msg:
             logger.warning(f"Y axis move timeout (may have completed): {e}")
-            import threading
             threading.current_thread().success = True  # Consider as success for timeout cases
          else:
             logger.warning(f"Failed to move Y axis: {e}")
-            import threading
             threading.current_thread().success = False
             threading.current_thread().error = error_msg
 
    def move_by(self, dx: float, dy: float):
-      if dx: self.x.move_by(dx)
-      if dy: self.y.move_by(dy)
+      with self._motion_lock:
+         if dx:
+            self.x.move_by(dx)
+         if dy:
+            self.y.move_by(dy)
 
    def get_position(self):
-      return self.x.get_position(), self.y.get_position()
+      with self._motion_lock:
+         return self.x.get_position(), self.y.get_position()
 
    def stop(self):
       self.x.stop()

@@ -148,6 +148,7 @@ class MainWindow(QtWidgets.QMainWindow):
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
    multiaxis_progress_changed = QtCore.pyqtSignal(str)
    multiaxis_sequence_advance = QtCore.pyqtSignal()
+   stage_position_read_completed = QtCore.pyqtSignal(object)
    measurement_state_changed = QtCore.pyqtSignal(object)
 
    def __init__(self, config_path: str = "config/default_devices.json"):
@@ -226,6 +227,7 @@ class MainWindow(QtWidgets.QMainWindow):
       # Stage position update timer for status bar (500ms when multiaxis not running)
       self._stage_position_timer: QtCore.QTimer | None = None
       self._stage_position_label: QtWidgets.QLabel | None = None
+      self._stage_position_poll_in_flight = False
 
       # Thread-safe camera settings snapshot (used by worker threads)
       self._camera_exposure_ms: float = 20.0
@@ -297,6 +299,9 @@ class MainWindow(QtWidgets.QMainWindow):
       self._original_layout_state: object | None = None
       self._original_layout_geometry: object | None = None
       self._build_ui()
+      self.stage_position_read_completed.connect(
+         self._apply_stage_position_read
+      )
       self.measurement_state_changed.connect(self._apply_measurement_state)
       self._set_measurement_state("Finished", kind="Idle")
       self._apply_full_layout()
@@ -1879,63 +1884,57 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
    def _update_stage_position_display(self) -> None:
-      """Update the stage position display in the status bar.
-      
-      Updates position regardless of multiaxis state, but uses different timing:
-      - When multiaxis is running: position is updated by the multiaxis system itself
-      - When multiaxis is not running: this timer updates position every 500ms
-      """
-      try:
-         stage = getattr(self, 'stage', None)
-         if stage is None:
-            try:
-               logger.debug("Stage object is None - skipping position update")
-            except Exception:
-               pass
-            self._set_stage_position_text("Stage: --")
-            return
-         
-         if not hasattr(stage, 'get_position'):
-            try:
-               logger.debug("Stage does not have get_position method - skipping position update")
-            except Exception:
-               pass
-            self._set_stage_position_text("Stage: --")
-            return
-         
-         # Get current position with exception handling
+      """Schedule the stage status read away from the GUI thread."""
+      if self._stage_position_poll_in_flight:
+         return
+      if getattr(getattr(self, "stage_control_tab", None), "_is_moving", False):
+         return
+
+      stage = getattr(self, "stage", None)
+      if stage is None or not hasattr(stage, "get_position"):
+         self._set_stage_position_text("Stage: --")
+         return
+
+      self._stage_position_poll_in_flight = True
+
+      def read_position():
          try:
             position = stage.get_position()
-            try:
-               logger.debug("Stage position retrieved: %s", position)
-            except Exception:
-               pass
-               
             if isinstance(position, (tuple, list)) and len(position) >= 2:
-               x, y = float(position[0]), float(position[1])
-               self._set_stage_position_text(f"Stage: X={x:.2f}, Y={y:.2f}")
+               result = ("position", float(position[0]), float(position[1]))
             else:
-               # Handle unexpected position format
-               try:
-                  logger.warning("Unexpected position format: %s (type: %s)", position, type(position))
-               except Exception:
-                  pass
-               self._set_stage_position_text("Stage: --")
-         except Exception as pos_error:
-            # Position retrieval failed - show error state without crashing
-            try:
-               logger.warning("Failed to get stage position: %s", pos_error)
-            except Exception:
-               pass
-            self._set_stage_position_text("Stage: error")
-            
-      except Exception as e:
-         # Any other error - don't crash the status bar
-         try:
-            logger.warning("Error updating stage position display: %s", e)
-         except Exception:
-            pass
+               result = ("invalid", position)
+         except Exception as exc:
+            result = ("error", str(exc))
+         self.stage_position_read_completed.emit(result)
+
+      try:
+         threading.Thread(target=read_position, daemon=True).start()
+      except RuntimeError:
+         self._stage_position_poll_in_flight = False
+         logger.exception("Could not start background stage status read")
+
+   @QtCore.pyqtSlot(object)
+   def _apply_stage_position_read(self, result: object) -> None:
+      self._stage_position_poll_in_flight = False
+      if not isinstance(result, tuple) or not result:
+         logger.error("Stage status read returned an invalid result: %r", result)
+         self._set_stage_position_text("Stage: error")
+         return
+
+      if result[0] == "position" and len(result) == 3:
+         self._set_stage_position_text(
+            f"Stage: X={result[1]:.2f}, Y={result[2]:.2f}"
+         )
+      elif result[0] == "invalid" and len(result) == 2:
+         logger.warning("Unexpected stage position format: %r", result[1])
          self._set_stage_position_text("Stage: --")
+      elif result[0] == "error" and len(result) == 2:
+         logger.warning("Failed to get stage position: %s", result[1])
+         self._set_stage_position_text("Stage: error")
+      else:
+         logger.error("Stage status read returned an unknown result: %r", result)
+         self._set_stage_position_text("Stage: error")
 
    def _set_stage_position_text(self, text: str) -> None:
       """Set the stage position label text with thread-safe UI update."""

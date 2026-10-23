@@ -5,6 +5,8 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +17,67 @@ from scripts import capture_standa_motion_profile as profile_cli
 
 
 class StandaMotionProfileTests(unittest.TestCase):
+    def test_stage_position_read_waits_until_xy_move_finishes(self):
+        move_started = threading.Event()
+        allow_move_to_finish = threading.Event()
+        position_read_finished = threading.Event()
+
+        x_device = unittest.mock.Mock()
+        y_device = unittest.mock.Mock()
+
+        def block_x_move(_delta):
+            move_started.set()
+            if not allow_move_to_finish.wait(timeout=2):
+                raise TimeoutError("test did not release the X move")
+
+        x_device.move_by.side_effect = block_x_move
+        x_device.get_position.return_value = 0
+        y_device.get_position.return_value = 0
+
+        with patch(
+            "devices.standa_stage.Standa.Standa8SMC",
+            side_effect=[x_device, y_device],
+        ):
+            stage = StandaStageXY("COM4", "COM3")
+
+        move_thread = threading.Thread(target=stage.move_to, args=(10, 20))
+        move_thread.start()
+        self.assertTrue(move_started.wait(timeout=1))
+
+        def read_position():
+            stage.get_position()
+            position_read_finished.set()
+
+        read_thread = threading.Thread(target=read_position)
+        read_thread.start()
+        time.sleep(0.05)
+        self.assertFalse(position_read_finished.is_set())
+
+        allow_move_to_finish.set()
+        move_thread.join(timeout=2)
+        read_thread.join(timeout=2)
+        self.assertFalse(move_thread.is_alive())
+        self.assertFalse(read_thread.is_alive())
+        self.assertTrue(position_read_finished.is_set())
+        stage.disconnect()
+
+    def test_stage_move_reports_failure_of_either_axis(self):
+        x_device = unittest.mock.Mock()
+        y_device = unittest.mock.Mock()
+        x_device.get_position.return_value = 0
+        y_device.get_position.return_value = 0
+        x_device.move_by.side_effect = OSError("X controller unavailable")
+
+        with patch(
+            "devices.standa_stage.Standa.Standa8SMC",
+            side_effect=[x_device, y_device],
+        ):
+            stage = StandaStageXY("COM4", "COM3")
+
+        with self.assertRaisesRegex(RuntimeError, "X success=False"):
+            stage.move_to(10, 20)
+        stage.disconnect()
+
     def test_stage_applies_independent_axis_profiles(self):
         x_device = unittest.mock.Mock()
         y_device = unittest.mock.Mock()
