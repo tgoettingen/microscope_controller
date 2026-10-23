@@ -2,6 +2,7 @@ import sys
 import time
 import threading
 import json
+from copy import deepcopy
 import base64
 from pathlib import Path
 import logging
@@ -146,6 +147,7 @@ class MainWindow(QtWidgets.QMainWindow):
    # Thread-safe delivery of multi-axis detector samples into the GUI thread
    multiaxis_sample = QtCore.pyqtSignal(str, object, float)
    multiaxis_progress_changed = QtCore.pyqtSignal(str)
+   multiaxis_sequence_advance = QtCore.pyqtSignal()
    measurement_state_changed = QtCore.pyqtSignal(object)
 
    def __init__(self, config_path: str = "config/default_devices.json"):
@@ -175,6 +177,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.multi_runner: MultiAxisRunner | None = None
       self.multi_thread: threading.Thread | None = None
       self._multi_point_count = 0
+      self._multi_sequence_remaining: list[tuple[str, dict]] = []
 
       # Hardware currently reserved by an active run. Each entry is a tuple of
       # (detector-id set, motor-name set). None => that run is not active.
@@ -507,8 +510,12 @@ class MainWindow(QtWidgets.QMainWindow):
       """
       return set(self._all_detector_ids()), set()
 
-   def _multiaxis_hardware(self) -> tuple[set[str], set[str]]:
-      """(detectors, motors) the multi-axis run will use, from the current UI.
+   def _multiaxis_hardware(
+      self,
+      cfgs: list[AxisConfig] | None = None,
+      detector_selection: list[str] | None = None,
+   ) -> tuple[set[str], set[str]]:
+      """(detectors, motors) used by a multi-axis run.
 
       A multi-axis scan only reads detectors when it defines a ``Detector``
       axis; a pure motor/camera scan uses no detectors and can therefore run
@@ -517,14 +524,19 @@ class MainWindow(QtWidgets.QMainWindow):
       """
       dets: set[str] = set()
       motors: set[str] = set()
-      try:
-         cfgs = self.multi_tab.get_axis_configs()
-      except Exception:
-         cfgs = []
+      if cfgs is None:
+         try:
+            cfgs = self.multi_tab.get_axis_configs()
+         except Exception:
+            cfgs = []
       has_detector_axis = any(getattr(c, "axis_type", None) == "Detector" for c in cfgs)
       if has_detector_axis:
          try:
-            dets = set(self.multi_tab.get_selected_detectors() or [])
+            if detector_selection is not None:
+               selection = detector_selection or self._all_detector_ids()
+            else:
+               selection = self.multi_tab.get_selected_detectors()
+            dets = set(selection or [])
          except Exception:
             dets = set()
       try:
@@ -1631,6 +1643,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
       self.multi_tab.start_requested.connect(self._start_multiaxis)
       self.multi_tab.stop_requested.connect(self._stop_multiaxis)
+      self.multiaxis_sequence_advance.connect(self._start_next_multiaxis_sequence)
 
       # Multi-view camera scan control
       self.multiviewctl_tab.start_requested.connect(self._start_multiview_scan)
@@ -3709,7 +3722,7 @@ class MainWindow(QtWidgets.QMainWindow):
          self._measurement_id = str(uuid.uuid4())
          layout_json = self.live_tab.get_display_layout_json()
          use_multichannel = bool(cfg.get("multichannel", False) and MultiChannelSaver is not None)
-         selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
+         selected = selected_for_scan
          det_list = []
          if selected:
             det_list = selected
@@ -4033,7 +4046,51 @@ class MainWindow(QtWidgets.QMainWindow):
 
    def _start_multiaxis(self):
       if self.multi_thread is not None:
-            return
+         return
+
+      main_scan = {
+         "demo": {
+            "output_dir": self.demo_tab.output_dir_edit.text(),
+            "multichannel": self.demo_tab.multichannel_cb.isChecked(),
+         },
+         "multiaxis": {
+            "axes": [
+               {"axis_type": cfg.axis_type, "params": deepcopy(cfg.params)}
+               for cfg in self.multi_tab.get_axis_configs()
+            ],
+            "detectors": self.multi_tab.get_selected_detectors(),
+         },
+      }
+      if not main_scan["multiaxis"]["axes"]:
+         QtWidgets.QMessageBox.warning(self, "Multi‑Axis", "No axes defined.")
+         return
+
+      sequence: list[tuple[str, dict]] = []
+      pre_experiment = self.multi_tab.get_sequence_experiment("pre")
+      if pre_experiment is not None:
+         sequence.append(("Pre experiment", pre_experiment))
+      sequence.append(("Main scan", main_scan))
+      post_experiment = self.multi_tab.get_sequence_experiment("post")
+      if post_experiment is not None:
+         sequence.append(("Post experiment", post_experiment))
+
+      self._multi_sequence_remaining = sequence
+      self._start_next_multiaxis_sequence()
+
+   def _start_next_multiaxis_sequence(self):
+      if self.multi_thread is not None or not self._multi_sequence_remaining:
+         return
+      phase, scan_data = self._multi_sequence_remaining.pop(0)
+      if not self._start_multiaxis_scan(scan_data, phase):
+         self._multi_sequence_remaining.clear()
+
+   def _start_multiaxis_scan(
+      self,
+      scan_data: dict,
+      phase: str,
+   ) -> bool:
+      if self.multi_thread is not None:
+            return False
 
       # Stop stage position timer when multiaxis starts - multiaxis will update position itself
       try:
@@ -4052,14 +4109,24 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
 
-      cfgs: list[AxisConfig] = self.multi_tab.get_axis_configs()
+      cfgs: list[AxisConfig] = [
+         AxisConfig(item["axis_type"], deepcopy(item["params"]))
+         for item in (scan_data.get("multiaxis") or {}).get("axes", [])
+         if isinstance(item, dict)
+         and isinstance(item.get("axis_type"), str)
+         and isinstance(item.get("params"), dict)
+      ]
       if not cfgs:
             QtWidgets.QMessageBox.warning(self, "Multi‑Axis", "No axes defined.")
-            return
+            return False
 
       # Refuse to start if a running strip chart is already using any of the
       # detectors (or motors) this multi-axis scan needs.
-      conflict = self._hardware_conflict(self._multiaxis_hardware(), self._strip_reserved)
+      selected_for_scan = (scan_data.get("multiaxis") or {}).get("detectors") or []
+      conflict = self._hardware_conflict(
+         self._multiaxis_hardware(cfgs, selected_for_scan),
+         self._strip_reserved,
+      )
       if conflict:
          QtWidgets.QMessageBox.warning(
             self,
@@ -4069,7 +4136,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Stop the Strip Chart, or de-select those detectors from this scan, "
             "then try again.",
          )
-         return
+         return False
 
       try:
          axis_types = [getattr(c, "axis_type", "?") for c in cfgs]
@@ -4406,12 +4473,19 @@ class MainWindow(QtWidgets.QMainWindow):
          logger.exception("Failed to prepare Live plot for multi-axis scan")
 
       try:
-         out_dir = self._resolve_output_dir(self.demo_tab.output_dir_edit.text())
+         demo_settings = scan_data.get("demo") or {}
+         output_dir = demo_settings.get(
+            "output_dir",
+            str(self._project_data_dir()),
+         )
+         out_dir = self._resolve_output_dir(output_dir)
          # Generate a new universal measurement ID for this run
          self._measurement_id = str(uuid.uuid4())
-         use_multichannel = bool(getattr(self.demo_tab, 'multichannel_cb', None) and
-                                 self.demo_tab.multichannel_cb.isChecked() and
-                                 MultiChannelSaver is not None)
+         multichannel_enabled = demo_settings.get(
+            "multichannel",
+            True,
+         )
+         use_multichannel = bool(multichannel_enabled and MultiChannelSaver is not None)
          if has_detector_axis and use_multichannel and _SAVING_ENABLED:
             # One shared file for all detectors
             self._close_mc_saver()
@@ -4478,7 +4552,12 @@ class MainWindow(QtWidgets.QMainWindow):
             # camera image if Channel present
             if "Channel" in state:
                img = cam.snap()
-               meta = {"experiment": "multi", "state": state, "timestamp": time.time()}
+               meta = {
+                  "experiment": "multi",
+                  "experiment_phase": phase,
+                  "state": state,
+                  "timestamp": time.time(),
+               }
                self._on_image(img, meta)
 
                # Also feed the multi-view panel (no additional capture)
@@ -4519,6 +4598,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         val = float(sample)
                      det_id = getattr(d, "name", getattr(d, "port", "detector"))
                      sample_meta = dict(state)
+                     sample_meta["experiment_phase"] = phase
                      try:
                         mode = str(getattr(d, "mode", "")).strip().lower()
                         sample_meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
@@ -4568,6 +4648,7 @@ class MainWindow(QtWidgets.QMainWindow):
       self.multi_runner = MultiAxisRunner(exp, on_move=self._on_axis_move)
 
       def worker():
+            worker_failed = False
             try:
                try:
                   logger.info("Multi-axis worker started")
@@ -4579,6 +4660,7 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
             except Exception:
+               worker_failed = True
                try:
                   logger.exception("Multi-axis worker crashed")
                except Exception:
@@ -4605,16 +4687,22 @@ class MainWindow(QtWidgets.QMainWindow):
                self.multi_thread = None
                self._set_measurement_state("Finished", kind="Multi-Axis")
                # Timer will be restarted by _apply_measurement_state
+               if worker_failed:
+                  self._multi_sequence_remaining.clear()
+               elif self._multi_sequence_remaining:
+                  self.multiaxis_sequence_advance.emit()
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
       self._multi_point_count = 0
-      self.multiaxis_progress_changed.emit("Multi-axis: starting")
-      self._multi_reserved = self._multiaxis_hardware()
+      self.multiaxis_progress_changed.emit(f"Multi-axis: starting {phase.lower()}")
+      self._multi_reserved = self._multiaxis_hardware(cfgs, selected_for_scan)
       self._set_measurement_state("Running", kind="Multi-Axis")
       self._refresh_run_button_states()
       self.multi_thread.start()
+      return True
 
    def _stop_multiaxis(self):
+      self._multi_sequence_remaining.clear()
       try:
          logger.info("Stopping multi-axis run")
       except Exception:
@@ -5415,6 +5503,7 @@ class MainWindow(QtWidgets.QMainWindow):
          "z_end": self.demo_tab.z_end_spin.value(),
          "z_step": self.demo_tab.z_step_spin.value(),
          "output_dir": str(self._resolve_output_dir(self.demo_tab.output_dir_edit.text())),
+         "multichannel": self.demo_tab.multichannel_cb.isChecked(),
          # Legacy keys: scaling is defined in config/default_devices.json.
          "det_scale": 1.0,
          "det_offset": 0.0,
@@ -5436,7 +5525,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
       data = {
          "demo": demo_cfg,
-         "multiaxis": {"axes": axes, "detectors": selected_detectors},
+         "multiaxis": {
+            "axes": axes,
+            "detectors": selected_detectors,
+            "pre_experiment": self.multi_tab.get_sequence_experiment("pre"),
+            "post_experiment": self.multi_tab.get_sequence_experiment("post"),
+         },
          "output_dir": demo_cfg["output_dir"],
          "devices": {
                "detector_scale": demo_cfg["det_scale"],
@@ -5754,6 +5848,8 @@ class MainWindow(QtWidgets.QMainWindow):
       self.demo_tab.output_dir_edit.setText(
          str(self._resolve_output_dir(demo.get("output_dir"), coerce_legacy_data_path=True))
       )
+      if "multichannel" in demo:
+         self.demo_tab.multichannel_cb.setChecked(bool(demo["multichannel"]))
       # det_scale/det_offset are ignored (scaling comes from device config)
 
       # --- Restore Multi-axis tab ---
@@ -5763,6 +5859,14 @@ class MainWindow(QtWidgets.QMainWindow):
          item = QtWidgets.QListWidgetItem(axis_cfg.label())
          item.setData(QtCore.Qt.ItemDataRole.UserRole, axis_cfg)
          self.multi_tab.axis_list.addItem(item)
+      self.multi_tab.set_sequence_experiment(
+         "pre",
+         (data.get("multiaxis") or {}).get("pre_experiment"),
+      )
+      self.multi_tab.set_sequence_experiment(
+         "post",
+         (data.get("multiaxis") or {}).get("post_experiment"),
+      )
 
       # Refresh default x-axis selector based on loaded axes
       try:
@@ -5889,6 +5993,8 @@ class MainWindow(QtWidgets.QMainWindow):
          self.demo_tab.output_dir_edit.setText(
             str(self._resolve_output_dir(demo.get("output_dir"), coerce_legacy_data_path=True))
          )
+         if "multichannel" in demo:
+            self.demo_tab.multichannel_cb.setChecked(bool(demo["multichannel"]))
          # det_scale/det_offset are ignored (scaling comes from device config)
       except Exception:
          pass
@@ -5900,6 +6006,14 @@ class MainWindow(QtWidgets.QMainWindow):
             item = QtWidgets.QListWidgetItem(axis_cfg.label())
             item.setData(QtCore.Qt.ItemDataRole.UserRole, axis_cfg)
             self.multi_tab.axis_list.addItem(item)
+         self.multi_tab.set_sequence_experiment(
+            "pre",
+            (data.get("multiaxis") or {}).get("pre_experiment"),
+         )
+         self.multi_tab.set_sequence_experiment(
+            "post",
+            (data.get("multiaxis") or {}).get("post_experiment"),
+         )
          try:
             self.multi_tab.refresh_default_xaxis_options()
          except Exception:

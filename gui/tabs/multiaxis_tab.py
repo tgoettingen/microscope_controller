@@ -1,3 +1,7 @@
+import json
+from copy import deepcopy
+from pathlib import Path
+
 from PyQt6 import QtWidgets, QtCore, QtGui
 
 from core.multiaxis import AxisConfig
@@ -33,6 +37,10 @@ class MultiAxisTab(QtWidgets.QWidget):
         # these via set_available_detectors().
         self._available_detectors: list[str] = []
         self._selected_detectors: list[str] = []
+        self._sequence_experiments: dict[str, dict | None] = {
+            "pre": None,
+            "post": None,
+        }
         self._build_ui()
 
     def _build_ui(self):
@@ -127,6 +135,34 @@ class MultiAxisTab(QtWidgets.QWidget):
         run_btns.addStretch()
         controls_layout.addLayout(run_btns)
 
+        sequence_form = QtWidgets.QFormLayout()
+        sequence_form.setContentsMargins(0, 0, 0, 0)
+        sequence_form.setSpacing(3)
+        self.pre_experiment_label = QtWidgets.QLabel("Not set")
+        self.pre_experiment_label.setToolTip("Optional experiment to run before the main scan")
+        self.pre_experiment_btn = QtWidgets.QPushButton("Load…")
+        self.pre_experiment_btn.setMaximumWidth(55)
+        self.clear_pre_experiment_btn = QtWidgets.QPushButton("Clear")
+        self.clear_pre_experiment_btn.setMaximumWidth(45)
+        pre_row = QtWidgets.QHBoxLayout()
+        pre_row.addWidget(self.pre_experiment_label, 1)
+        pre_row.addWidget(self.pre_experiment_btn)
+        pre_row.addWidget(self.clear_pre_experiment_btn)
+        sequence_form.addRow("Pre:", pre_row)
+
+        self.post_experiment_label = QtWidgets.QLabel("Not set")
+        self.post_experiment_label.setToolTip("Optional experiment to run after the main scan")
+        self.post_experiment_btn = QtWidgets.QPushButton("Load…")
+        self.post_experiment_btn.setMaximumWidth(55)
+        self.clear_post_experiment_btn = QtWidgets.QPushButton("Clear")
+        self.clear_post_experiment_btn.setMaximumWidth(45)
+        post_row = QtWidgets.QHBoxLayout()
+        post_row.addWidget(self.post_experiment_label, 1)
+        post_row.addWidget(self.post_experiment_btn)
+        post_row.addWidget(self.clear_post_experiment_btn)
+        sequence_form.addRow("Post:", post_row)
+        controls_layout.addLayout(sequence_form)
+
         controls_layout.addStretch(1)
         self.axis_splitter.addWidget(controls_panel)
         self.axis_splitter.setStretchFactor(0, 1)
@@ -138,12 +174,112 @@ class MultiAxisTab(QtWidgets.QWidget):
         self.remove_axis_btn.clicked.connect(self._remove_selected)
         self.start_btn.clicked.connect(self.start_requested.emit)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
+        self.pre_experiment_btn.clicked.connect(
+            lambda: self._choose_sequence_experiment("pre")
+        )
+        self.post_experiment_btn.clicked.connect(
+            lambda: self._choose_sequence_experiment("post")
+        )
+        self.clear_pre_experiment_btn.clicked.connect(
+            lambda: self.set_sequence_experiment("pre", None)
+        )
+        self.clear_post_experiment_btn.clicked.connect(
+            lambda: self.set_sequence_experiment("post", None)
+        )
 
         # Enable editing axis by double-clicking the list item
         self.axis_list.itemDoubleClicked.connect(lambda _: self._edit_selected())
 
         # Ctrl/Command+Up / Ctrl/Command+Down reorders the selected axis
         self.axis_list.keyPressEvent = self._axis_list_key_press
+
+    def _choose_sequence_experiment(self, phase: str) -> None:
+        default_dir = str(Path.cwd())
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            f"Load {phase.title()} Experiment",
+            default_dir,
+            "Experiment (*.json)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as experiment_file:
+                experiment_data = json.load(experiment_file)
+            self.set_sequence_experiment(phase, experiment_data, source=path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                f"Load {phase.title()} Experiment",
+                f"Could not load a valid experiment from {path}:\n{exc}",
+            )
+
+    def set_sequence_experiment(
+        self,
+        phase: str,
+        experiment_data: dict | None,
+        *,
+        source: str = "",
+    ) -> None:
+        """Set a separately stored experiment that runs before or after the scan."""
+        if phase not in self._sequence_experiments:
+            raise ValueError(f"Unknown multi-axis sequence phase: {phase}")
+        label = getattr(self, f"{phase}_experiment_label")
+        if experiment_data is None:
+            self._sequence_experiments[phase] = None
+            label.setText("Not set")
+            label.setToolTip("")
+            return
+
+        if not isinstance(experiment_data, dict):
+            raise ValueError("Experiment JSON must contain an object.")
+        multiaxis = experiment_data.get("multiaxis")
+        if not isinstance(multiaxis, dict) or not isinstance(multiaxis.get("axes"), list):
+            raise ValueError("Experiment must contain a multiaxis.axes list.")
+        if not multiaxis["axes"]:
+            raise ValueError("Experiment must define at least one multi-axis.")
+        demo_settings = experiment_data.get("demo")
+        if demo_settings is not None and not isinstance(demo_settings, dict):
+            raise ValueError("Experiment demo settings must be an object.")
+
+        stored_data = {
+            "demo": deepcopy(demo_settings or {}),
+            "multiaxis": {
+                "axes": [],
+                "detectors": [],
+            },
+            "source": source or str(experiment_data.get("source", "")),
+        }
+        stored_data["multiaxis"]["axes"] = [
+            {
+                "axis_type": item["axis_type"],
+                "params": deepcopy(item["params"]),
+            }
+            for item in multiaxis["axes"]
+            if isinstance(item, dict)
+            and isinstance(item.get("axis_type"), str)
+            and isinstance(item.get("params"), dict)
+        ]
+        detectors = multiaxis.get("detectors") or []
+        if not isinstance(detectors, list) or any(
+            not isinstance(detector_id, str) for detector_id in detectors
+        ):
+            raise ValueError("Experiment detector selection must be a list of names.")
+        stored_data["multiaxis"]["detectors"] = list(detectors)
+        if len(stored_data["multiaxis"]["axes"]) != len(multiaxis["axes"]):
+            raise ValueError("Experiment contains an invalid multi-axis definition.")
+
+        self._sequence_experiments[phase] = stored_data
+        display_name = Path(source).name if source else f"{len(stored_data['multiaxis']['axes'])} axes"
+        label.setText(display_name)
+        label.setToolTip(source or display_name)
+
+    def get_sequence_experiment(self, phase: str) -> dict | None:
+        """Return the separately configured pre- or post-scan experiment."""
+        if phase not in self._sequence_experiments:
+            raise ValueError(f"Unknown multi-axis sequence phase: {phase}")
+        experiment = self._sequence_experiments[phase]
+        return deepcopy(experiment) if experiment is not None else None
 
     def set_scan_running(self, running: bool) -> None:
         """Pulse the green Run button while a multi-axis scan is active."""

@@ -59,6 +59,61 @@ class MultiAxisAxisControlTests(unittest.TestCase):
         self.assertEqual(get_text.call_args.kwargs["text"], "X 2")
         tab.close()
 
+    def test_pre_and_post_experiments_are_stored_separately(self):
+        tab = MultiAxisTab()
+        main_axis = AxisConfig("X", {"start": 0, "end": 1, "step": 1})
+        item = QtWidgets.QListWidgetItem(main_axis.label())
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, main_axis)
+        tab.axis_list.addItem(item)
+
+        pre_experiment = {
+            "demo": {"output_dir": "pre-data", "multichannel": True},
+            "multiaxis": {
+                "axes": [
+                    {"axis_type": "Z", "params": {"start": 2, "end": 4, "step": 1}},
+                ],
+                "detectors": ["vm1"],
+            },
+        }
+        post_experiment = {
+            "demo": {"output_dir": "post-data", "multichannel": False},
+            "multiaxis": {
+                "axes": [
+                    {"axis_type": "Round", "params": {"n_rounds": 2}},
+                ],
+                "detectors": [],
+            },
+        }
+        tab.set_sequence_experiment("pre", pre_experiment, source="pre.json")
+        tab.set_sequence_experiment("post", post_experiment, source="post.json")
+
+        self.assertEqual(tab.get_axis_configs(), [main_axis])
+        self.assertEqual(
+            tab.get_sequence_experiment("pre")["multiaxis"]["axes"][0]["axis_type"],
+            "Z",
+        )
+        self.assertEqual(
+            tab.get_sequence_experiment("pre")["demo"]["output_dir"],
+            "pre-data",
+        )
+        self.assertEqual(
+            tab.get_sequence_experiment("post")["multiaxis"]["axes"][0]["axis_type"],
+            "Round",
+        )
+        self.assertEqual(tab.pre_experiment_label.text(), "pre.json")
+        self.assertEqual(tab.post_experiment_label.text(), "post.json")
+        loaded_pre = tab.get_sequence_experiment("pre")
+        loaded_pre["multiaxis"]["axes"][0]["params"]["start"] = 99
+        self.assertEqual(
+            tab.get_sequence_experiment("pre")["multiaxis"]["axes"][0]["params"]["start"],
+            2,
+        )
+
+        tab.set_sequence_experiment("pre", None)
+        self.assertIsNone(tab.get_sequence_experiment("pre"))
+        self.assertIsNotNone(tab.get_sequence_experiment("post"))
+        tab.close()
+
     def test_axis_list_has_resizable_splitter_panel(self):
         tab = MultiAxisTab()
         tab.resize(300, 400)
