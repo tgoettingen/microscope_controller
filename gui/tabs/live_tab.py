@@ -2780,7 +2780,7 @@ class LiveTab(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Load Data", "multichannel_h5 module not available.")
             return
         try:
-            channels = multichannel_h5.load(path)
+            channels = multichannel_h5.load_phased(path)
         except Exception as e:
             self.status_message.emit(f"Load failed: {Path(path).name} — {e}", 8000)
             QtWidgets.QMessageBox.warning(self, "Load Data", f"Failed to load: {path}\n\n{e}")
@@ -3018,13 +3018,17 @@ class LiveTab(QtWidgets.QWidget):
                         layout = None
 
                 if str(f.attrs.get("format", "")) == "multichannel_stream":
-                    # multi-channel format (MultiChannelSaver)
-                    dets_grp = f.get("detectors")
-                    if dets_grp:
-                        for det_id in dets_grp:
-                            ds = dets_grp[det_id].get("data")
-                            if ds is not None:
-                                channels[det_id] = np.asarray(ds[:], dtype=float)
+                    # Keep sequence phases separate because each may use
+                    # different scan axes and cannot be plotted as one grid.
+                    if multichannel_h5 is not None:
+                        channels = multichannel_h5.load_phased(path)
+                    else:
+                        dets_grp = f.get("detectors")
+                        if dets_grp:
+                            for det_id in dets_grp:
+                                ds = dets_grp[det_id].get("data")
+                                if ds is not None:
+                                    channels[det_id] = np.asarray(ds[:], dtype=float)
                 elif "data" in f:
                     # single-channel StreamSaver format
                     arr = np.asarray(f["data"][:], dtype=float)

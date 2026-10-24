@@ -7,6 +7,7 @@ import base64
 from pathlib import Path
 import logging
 import uuid
+import re
 
 import importlib.util
 import numpy as np
@@ -179,6 +180,11 @@ class MainWindow(QtWidgets.QMainWindow):
       self.multi_thread: threading.Thread | None = None
       self._multi_point_count = 0
       self._multi_sequence_remaining: list[tuple[str, dict]] = []
+      self._multi_sequence_active = False
+      self._multi_sequence_output_dir: Path | None = None
+      self._multi_sequence_base_path: Path | None = None
+      self._multi_sequence_measurement_id: str | None = None
+      self._multi_sequence_saver = None
 
       # Hardware currently reserved by an active run. Each entry is a tuple of
       # (detector-id set, motor-name set). None => that run is not active.
@@ -754,6 +760,22 @@ class MainWindow(QtWidgets.QMainWindow):
          except Exception:
             pass
 
+   def _close_multiaxis_sequence_saver(self):
+      """Close the detector file owned by the current pre/main/post sequence."""
+      saver = self._multi_sequence_saver
+      self._multi_sequence_saver = None
+      if saver is not None:
+         try:
+            path = getattr(saver, "h5_path", None)
+            if path is not None:
+               self._last_measurement_paths = [str(path)]
+               self._last_measurement_label = Path(path).name
+         except Exception:
+            logger.exception("Failed to record multi-axis sequence output path")
+         try:
+            saver.close()
+         except Exception:
+            logger.exception("Failed to close multi-axis sequence saver")
 
    def _close_image_saver(self) -> None:
       """Close and remove the active ImageH5Saver (if any)."""
@@ -3715,21 +3737,21 @@ class MainWindow(QtWidgets.QMainWindow):
          pass
 
       # start stream saver(s) for detector(s) selected in UI (if any); otherwise default to all
+      selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
+      det_list = []
+      if selected:
+         det_list = selected
+      elif isinstance(det, list):
+         det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+      else:
+         det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
+
       try:
          out_dir = self._resolve_output_dir(cfg.get("output_dir"))
          # Generate a unique measurement ID for this run
          self._measurement_id = str(uuid.uuid4())
          layout_json = self.live_tab.get_display_layout_json()
          use_multichannel = bool(cfg.get("multichannel", False) and MultiChannelSaver is not None)
-         selected = selected_for_scan
-         det_list = []
-         if selected:
-            det_list = selected
-         else:
-            if isinstance(det, list):
-               det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
-            else:
-               det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
 
          if use_multichannel and _SAVING_ENABLED:
             # One shared file for all detectors
@@ -4074,6 +4096,37 @@ class MainWindow(QtWidgets.QMainWindow):
          sequence.append(("Post experiment", post_experiment))
 
       self._multi_sequence_remaining = sequence
+      self._multi_sequence_active = len(sequence) > 1
+      self._multi_sequence_output_dir = None
+      self._multi_sequence_base_path = None
+      self._multi_sequence_measurement_id = None
+      self._multi_sequence_saver = None
+      if self._multi_sequence_active:
+         if _SAVING_ENABLED and MultiChannelSaver is None:
+            QtWidgets.QMessageBox.warning(
+               self,
+               "Multi-Axis",
+               "Pre/main/post measurements need the multi-channel HDF5 saver "
+               "to write all phases to one file, but it is unavailable.",
+            )
+            self._multi_sequence_remaining.clear()
+            self._multi_sequence_active = False
+            return
+         main_demo = main_scan.get("demo") or {}
+         sequence_output_dir = self._resolve_output_dir(main_demo.get("output_dir"))
+         self._multi_sequence_output_dir = sequence_output_dir
+         self._multi_sequence_measurement_id = str(uuid.uuid4())
+         timestamp = time.strftime("%Y%m%d_%H%M%S")
+         base_name = f"{timestamp}__multichannel"
+         if self._experiment_filename:
+            experiment_name = re.sub(
+               r"[^A-Za-z0-9_.-]+",
+               "_",
+               Path(self._experiment_filename).stem.strip(),
+            )
+            if experiment_name:
+               base_name += f"_{experiment_name}"
+         self._multi_sequence_base_path = sequence_output_dir / base_name
       self._start_next_multiaxis_sequence()
 
    def _start_next_multiaxis_sequence(self):
@@ -4082,6 +4135,11 @@ class MainWindow(QtWidgets.QMainWindow):
       phase, scan_data = self._multi_sequence_remaining.pop(0)
       if not self._start_multiaxis_scan(scan_data, phase):
          self._multi_sequence_remaining.clear()
+         self._multi_sequence_active = False
+         self._multi_sequence_output_dir = None
+         self._multi_sequence_base_path = None
+         self._multi_sequence_measurement_id = None
+         self._close_multiaxis_sequence_saver()
 
    def _start_multiaxis_scan(
       self,
@@ -4477,24 +4535,54 @@ class MainWindow(QtWidgets.QMainWindow):
             "output_dir",
             str(self._project_data_dir()),
          )
-         out_dir = self._resolve_output_dir(output_dir)
-         # Generate a new universal measurement ID for this run
-         self._measurement_id = str(uuid.uuid4())
+         out_dir = (
+            self._multi_sequence_output_dir
+            if self._multi_sequence_active and self._multi_sequence_output_dir is not None
+            else self._resolve_output_dir(output_dir)
+         )
+         # Keep one measurement ID across the pre/main/post sequence.
+         if self._multi_sequence_active:
+            self._measurement_id = self._multi_sequence_measurement_id
+         else:
+            self._measurement_id = str(uuid.uuid4())
          multichannel_enabled = demo_settings.get(
             "multichannel",
             True,
          )
-         use_multichannel = bool(multichannel_enabled and MultiChannelSaver is not None)
-         if has_detector_axis and use_multichannel and _SAVING_ENABLED:
-            # One shared file for all detectors
-            self._close_mc_saver()
-            self._mc_saver = MultiChannelSaver(
-               out_dir,
-               measurement_id=self._measurement_id,
-               layout_json=self.live_tab.get_display_layout_json(),
-               software_version=APP_VERSION,
-               experiment_type="multiaxis",
+         use_multichannel = bool(
+            (self._multi_sequence_active or multichannel_enabled)
+            and MultiChannelSaver is not None
+         )
+         if (has_detector_axis or self._multi_sequence_active) and use_multichannel and _SAVING_ENABLED:
+            # Share one file across every phase of a pre/main/post sequence.
+            active_saver = (
+               self._multi_sequence_saver
+               if self._multi_sequence_active
+               else self._mc_saver
             )
+            if active_saver is None:
+               base_path = self._multi_sequence_base_path
+               if not self._multi_sequence_active and self._experiment_filename:
+                  experiment_name = re.sub(
+                     r"[^A-Za-z0-9_.-]+",
+                     "_",
+                     Path(self._experiment_filename).stem.strip(),
+                  )
+                  if experiment_name:
+                     timestamp = time.strftime("%Y%m%d_%H%M%S")
+                     base_path = out_dir / f"{timestamp}__multichannel_{experiment_name}"
+               active_saver = MultiChannelSaver(
+                  out_dir,
+                  base_path=base_path,
+                  measurement_id=self._measurement_id,
+                  layout_json=self.live_tab.get_display_layout_json(),
+                  software_version=APP_VERSION,
+                  experiment_type="multiaxis",
+               )
+               if self._multi_sequence_active:
+                  self._multi_sequence_saver = active_saver
+               else:
+                  self._mc_saver = active_saver
             for det_id in det_list:
                try:
                   self.live_tab.register_detector(det_id)
@@ -4502,7 +4590,7 @@ class MainWindow(QtWidgets.QMainWindow):
                   pass
             try:
                self.statusBar().showMessage(
-                  f"Saving multi-channel → {self._mc_saver.h5_path.name}", 8000)
+                  f"Saving multi-channel → {active_saver.h5_path.name}", 8000)
             except Exception:
                pass
          else:
@@ -4514,8 +4602,26 @@ class MainWindow(QtWidgets.QMainWindow):
                except Exception:
                   pass
                if _SAVING_ENABLED and det_id not in self.stream_savers:
+                  base_path = None
+                  if not self._multi_sequence_active and self._experiment_filename:
+                     experiment_name = re.sub(
+                        r"[^A-Za-z0-9_.-]+",
+                        "_",
+                        Path(self._experiment_filename).stem.strip(),
+                     )
+                     safe_detector_id = re.sub(
+                        r"[^A-Za-z0-9_.-]+",
+                        "_",
+                        str(det_id).strip().replace(" ", "_"),
+                     )
+                     if experiment_name:
+                        timestamp = time.strftime("%Y%m%d_%H%M%S")
+                        base_path = out_dir / (
+                           f"{timestamp}__{safe_detector_id}__stream_{experiment_name}"
+                        )
                   self.stream_savers[det_id] = StreamSaver(
                      out_dir, det_id,
+                     base_path=base_path,
                      measurement_id=self._measurement_id,
                      layout_json=self.live_tab.get_display_layout_json(),
                      software_version=APP_VERSION,
@@ -4524,10 +4630,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
          # brief status so users know where data is written
          try:
-            if _SAVING_ENABLED and not use_multichannel:
-               self.statusBar().showMessage(f"Saving detector streams to: {out_dir}", 8000)
-            else:
+            if not _SAVING_ENABLED:
                self.statusBar().showMessage("Saving disabled (debug mode)", 4000)
+            elif use_multichannel:
+               active_saver = (
+                  self._multi_sequence_saver
+                  if self._multi_sequence_active
+                  else self._mc_saver
+               )
+               if active_saver is not None:
+                  self.statusBar().showMessage(
+                     f"Saving multi-channel → {active_saver.h5_path.name}", 8000
+                  )
+            else:
+               self.statusBar().showMessage(f"Saving detector streams to: {out_dir}", 8000)
          except Exception:
             pass
          # Record whether this run owns savers, so a concurrent strip chart's
@@ -4536,7 +4652,9 @@ class MainWindow(QtWidgets.QMainWindow):
          # apply default X-axis selection from MultiAxisTab via the preference
          # mechanism (handled by set_preferred_plot_xaxis called earlier above).
       except Exception:
-         pass
+         logger.exception("Failed to prepare multi-axis stream saving")
+         if self._multi_sequence_active:
+            return False
 
       def measure(state: dict):
             self._multi_point_count += 1
@@ -4630,7 +4748,11 @@ class MainWindow(QtWidgets.QMainWindow):
                         pass
                      # stream-save if enabled per detector id
                      try:
-                        mc = getattr(self, '_mc_saver', None)
+                        mc = (
+                           self._multi_sequence_saver
+                           if self._multi_sequence_active
+                           else getattr(self, '_mc_saver', None)
+                        )
                         if mc is not None:
                            mc.append_sample(str(det_id), time.time(), float(val), meta=sample_meta)
                         else:
@@ -4672,7 +4794,13 @@ class MainWindow(QtWidgets.QMainWindow):
                # if this run actually owns the savers. A detector-less scan that
                # ran alongside the strip chart must leave the strip chart's
                # savers intact.
-               if self._multi_owns_stream_savers:
+               if worker_failed:
+                  self._multi_sequence_remaining.clear()
+               sequence_active = self._multi_sequence_active
+               sequence_continues = self._multi_sequence_active and bool(
+                  self._multi_sequence_remaining
+               )
+               if self._multi_owns_stream_savers and not sequence_continues:
                   self._close_all_stream_savers()
                self._multi_owns_stream_savers = False
                # Release the strip-chart-owns-plot guard set at start (safe to
@@ -4686,10 +4814,15 @@ class MainWindow(QtWidgets.QMainWindow):
                self.multi_thread = None
                self._set_measurement_state("Finished", kind="Multi-Axis")
                # Timer will be restarted by _apply_measurement_state
-               if worker_failed:
-                  self._multi_sequence_remaining.clear()
-               elif self._multi_sequence_remaining:
+               if sequence_continues:
                   self.multiaxis_sequence_advance.emit()
+               else:
+                  self._multi_sequence_active = False
+                  self._multi_sequence_output_dir = None
+                  self._multi_sequence_base_path = None
+                  self._multi_sequence_measurement_id = None
+                  if sequence_active:
+                     self._close_multiaxis_sequence_saver()
 
       self.multi_thread = threading.Thread(target=worker, daemon=True)
       self._multi_point_count = 0
@@ -5199,6 +5332,16 @@ class MainWindow(QtWidgets.QMainWindow):
          else:
                safe_meta[k] = convert(v)
 
+      sequence_saver = (
+         self._multi_sequence_saver if self._multi_sequence_active else None
+      )
+      if sequence_saver is not None:
+         try:
+            sequence_saver.append_image(img, safe_meta)
+         except Exception:
+            logger.exception("Failed to save camera frame in multi-axis sequence file")
+         return
+
       out_dir = None
       # prefer explicit output_dir in meta, otherwise fall back to Demo tab setting
       if isinstance(meta, dict) and meta.get("output_dir"):
@@ -5552,6 +5695,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
       with open(path, "w") as f:
          json.dump(data, f, indent=2)
+      self._experiment_filename = Path(path).name
+      self._update_window_title()
 
    def _release_current_devices(self) -> bool:
       """Stop active workers and fully release the current hardware devices."""

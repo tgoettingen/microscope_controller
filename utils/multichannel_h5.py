@@ -113,3 +113,62 @@ def load(path: str | Path) -> dict[str, np.ndarray]:
             arr = np.asarray(ds[:], dtype="float64")
             result[det_id] = arr
     return result
+
+
+def load_phased(path: str | Path) -> dict[str, np.ndarray]:
+    """Load detector channels, separating samples by saved sequence phase.
+
+    Files without phase metadata retain the original detector-name keys. If a
+    detector has samples from multiple phases, each phase is returned as its own
+    channel so scans with different axes are not plotted as one incompatible
+    coordinate set.
+    """
+    result: dict[str, np.ndarray] = {}
+    with h5py.File(path, "r") as f:
+        dets_grp = f.get("detectors")
+        if dets_grp is None:
+            raise KeyError("No 'detectors' group — not a multi-channel file")
+        for group_name in dets_grp:
+            group = dets_grp[group_name]
+            ds = group.get("data")
+            if ds is None:
+                continue
+            detector_attr = ds.attrs.get("detector", group.attrs.get("detector"))
+            if detector_attr is None:
+                detector_attr = group_name
+            detector_id = (
+                detector_attr.decode("utf-8")
+                if isinstance(detector_attr, bytes)
+                else str(detector_attr)
+            )
+            data = np.asarray(ds[:], dtype="float64")
+            phase_ds = group.get("experiment_phase")
+            if phase_ds is None:
+                result[detector_id] = data
+                continue
+
+            phases = np.asarray(phase_ds.asstr()[:], dtype=str)
+            if len(phases) != len(data):
+                raise ValueError(
+                    f"Detector {detector_id!r} has {len(data)} samples but "
+                    f"{len(phases)} phase labels"
+                )
+            unique_phases = list(dict.fromkeys(phases.tolist()))
+            if len(unique_phases) <= 1:
+                result[detector_id] = data
+                continue
+
+            for phase in unique_phases:
+                mask = phases == phase
+                channel_id = (
+                    detector_id
+                    if not phase
+                    else f"{detector_id} [{phase}]"
+                )
+                if channel_id in result:
+                    suffix = 2
+                    while f"{channel_id}_{suffix}" in result:
+                        suffix += 1
+                    channel_id = f"{channel_id}_{suffix}"
+                result[channel_id] = data[mask]
+    return result
