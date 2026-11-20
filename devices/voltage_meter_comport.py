@@ -26,14 +26,16 @@ class ComPort(QObject):
     VREF = 2.048
     GAIN = 501
     ADC_MAX = 2 ** 23
-    DEFAULT_FRAME_LENGTH = 10
+    DEFAULT_FRAME_LENGTH = 8
     DEFAULT_FRAME_HEADER = b"\x0a\x01"
     DEFAULT_FRAME_TRAILER = b"\x01\x0a"
+    COMMAND_HEADER = b"\xaa\x55"
+    FIRMWARE_VERSION_COMMAND = 0x08
 
     def __init__(
         self,
         port: str | None = None,
-        baudrate: int = 115200,
+        baudrate: int = 460800,
         read_timeout: float = 0.1,
         sample_format: str = "int24",
         mode: int | str | None = None,
@@ -60,8 +62,8 @@ class ComPort(QObject):
         self._overflow_policy = str(overflow_policy).lower()
         if self.sample_format != "int24":
             raise ValueError(f"Unsupported ComPort sample format: {sample_format}")
-        if self._frame_length != self.DEFAULT_FRAME_LENGTH:
-            raise ValueError("ComPort supports only the 10-byte production frame")
+        if self._frame_length not in {8, 10}:
+            raise ValueError("ComPort supports only 8-byte API frames or legacy 10-byte frames")
         if len(self._frame_header) != 2 or len(self._frame_trailer) != 2:
             raise ValueError("ComPort frame markers must each be exactly 2 bytes")
         if self._ring_buffer_size < 1:
@@ -75,6 +77,12 @@ class ComPort(QObject):
         self.last_error: str | None = None
         self.scale = 1.0
         self.offset = 0.0
+        self.GAIN = self.GAIN if hasattr(self, "GAIN") else 501
+        self.firmware_version: dict[str, Any] | None = None
+        self.product_id: int | None = None
+        self._command_response: dict[str, Any] | None = None
+        self._command_event = threading.Event()
+        self._command_lock = threading.Lock()
         self._rx_buffer = bytearray()
         self._ring_buffer: deque[dict[str, Any]] = deque(maxlen=self._ring_buffer_size)
         self._thread: threading.Thread | None = None
@@ -119,17 +127,30 @@ class ComPort(QObject):
         return list(serial.tools.list_ports.comports()) if serial is not None else []
 
     @classmethod
-    def parse_frame(cls, frame: bytes, header: bytes = DEFAULT_FRAME_HEADER, trailer: bytes = DEFAULT_FRAME_TRAILER):
-        if len(frame) != cls.DEFAULT_FRAME_LENGTH or frame[:2] != header or frame[-2:] != trailer:
+    def parse_frame(cls, frame: bytes, header: bytes = DEFAULT_FRAME_HEADER, trailer: bytes = DEFAULT_FRAME_TRAILER, gain: int | None = None):
+        if frame[:2] not in (header, b"\x0a\x02") or frame[-2:] != trailer:
             return None
-        adc_raw = int.from_bytes(frame[2:5], byteorder="big", signed=True)
-        voltage = adc_raw * cls.VREF / (cls.GAIN * cls.ADC_MAX)
+        if len(frame) == 8:
+            adc_raw = int.from_bytes(frame[2:5], byteorder="big", signed=True)
+            if (sum(frame[2:5]) & 0xFF) != frame[5]:
+                return None
+            middle = frame[5:6]
+            channel = frame[1]
+        elif len(frame) == 10:
+            adc_raw = int.from_bytes(frame[2:5], byteorder="big", signed=True)
+            middle = frame[5:8]
+            channel = frame[1]
+        else:
+            return None
+        active_gain = cls.GAIN if gain is None else int(gain)
+        voltage = adc_raw * cls.VREF / (active_gain * cls.ADC_MAX)
         return {
             "raw_bytes": bytes(frame),
-            "middle": bytes(frame[5:8]),
+            "middle": middle,
+            "channel": channel,
             "adc_raw": adc_raw,
             "voltage": voltage,
-            "temperature_raw": bytes(frame[5:8]),
+            "temperature_raw": middle,
             "timestamp": time.time(),
         }
 
@@ -168,6 +189,10 @@ class ComPort(QObject):
             raise
         self.connected = True
         self.last_error = None
+        try:
+            self.read_firmware_version()
+        except Exception as exc:
+            self._report_error(f"Failed to read ComPort firmware version: {exc}")
         return str(self.port)
 
     def disconnect(self) -> None:
@@ -211,7 +236,111 @@ class ComPort(QObject):
             "frame_length": self._frame_length,
             "supported_modes": [0, 1, 2],
             "temperature": "raw",
+            "gain": self.GAIN,
+            "product_id": self.product_id,
+            "firmware_version": self.firmware_version,
         }
+
+    @staticmethod
+    def build_command_frame(command: int, payload: bytes = b"") -> bytes:
+        command = int(command)
+        payload = bytes(payload)
+        if not 0 <= command <= 0x7F:
+            raise ValueError("Command code must be between 0 and 127")
+        if len(payload) > 255:
+            raise ValueError("Command payload is too long")
+        check = (command + len(payload) + sum(payload)) & 0xFF
+        return ComPort.COMMAND_HEADER + bytes((command, len(payload))) + payload + bytes((check,))
+
+    @staticmethod
+    def parse_command_response(frame: bytes) -> dict[str, Any] | None:
+        if len(frame) < 5 or frame[:2] != ComPort.COMMAND_HEADER:
+            return None
+        length = frame[3]
+        if len(frame) != 5 + length:
+            return None
+        response_command = frame[2]
+        status = frame[4]
+        data = bytes(frame[5:-1])
+        expected_check = ((response_command + length + sum(frame[4:-1])) & 0xFF)
+        if frame[-1] != expected_check:
+            return None
+        return {
+            "command": response_command & 0x7F,
+            "status": status,
+            "data": data,
+            "success": status == 0,
+            "raw_bytes": bytes(frame),
+        }
+
+    def send_command(self, command: int, payload: bytes = b"", timeout: float = 1.0) -> dict[str, Any]:
+        if not self.connected or self.ser is None:
+            raise RuntimeError("ComPort is not connected")
+        with self._command_lock:
+            self._command_response = None
+            self._command_event.clear()
+            frame = self.build_command_frame(command, payload)
+            if not self.running:
+                reset_input = getattr(self.ser, "reset_input_buffer", None)
+                if callable(reset_input):
+                    reset_input()
+                self.ser.write(frame)
+                deadline = time.monotonic() + float(timeout)
+                response_buffer = bytearray()
+                while time.monotonic() < deadline:
+                    chunk = self.ser.read(max(1, getattr(self.ser, "in_waiting", 0) or 1))
+                    if chunk:
+                        response_buffer.extend(chunk)
+                        command_index = response_buffer.find(self.COMMAND_HEADER)
+                        if command_index >= 0:
+                            if command_index:
+                                del response_buffer[:command_index]
+                            if len(response_buffer) < 4:
+                                continue
+                            length = response_buffer[3]
+                            total_length = 5 + length
+                            if len(response_buffer) < total_length:
+                                continue
+                            response = self.parse_command_response(bytes(response_buffer[:total_length]))
+                            if response is not None:
+                                return response
+                            del response_buffer[:1]
+                    else:
+                        time.sleep(0.01)
+                raise TimeoutError(f"No response for ComPort command 0x{int(command):02X}")
+
+            self.ser.write(frame)
+            if not self._command_event.wait(timeout=float(timeout)):
+                raise TimeoutError(f"No response for ComPort command 0x{int(command):02X}")
+            response = self._command_response
+            if response is None:
+                raise RuntimeError("Invalid response for ComPort command")
+            return response
+
+    def read_firmware_version(self, timeout: float = 1.0) -> dict[str, Any]:
+        response = self.send_command(self.FIRMWARE_VERSION_COMMAND, timeout=timeout)
+        if not response["success"]:
+            raise RuntimeError(f"Firmware version command failed with status 0x{response['status']:02X}")
+        data = response["data"]
+        if len(data) != 3:
+            raise RuntimeError(f"Invalid firmware version response: {data.hex()}")
+
+        product_id, year, revision = data
+        module_name = "single-channel" if product_id == 1 else "dual-channel" if product_id == 2 else "unknown"
+        gain = 501 if product_id == 1 else 601 if product_id == 2 else self.GAIN
+        self.product_id = product_id
+        self.GAIN = int(gain)
+        self.firmware_version = {
+            "product_id": product_id,
+            "year": year,
+            "revision": revision,
+            "firmware": f"{2000 + year if year < 100 else year}.{revision}",
+            "module_name": module_name,
+            "gain": gain,
+        }
+        return dict(self.firmware_version)
+
+    get_firmware_version = read_firmware_version
 
     def set_mode(self, mode: int | str | None) -> None:
         if mode is not None:
@@ -293,27 +422,55 @@ class ComPort(QObject):
             pass
 
     def _consume_rx_frames(self) -> None:
-        while len(self._rx_buffer) >= self._frame_length:
-            header_index = self._rx_buffer.find(self._frame_header)
-            if header_index < 0:
-                keep = len(self._frame_header) - 1
+        while self._rx_buffer:
+            live_headers = (self._frame_header, b"\x0a\x02")
+            live_indexes = [i for header in live_headers if (i := self._rx_buffer.find(header)) >= 0]
+            command_index = self._rx_buffer.find(self.COMMAND_HEADER)
+            indexes = live_indexes + ([command_index] if command_index >= 0 else [])
+            if not indexes:
+                keep = max(len(self.COMMAND_HEADER), 2) - 1
                 discarded = max(0, len(self._rx_buffer) - keep)
                 del self._rx_buffer[:discarded]
                 self._bytes_discarded += discarded
                 return
-            if header_index:
-                del self._rx_buffer[:header_index]
-                self._bytes_discarded += header_index
-            if len(self._rx_buffer) < self._frame_length:
+
+            index = min(indexes)
+            if index:
+                del self._rx_buffer[:index]
+                self._bytes_discarded += index
+
+            if self._rx_buffer.startswith(self.COMMAND_HEADER):
+                if len(self._rx_buffer) < 4:
+                    return
+                length = self._rx_buffer[3]
+                total_length = 5 + length
+                if len(self._rx_buffer) < total_length:
+                    return
+                frame = bytes(self._rx_buffer[:total_length])
+                del self._rx_buffer[:total_length]
+                response = self.parse_command_response(frame)
+                if response is None:
+                    self._frames_rejected += 1
+                    continue
+                self._command_response = response
+                self._command_event.set()
+                continue
+
+            frame_length = 8
+            if len(self._rx_buffer) >= 8 and self._rx_buffer[6:8] == self._frame_trailer:
+                frame_length = 8
+            elif len(self._rx_buffer) >= 10:
+                frame_length = self._frame_length if self._frame_length == 10 else 8
+            else:
                 return
-            frame = bytes(self._rx_buffer[:self._frame_length])
+            frame = bytes(self._rx_buffer[:frame_length])
             if frame[-len(self._frame_trailer):] != self._frame_trailer:
                 self._frames_rejected += 1
                 del self._rx_buffer[:1]
                 self._bytes_discarded += 1
                 continue
-            del self._rx_buffer[:self._frame_length]
-            result = self.parse_frame(frame, self._frame_header, self._frame_trailer)
+            del self._rx_buffer[:frame_length]
+            result = self.parse_frame(frame, self._frame_header, self._frame_trailer, gain=self.GAIN)
             if result is None:
                 self._frames_rejected += 1
                 continue

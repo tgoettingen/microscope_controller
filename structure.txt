@@ -9,3 +9,8 @@ microscope_controller/
     orchestrator.py
     factory.py
   gui.py
+
+
+
+  baud rate for new 2chan tmv : 460800
+  

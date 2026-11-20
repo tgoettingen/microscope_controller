@@ -26,7 +26,7 @@ from devices.voltage_meter_comport import ComPort
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read and evaluate live ComPort voltage samples.")
     parser.add_argument("--port", default="/dev/tty.usbserial-210", help="serial device path")
-    parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("--baudrate", type=int, default=460800)
     parser.add_argument("--duration", type=float, default=10.0, help="capture duration in seconds")
     parser.add_argument("--reader-hz", type=float, default=1000.0, help="host serial polling rate")
     parser.add_argument("--read-timeout", type=float, default=0.1)

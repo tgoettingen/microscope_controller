@@ -354,7 +354,7 @@ def build_devices(config_path="config/default_devices.json"):
             elif dc.get("type") in ("ComPort", "voltage_comport", "serial_voltage"):
                 # build a ComPort detector
                 port = dc.get("port")
-                baud = int(dc.get("baudrate", 115200))
+                baud = int(dc.get("baudrate", 460800))
                 fmt = dc.get("format", dc.get("sample_format", "int24"))
                 timeout = float(dc.get("read_timeout", 0.1))
                 d = ComPort(
@@ -407,7 +407,7 @@ def build_devices(config_path="config/default_devices.json"):
         elif detector_cfg.get("type") in ("comport", "voltage_comport", "serial_voltage"):
             detector = ComPort(
                 port=detector_cfg.get("port"),
-                baudrate=int(detector_cfg.get("baudrate", 115200)),
+                baudrate=int(detector_cfg.get("baudrate", 460800)),
                 read_timeout=float(detector_cfg.get("read_timeout", 0.1)),
                 sample_format=detector_cfg.get("format", detector_cfg.get("sample_format", "int24")),
                 mode=detector_cfg.get("mode"),
