@@ -6,6 +6,33 @@ from unittest.mock import Mock
 from devices.voltage_meter_comport import ComPort
 
 
+class ComPortProtocolTests(unittest.TestCase):
+    def test_dual_channel_frame_uses_configured_gain(self):
+        frame1 = bytes.fromhex("0A01 001234 46 010A")
+        frame2 = bytes.fromhex("0A02 001234 46 010A")
+
+        channel1 = ComPort.parse_frame(frame1, gain=601)
+        channel2 = ComPort.parse_frame(frame2, gain=601)
+
+        self.assertIsNotNone(channel1)
+        self.assertIsNotNone(channel2)
+        self.assertEqual(channel1["channel"], 1)
+        self.assertEqual(channel2["channel"], 2)
+
+    def test_channel_values_can_be_read_independently(self):
+        detector = ComPort(port="COM_TEST", mode=1)
+        detector._channel_scaled_values = {1: 1.25, 2: 2.5}
+
+        self.assertEqual(detector.read_channel_value(1), 1.25)
+        self.assertEqual(detector.read_channel_value(2), 2.5)
+        self.assertEqual(detector.read_value(), 1.25)
+
+    def test_dual_meter_exposes_two_gui_detector_ids(self):
+        detector = ComPort(port="COM_TEST", mode=0)
+        detector.product_id = 2
+        self.assertEqual(detector.get_detector_ids(), ["COM_TEST CH1", "COM_TEST CH2"])
+
+
 class ComPortDisconnectTests(unittest.TestCase):
     def test_disconnect_flushes_and_closes_port_then_clears_parser_state(self):
         detector = ComPort(port="COM_TEST")

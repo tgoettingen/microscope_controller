@@ -499,9 +499,19 @@ class MainWindow(QtWidgets.QMainWindow):
       try:
          det = getattr(self, "det", None)
          if isinstance(det, list):
-            ids = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
+            detectors = det
          elif det is not None:
-            ids = [getattr(det, "name", getattr(det, "port", "detector"))]
+            detectors = [det]
+         else:
+            detectors = []
+         for d in detectors:
+            try:
+               if hasattr(d, "get_detector_ids"):
+                  ids.extend(str(detector_id) for detector_id in d.get_detector_ids())
+               else:
+                  ids.append(str(getattr(d, "name", getattr(d, "port", "detector"))))
+            except Exception:
+               ids.append(str(getattr(d, "name", getattr(d, "port", "detector"))))
       except Exception:
          ids = []
       if ids:
@@ -513,6 +523,15 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          pass
       return []
+
+   @staticmethod
+   def _detector_ids_for_device(detector) -> list[str]:
+      if detector is None:
+         return []
+      get_detector_ids = getattr(detector, "get_detector_ids", None)
+      if callable(get_detector_ids):
+         return [str(detector_id) for detector_id in get_detector_ids()]
+      return [str(getattr(detector, "name", getattr(detector, "port", "detector")))]
 
    def _strip_chart_hardware(self) -> tuple[set[str], set[str]]:
       """(detectors, motors) the strip chart will use.
@@ -4280,6 +4299,38 @@ class MainWindow(QtWidgets.QMainWindow):
          # No specific names collected (and no generic axis) → fall back to all.
          axis_detector_names = None
 
+      multi_axis_started_detectors = []
+      if has_detector_axis:
+         detector_devices = det if isinstance(det, list) else ([det] if det is not None else [])
+         for detector_device in detector_devices:
+            if not callable(getattr(detector_device, "read_all_channels", None)):
+               continue
+            detector_name = str(
+               getattr(detector_device, "name", getattr(detector_device, "port", "detector"))
+            )
+            detector_ids = self._detector_ids_for_device(detector_device)
+            if axis_detector_names is not None and detector_name not in axis_detector_names and not any(
+               detector_id in axis_detector_names for detector_id in detector_ids
+            ):
+               continue
+            if getattr(detector_device, "running", False):
+               continue
+            try:
+               detector_device.start()
+               multi_axis_started_detectors.append(detector_device)
+            except Exception:
+               logger.exception("Could not start multi-channel detector %s", detector_name)
+               self.statusBar().showMessage(
+                  f"Could not start detector {detector_name}; check its serial connection.",
+                  8000,
+               )
+               for started_detector in multi_axis_started_detectors:
+                  try:
+                     started_detector.stop()
+                  except Exception:
+                     logger.exception("Could not stop detector after startup failure")
+               return False
+
       axes = []
       for cfg in cfgs:
             t = cfg.axis_type
@@ -4499,15 +4550,20 @@ class MainWindow(QtWidgets.QMainWindow):
       self._multi_owns_stream_savers = False
       selected = self.multi_tab.get_selected_detectors() if hasattr(self.multi_tab, "get_selected_detectors") else []
       det_list = []
-      if selected:
-         det_list = selected
-      elif isinstance(det, list):
-         det_list = [getattr(d, "name", getattr(d, "port", "detector")) for d in det]
-      elif det is not None:
-         det_list = [getattr(det, "name", getattr(det, "port", "detector"))]
+      detector_devices = det if isinstance(det, list) else ([det] if det is not None else [])
+      for detector_device in detector_devices:
+         base_id = str(getattr(detector_device, "name", getattr(detector_device, "port", "detector")))
+         channel_ids = self._detector_ids_for_device(detector_device)
+         if axis_detector_names is not None and not (
+            base_id in axis_detector_names
+            or any(channel_id in axis_detector_names for channel_id in channel_ids)
+         ):
+            continue
+         for channel_id in channel_ids:
+            if selected and channel_id not in selected and base_id not in selected:
+               continue
+            det_list.append(channel_id)
 
-      if axis_detector_names is not None:
-         det_list = [detector_id for detector_id in det_list if str(detector_id) in axis_detector_names]
       if not has_detector_axis:
          det_list = []
          self.statusBar().showMessage(
@@ -4654,6 +4710,14 @@ class MainWindow(QtWidgets.QMainWindow):
       except Exception:
          logger.exception("Failed to prepare multi-axis stream saving")
          if self._multi_sequence_active:
+            for detector_device in multi_axis_started_detectors:
+               try:
+                  detector_device.stop()
+               except Exception:
+                  logger.exception(
+                     "Could not stop multi-channel detector after setup failure: %s",
+                     getattr(detector_device, "name", getattr(detector_device, "port", "detector")),
+                  )
             return False
 
       def measure(state: dict):
@@ -4699,31 +4763,62 @@ class MainWindow(QtWidgets.QMainWindow):
                if axis_detector_names is not None:
                   dets = [
                      d for d in dets
-                     if str(getattr(d, "name", getattr(d, "port", "detector"))) in axis_detector_names
+                     if (
+                        str(getattr(d, "name", getattr(d, "port", "detector"))) in axis_detector_names
+                        or any(
+                           channel_id in axis_detector_names
+                           for channel_id in self._detector_ids_for_device(d)
+                        )
+                     )
                   ]
                for d in dets:
                   try:
-                     sample = d.read_value()
-                     temp = None
-                     if isinstance(sample, tuple):
-                        val = float(sample[0])
+                     read_all_channels = getattr(d, "read_all_channels", None)
+                     if callable(read_all_channels) and len(self._detector_ids_for_device(d)) > 1:
+                        channel_values = read_all_channels()
+                        if any(value is None for value in channel_values.values()):
+                           deadline = time.monotonic() + 1.0
+                           while time.monotonic() < deadline and any(
+                              value is None for value in channel_values.values()
+                           ):
+                              time.sleep(0.01)
+                              channel_values = read_all_channels()
+                        if not any(value is not None for value in channel_values.values()):
+                           logger.warning(
+                              "No channel samples received from %s during multi-axis scan",
+                              getattr(d, "name", getattr(d, "port", "detector")),
+                           )
+                        samples = [
+                           (f"{getattr(d, 'name', getattr(d, 'port', 'detector'))} CH{channel}", value)
+                           for channel, value in channel_values.items()
+                           if value is not None
+                        ]
+                     else:
+                        sample = d.read_value()
+                        value = float(sample[0]) if isinstance(sample, tuple) else float(sample)
+                        det_id = str(getattr(d, "name", getattr(d, "port", "detector")))
+                        samples = [(det_id, value)]
+
+                     for det_id, sample_value in samples:
+                        if axis_detector_names is not None and det_id not in axis_detector_names:
+                           base_id = det_id.rsplit(" CH", 1)[0] if det_id.endswith((" CH1", " CH2")) else det_id
+                           if base_id not in axis_detector_names:
+                              continue
                         try:
-                           temp = float(sample[1])
+                           allowed = getattr(self, "_selected_detectors_for_display", None)
+                           base_id = det_id.rsplit(" CH", 1)[0] if det_id.endswith((" CH1", " CH2")) else det_id
+                           if allowed is not None and det_id not in allowed and base_id not in allowed:
+                              continue
                         except Exception:
-                           temp = None
-                     else:
-                        val = float(sample)
-                     det_id = getattr(d, "name", getattr(d, "port", "detector"))
-                     sample_meta = dict(state)
-                     sample_meta["experiment_phase"] = phase
-                     try:
-                        mode = str(getattr(d, "mode", "")).strip().lower()
-                        sample_meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
-                     except Exception:
-                        pass
-                     if temp is not None:
-                        sample_meta["temperature"] = temp
-                     else:
+                           pass
+
+                        sample_meta = dict(state)
+                        sample_meta["experiment_phase"] = phase
+                        try:
+                           mode = str(getattr(d, "mode", "")).strip().lower()
+                           sample_meta["measurement_kind"] = "resistance" if mode == "res" else "voltage"
+                        except Exception:
+                           pass
                         try:
                            if hasattr(d, "read_temperature"):
                               t = d.read_temperature()
@@ -4731,36 +4826,26 @@ class MainWindow(QtWidgets.QMainWindow):
                                  sample_meta["temperature"] = float(t)
                         except Exception:
                            pass
-
-                     # Apply current detector selection for display/visualization.
-                     try:
-                        allowed = getattr(self, '_selected_detectors_for_display', None)
-                        if allowed is not None and str(det_id) not in allowed:
-                           continue
-                     except Exception:
-                        pass
                      
-                     # Thread-safe GUI update: push directly to live_tab's deque
-                     # (avoids Qt signal queue overflow on fast scans)
-                     try:
-                        self.live_tab.queue_multiaxis_sample(str(det_id), sample_meta, float(val))
-                     except Exception:
-                        pass
-                     # stream-save if enabled per detector id
-                     try:
-                        mc = (
-                           self._multi_sequence_saver
-                           if self._multi_sequence_active
-                           else getattr(self, '_mc_saver', None)
-                        )
-                        if mc is not None:
-                           mc.append_sample(str(det_id), time.time(), float(val), meta=sample_meta)
-                        else:
-                           saver = self.stream_savers.get(det_id)
-                           if saver:
-                              saver.append_sample(time.time(), float(val), meta=sample_meta)
-                     except Exception:
-                        pass
+                        # Thread-safe GUI update: push directly to live_tab's deque.
+                        try:
+                           self.live_tab.queue_multiaxis_sample(str(det_id), sample_meta, float(sample_value))
+                        except Exception:
+                           pass
+                        try:
+                           mc = (
+                              self._multi_sequence_saver
+                              if self._multi_sequence_active
+                              else getattr(self, '_mc_saver', None)
+                           )
+                           if mc is not None:
+                              mc.append_sample(str(det_id), time.time(), float(sample_value), meta=sample_meta)
+                           else:
+                              saver = self.stream_savers.get(det_id)
+                              if saver:
+                                 saver.append_sample(time.time(), float(sample_value), meta=sample_meta)
+                        except Exception:
+                           pass
                   except Exception:
                      continue
 
@@ -4790,6 +4875,14 @@ class MainWindow(QtWidgets.QMainWindow):
                self.multiaxis_progress_changed.emit(
                   f"Multi-axis: finished ({self._multi_point_count} points)"
                )
+               for detector_device in multi_axis_started_detectors:
+                  try:
+                     detector_device.stop()
+                  except Exception:
+                     logger.exception(
+                        "Could not stop multi-channel detector %s",
+                        getattr(detector_device, "name", getattr(detector_device, "port", "detector")),
+                     )
                # When the measurement finishes, stop stream saving — but only
                # if this run actually owns the savers. A detector-less scan that
                # ran alongside the strip chart must leave the strip chart's
@@ -5448,7 +5541,8 @@ class MainWindow(QtWidgets.QMainWindow):
                dets = self.det if isinstance(self.det, list) else ([self.det] if self.det is not None else [])
                for d in dets:
                   did = getattr(d, "name", getattr(d, "port", "detector"))
-                  if str(did) != str(det_id):
+                  detector_ids = d.get_detector_ids() if hasattr(d, "get_detector_ids") else [str(did)]
+                  if str(det_id) not in {str(did), *(str(item) for item in detector_ids)}:
                      continue
                   if hasattr(d, "read_temperature"):
                      t = d.read_temperature()
@@ -5460,7 +5554,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
          # Apply detector selection filtering for display.
          allowed = getattr(self, '_selected_detectors_for_display', None)
-         if allowed is not None and det_id not in allowed:
+         channel_base = det_id.rsplit(' CH', 1)[0] if det_id.endswith((' CH1', ' CH2')) else det_id
+         if allowed is not None and det_id not in allowed and channel_base not in allowed:
             # If upstream didn't provide an id and only one detector is selected,
             # map the generic id to that detector.
             if det_id == 'detector' and len(allowed) == 1:
@@ -5485,7 +5580,8 @@ class MainWindow(QtWidgets.QMainWindow):
                dets = self.det if isinstance(self.det, list) else ([self.det] if self.det is not None else [])
                for d in dets:
                   did = getattr(d, "name", getattr(d, "port", "detector"))
-                  if str(did) != str(det_id):
+                  detector_ids = d.get_detector_ids() if hasattr(d, "get_detector_ids") else [str(did)]
+                  if str(det_id) not in {str(did), *(str(item) for item in detector_ids)}:
                      continue
                   mode = str(getattr(d, "mode", "")).strip().lower()
                   meta = dict(meta)

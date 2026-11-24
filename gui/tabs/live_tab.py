@@ -1835,10 +1835,7 @@ class LiveTab(QtWidgets.QWidget):
 
         def _on_vis(chk):
             self._detector_visibility_state[detector_id] = bool(chk)
-            selected = (
-                self._selected_detectors_filter is None
-                or detector_id in self._selected_detectors_filter
-            )
+            selected = self._is_detector_selected(detector_id)
             try:
                 self._detector_curves[detector_id].setVisible(bool(chk) and selected)
             except Exception:
@@ -2147,6 +2144,11 @@ class LiveTab(QtWidgets.QWidget):
         if det_id in wanted:
             return det_id
 
+        if det_id.endswith(" CH1") or det_id.endswith(" CH2"):
+            base_id = det_id.rsplit(" CH", 1)[0]
+            if base_id in wanted:
+                return det_id
+
         # Some upstream paths use a generic id. If exactly one detector is
         # selected, map it so filtering works.
         try:
@@ -2156,6 +2158,14 @@ class LiveTab(QtWidgets.QWidget):
             pass
 
         return None
+
+    def _is_detector_selected(self, detector_id: str) -> bool:
+        selected = self._selected_detectors_filter
+        if selected is None or detector_id in selected:
+            return True
+        if detector_id.endswith((" CH1", " CH2")):
+            return detector_id.rsplit(" CH", 1)[0] in selected
+        return False
         
     def set_selected_detectors(self, detector_ids: list[str] | None):
         """Apply a global detector selection filter.
@@ -2229,10 +2239,7 @@ class LiveTab(QtWidgets.QWidget):
         if cb is None:
             return
 
-        selected = (
-            self._selected_detectors_filter is None
-            or detector_id in self._selected_detectors_filter
-        )
+        selected = self._is_detector_selected(detector_id)
         visible = bool(cb.isChecked()) and selected
         try:
             self._detector_curves[detector_id].setVisible(visible)
@@ -2252,7 +2259,7 @@ class LiveTab(QtWidgets.QWidget):
             pass
 
     def _is_detector_visible(self, detector_id: str) -> bool:
-        if self._selected_detectors_filter is not None and detector_id not in self._selected_detectors_filter:
+        if not self._is_detector_selected(detector_id):
             return False
         cb = self._detector_show_cbs.get(detector_id)
         if cb is None:

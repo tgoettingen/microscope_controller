@@ -36,9 +36,13 @@ class ExperimentTab(QtWidgets.QWidget):
         c_locale = QtCore.QLocale(QtCore.QLocale.Language.C)
         c_locale.setNumberOptions(QtCore.QLocale.NumberOption.RejectGroupSeparator)
         self.interval_spin.setLocale(c_locale)
-        self.interval_spin.setRange(1e-8, 3600.0)
+        self.interval_spin.setRange(1.0 / 900.0, 3600.0)
         self.interval_spin.setDecimals(8)
-        self.interval_spin.setSingleStep(1e-4)
+        self.interval_spin.setSingleStep(1.0 / 900.0)
+        self.interval_spin.setToolTip(
+            "Time between strip-chart polling updates, in seconds. "
+            "The minimum supports 900 updates per second."
+        )
         self.interval_spin.setValue(0.05)
 
         self.window_time_spin = QtWidgets.QDoubleSpinBox()

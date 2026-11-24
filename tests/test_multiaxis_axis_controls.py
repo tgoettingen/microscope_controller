@@ -18,6 +18,7 @@ from gui.dialogs.motor_axis_dialog import MotorAxisDialog
 from gui.dialogs.round_axis_dialog import RoundAxisDialog
 from gui.tabs.multiaxis_tab import MultiAxisTab
 from gui.tabs.live_tab import LiveTab
+from gui.tabs.experiment_tab import ExperimentTab
 
 
 class _ExcitationDevice:
@@ -37,6 +38,15 @@ class MultiAxisAxisControlTests(unittest.TestCase):
         )
 
         self.assertTrue(config.label().startswith("Sample: X:"))
+
+    def test_strip_chart_interval_allows_900_hz(self):
+        tab = ExperimentTab()
+        interval = 1.0 / 900.0
+        tab.interval_spin.setValue(interval)
+
+        self.assertAlmostEqual(tab.interval_spin.value(), interval, places=8)
+        self.assertLess(tab.interval_spin.minimum(), 0.01)
+        tab.close()
 
     def test_axis_name_prompt_uses_unique_default(self):
         tab = MultiAxisTab()
@@ -228,6 +238,17 @@ class MultiAxisAxisControlTests(unittest.TestCase):
         self.assertEqual(restored.params["channels"][0].light_intensity, 0.7)
         self.assertEqual(restored.params["channels"][0].exposure_ms, 12.5)
         self.assertEqual(restored.params["wait"], 0.4)
+
+    def test_selected_meter_includes_both_dual_channel_streams(self):
+        tab = LiveTab()
+        tab.set_selected_detectors(["vm11"])
+
+        self.assertEqual(tab._map_and_filter_detector_id("vm11 CH1"), "vm11 CH1")
+        self.assertEqual(tab._map_and_filter_detector_id("vm11 CH2"), "vm11 CH2")
+        self.assertTrue(tab._is_detector_selected("vm11 CH1"))
+        self.assertTrue(tab._is_detector_selected("vm11 CH2"))
+
+        tab.close()
 
     def test_new_motor_dialog_uses_one_unit_step_size_and_zero_wait(self):
         with patch("gui.dialogs.motor_axis_dialog._stage_unit", return_value="mm"):

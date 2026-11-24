@@ -95,6 +95,9 @@ class ComPort(QObject):
         self._last_timestamp: float | None = None
         self._last_raw = b""
         self._last_adc = 0
+        self._channel_values: dict[int, float | None] = {1: None, 2: None}
+        self._channel_scaled_values: dict[int, float | None] = {1: None, 2: None}
+        self._channel_timestamps: dict[int, float | None] = {1: None, 2: None}
         self._frames_parsed = 0
         self._frames_rejected = 0
         self._bytes_discarded = 0
@@ -228,6 +231,14 @@ class ComPort(QObject):
             self._last_scaled_value = None
             self._last_temperature = None
             self._last_timestamp = None
+            self._channel_values = {1: None, 2: None}
+            self._channel_scaled_values = {1: None, 2: None}
+            self._channel_timestamps = {1: None, 2: None}
+
+    def get_detector_ids(self) -> list[str]:
+        if self.product_id == 2:
+            return [f"{self.name} CH1", f"{self.name} CH2"]
+        return [str(self.name)]
 
     def get_capabilities(self) -> dict[str, Any]:
         return {
@@ -239,6 +250,8 @@ class ComPort(QObject):
             "gain": self.GAIN,
             "product_id": self.product_id,
             "firmware_version": self.firmware_version,
+            "channel_count": 2 if self.product_id == 2 else 1,
+            "detector_ids": self.get_detector_ids(),
         }
 
     @staticmethod
@@ -361,9 +374,29 @@ class ComPort(QObject):
 
     def read_value(self) -> float:
         with self._lock:
-            if self._last_scaled_value is None:
-                raise RuntimeError("ComPort has not received a sample")
-            return float(self._last_scaled_value)
+            channel = int(self.mode) if self.mode in (1, 2, "1", "2") else 0
+            if channel:
+                value = self._channel_scaled_values.get(channel)
+            else:
+                value = self._last_scaled_value
+            if value is None:
+                suffix = f" for channel {channel}" if channel else ""
+                raise RuntimeError(f"ComPort has not received a sample{suffix}")
+            return float(value)
+
+    def read_channel_value(self, channel: int) -> float:
+        channel = int(channel)
+        if channel not in (1, 2):
+            raise ValueError("ComPort channel must be 1 or 2")
+        with self._lock:
+            value = self._channel_scaled_values.get(channel)
+        if value is None:
+            raise RuntimeError(f"ComPort has not received channel {channel} sample")
+        return float(value)
+
+    def read_all_channels(self) -> dict[int, float | None]:
+        with self._lock:
+            return dict(self._channel_scaled_values)
 
     def read_temperature(self) -> bytes | None:
         with self._lock:
@@ -492,6 +525,11 @@ class ComPort(QObject):
             self._last_timestamp = result["timestamp"]
             self._last_raw = result["raw_bytes"]
             self._last_adc = result["adc_raw"]
+            channel = int(result.get("channel", 0))
+            if channel in (1, 2):
+                self._channel_values[channel] = value
+                self._channel_scaled_values[channel] = scaled
+                self._channel_timestamps[channel] = result["timestamp"]
             self._frames_parsed += 1
             self.valid_count = self._frames_parsed
             callbacks = tuple(self._callbacks)
@@ -501,7 +539,12 @@ class ComPort(QObject):
             except Exception:
                 logger.exception("ComPort callback failed")
         try:
-            self.sample_received.emit(self.name, result["timestamp"], scaled)
+            channel = int(result.get("channel", 0))
+            if self.product_id == 2 and channel in (1, 2):
+                detector_id = f"{self.name} CH{channel}"
+            else:
+                detector_id = self.name
+            self.sample_received.emit(detector_id, result["timestamp"], scaled)
         except Exception:
             logger.exception("ComPort sample signal failed")
 
@@ -540,6 +583,8 @@ class ComPort(QObject):
                 "raw": self._last_raw,
                 "adc": self._last_adc,
                 "temperature_raw": self._last_temperature,
+                "channels": dict(self._channel_scaled_values),
+                "channel_timestamps": dict(self._channel_timestamps),
             }
 
     def voltages(self):
